@@ -1,0 +1,94 @@
+# Dotdipper Configuration Example
+# This demonstrates the full feature set
+
+[general]
+default_mode = "symlink"  # Default restoration mode: "symlink" or "copy"
+backup = true             # Create backups before overwriting files
+active_profile = "default"  # Active profile (Milestone 4)
+tracked_files = [
+    "~/.zshrc",
+    "~/.bashrc", 
+    "~/.gitconfig",
+    "~/.config/nvim",
+    "~/.tmux.conf",
+    "~/.ssh/config"
+]
+
+[github]
+username = "your-github-username"
+repo_name = "dotfiles"
+private = true
+
+[packages]
+# Common packages for all systems
+common = ["git", "vim", "tmux", "curl", "wget", "ripgrep", "fd-find"]
+
+# macOS specific
+macos = ["homebrew/cask/iterm2", "neovim", "fzf", "bat"]
+
+# Linux common
+linux = ["build-essential", "neovim"]
+
+# Ubuntu/Debian specific
+ubuntu = ["apt-transport-https"]
+
+# Arch specific
+arch = ["base-devel", "neovim"]
+
+# File-specific overrides
+[files."~/.config/nvim"]
+mode = "copy"  # Copy nvim config instead of symlinking
+
+[files."~/.ssh/config"]
+exclude = true  # Don't restore SSH config (too sensitive)
+
+[files."~/.gitconfig"]
+mode = "copy"  # Copy git config to allow local modifications
+
+# Secrets encryption (Milestone 1)
+[secrets]
+provider = "age"  # "age" or "sops"
+key_path = "~/.config/age/keys.txt"
+
+# Hooks (run scripts at specific points)
+[hooks]
+pre_apply = ["echo 'Starting apply'"]
+post_apply = ["tmux source-file ~/.tmux.conf || true"]
+pre_snapshot = []
+post_snapshot = []
+
+# Daemon configuration (Milestone 6 - not yet implemented)
+[daemon]
+enabled = false
+mode = "ask"  # "ask" or "auto"
+debounce_ms = 1500
+
+# Remote backup configuration (Milestone 5 - not yet implemented)
+# [remote]
+# kind = "s3"
+# bucket = "my-dotdipper"
+# prefix = "profiles/default"
+# region = "us-east-1"
+
+# Include patterns (what to discover)
+include_patterns = [
+    "~/.config/**",
+    "~/.zshrc",
+    "~/.bashrc",
+    "~/.profile",
+    "~/.gitconfig",
+    "~/.vimrc",
+    "~/.tmux.conf",
+]
+
+# Exclude patterns (safety defaults)
+exclude_patterns = [
+    "~/.ssh/**",
+    "~/.gnupg/**",
+    "**/*.key",
+    "**/*.pem",
+    "**/node_modules/**",
+    "**/cache/**",
+    "**/Cache/**",
+    "~/.Trash/**",
+]

@@ -1,0 +1,93 @@
+[package]
+name = "dotdipper"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A CLI tool for managing dotfiles with GitHub sync and machine bootstrapping"
+license = "MIT"
+
+[dependencies]
+# CLI and UI
+clap = { version = "4.5", features = ["derive", "env"] }
+indicatif = "0.17"
+dialoguer = "0.11"
+colored = "2.1"
+console = "0.15"
+
+# Config and serialization
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Hashing and checksums
+blake3 = "1.5"
+
+# File system operations
+glob = "0.3"
+walkdir = "2.5"
+ignore = "0.4"  # For gitignore-style patterns
+dirs = "5.0"
+tempfile = "3.10"
+shellexpand = "3.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+# OS detection
+os_info = "3.8"
+
+# File operations
+filetime = "0.2"
+fs_extra = "1.3"
+
+# Archive/compression
+tar = "0.4"
+zstd = "0.13"
+
+# Utils
+humansize = "2"
+sysinfo = "0.30"
+hostname = "0.4"
+
+# Shell command execution
+shell-escape = "0.1"
+
+# Async runtime (for potential future features)
+tokio = { version = "1.37", features = ["full"] }
+
+# Encryption and secrets management
+age = "0.10"
+
+# File watching for daemon
+notify = "6.1"
+
+# Templating (for future milestone)
+tera = "1.19"
+
+# Process execution
+which = "6.0"
+
+# Cloud/remote storage (optional features)
+rust-s3 = { version = "0.35", optional = true }
+reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+
+[features]
+default = []
+s3 = ["dep:rust-s3"]
+webdav = ["dep:reqwest"]
+daemon = []
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.10"
+serial_test = "3.1"
+
+[[bin]]
+name = "dotdipper"
+path = "src/main.rs"

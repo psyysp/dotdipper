@@ -1,0 +1,62 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo
+Cargo.lock
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# dotdipper specific
+.dotctl/
+
+# Test artifacts
+*.profraw
+*.profdata
+cobertura.xml
+tarpaulin-report.html
+
+# Debug
+*.log
+
+# Secrets (never commit plaintext keys)
+keys.txt
+*.key
+*.pem
+*.pfx
+
+# Daemon runtime
+daemon.pid
+daemon.log
+
+# Snapshots (local only)
+snapshots/
+
+# Profile data (local only)
+profiles/*/manifest.lock
+profiles/*/compiled/
+
+# md files from development
+ARCHITECTURE.md
+BUILD_AND_TEST.md
+DELIVERY_SUMMARY.md
+IMPLEMENTATION_SUMMARY.md
+MILESTONE_STATUS.md
+MILESTONES_3-6_IMPLEMENTATION.md
+REMOTE_BACKENDS.md
+VERIFY_CHECKLIST.md
+
+# README_FEATURES.md
+# COMMANDS_REFERENCE.md
+# QUICK_START.md
