@@ -1,11 +1,44 @@
 # Dotdipper Quick Start Guide
 
+> Fast-track guide to get dotdipper up and running. For comprehensive documentation, see [README.md](README.md).
+
+📚 **Quick Navigation:** [Main README](README.md) | [Commands Reference](COMMANDS_REFERENCE.md) | [Feature Overview](README_FEATURES.md) | [Architecture](ARCHITECTURE.md)
+
+---
+
+## Prerequisites
+
+Before installing dotdipper, ensure you have:
+
+- **Rust and Cargo** - Install from [rustup.rs](https://rustup.rs/)
+- **Git** - Required for GitHub sync
+- **Age** (optional but recommended) - For secrets encryption
+
+```bash
+# Install age
+# macOS
+brew install age
+
+# Ubuntu/Debian
+sudo apt install age
+
+# Arch Linux
+sudo pacman -S age
+```
+
 ## Installation
 
 ```bash
-cd /path/to/dotdipper
+# Clone the repository
+git clone https://github.com/yourusername/dotdipper
+cd dotdipper
+
+# Build and install
 cargo build --release
 cargo install --path .
+
+# Verify installation
+dotdipper --version
 ```
 
 ## Initial Setup
@@ -478,11 +511,38 @@ dotdipper diff --help
 
 ## Resources
 
-- **Example Config:** `example-config.toml`
-- **Milestone Status:** `MILESTONE_STATUS.md`
-- **Tests:** `tests/` directory
-- **Source Code:** `src/` directory
+- **[Main README](README.md)** - Comprehensive project documentation
+- **[Commands Reference](COMMANDS_REFERENCE.md)** - All commands and options
+- **[Feature Overview](README_FEATURES.md)** - Detailed feature descriptions
+- **[Architecture](ARCHITECTURE.md)** - System design and modules
+- **[Example Config](example-config.toml)** - Full configuration example
+- **[Milestone Status](MILESTONE_STATUS.md)** - Implementation status
+- **[Tests](tests/)** - Integration tests and examples
+- **[Source Code](src/)** - Project source code
+
+## What's Next?
+
+Now that you've completed the quick start:
+
+1. 📖 Read the [comprehensive README](README.md) for all features
+2. 🔧 Customize your [config.toml](example-config.toml)
+3. 🪝 Set up [hooks](#hooks-system) for automation
+4. 🔐 Learn about [secrets management](#milestone-1-secrets-encryption)
+5. 🎯 Explore [selective apply](#milestone-2-selective-apply--diff)
+6. 🧪 Test your setup on a VM before production use
+
+## Support
+
+- **Issues:** Report bugs via GitHub Issues
+- **Documentation:** See [README.md](README.md) for detailed docs
+- **Help:** Run `dotdipper --help` or `dotdipper <command> --help`
 
 ---
 
+**Version:** 0.2.0 (Milestones 1-2 Complete)  
+**Status:** Production-ready  
 **Happy dotfile management! 🚀**
+
+---
+
+**[← Back to Main README](README.md)**

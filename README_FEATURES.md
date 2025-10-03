@@ -1,8 +1,12 @@
-# Dotdipper - Best-in-Class Dotfiles Manager
+# Dotdipper - Feature Overview
 
-> A safe, deterministic, and feature-rich dotfiles manager with encryption, selective apply, and cloud sync.
+> Comprehensive feature documentation for dotdipper, the safe and deterministic dotfiles manager.
 
-## 🌟 What's New (Milestones 1-2)
+📚 **Quick Navigation:** [Main README](README.md) | [Quick Start](QUICK_START.md) | [Commands Reference](COMMANDS_REFERENCE.md) | [Architecture](ARCHITECTURE.md)
+
+---
+
+## 🌟 What's New (Milestones 1-2 Complete)
 
 ### 🔐 Secrets Encryption (Milestone 1)
 
@@ -632,12 +636,16 @@ cargo test -- --nocapture
 - Hook system for customization
 - Profile system for different contexts
 
-## 📚 Documentation
+## 📚 Additional Documentation
 
+- **[README.md](README.md)** - Main project documentation
 - **[QUICK_START.md](QUICK_START.md)** - Get started quickly
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture
-- **[MILESTONE_STATUS.md](MILESTONE_STATUS.md)** - Implementation status
-- **[example-config.toml](example-config.toml)** - Full config reference
+- **[COMMANDS_REFERENCE.md](COMMANDS_REFERENCE.md)** - Command reference card
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture and design
+- **[MILESTONE_STATUS.md](MILESTONE_STATUS.md)** - Detailed implementation status
+- **[BUILD_AND_TEST.md](BUILD_AND_TEST.md)** - Build instructions and testing
+- **[REMOTE_BACKENDS.md](REMOTE_BACKENDS.md)** - Cloud sync configuration
+- **[example-config.toml](example-config.toml)** - Full configuration reference
 
 ## 🤝 Common Workflows
 
@@ -891,8 +899,57 @@ cargo test
 cargo run -- --help
 ```
 
+## 🎯 Summary
+
+Dotdipper is production-ready with the following implemented features:
+
+✅ **Core Features:**
+
+- Dotfiles discovery, snapshot, and apply
+- GitHub sync (push/pull)
+- Package management and bootstrapping
+- Configuration management with per-file overrides
+- Health checks and diagnostics
+
+✅ **Milestone 1 - Secrets Encryption:**
+
+- Age encryption with modern cryptography
+- In-memory decryption during apply
+- Seamless edit workflow
+- Key generation and management
+
+✅ **Milestone 2 - Selective Apply & Diff:**
+
+- Pre-apply diffs with git integration
+- Interactive TUI file selection
+- Path filtering for targeted applies
+- Binary file handling
+
+✅ **Hooks System:**
+
+- Pre/post hooks for apply and snapshot
+- Shell command execution
+- Error handling and validation
+
+🚧 **Future Milestones (Stubs Ready):**
+
+- Milestone 3: Snapshot management and rollback
+- Milestone 4: Multiple profiles
+- Milestone 5: Cloud backups (S3, GCS, WebDAV)
+- Milestone 6: Auto-sync daemon with file watching
+
+For a quick start, see [QUICK_START.md](QUICK_START.md).  
+For all commands, see [COMMANDS_REFERENCE.md](COMMANDS_REFERENCE.md).  
+For technical details, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ---
 
 **Current Version:** 0.2.0 (Milestones 1-2 Complete)  
-**Status:** Production-ready for secrets and selective apply  
-**Next Release:** Milestone 3 (Snapshots & Rollback)
+**Status:** Production-ready for core features, secrets encryption, and selective apply  
+**Next Release:** Milestone 3 (Snapshots & Rollback)  
+**License:** MIT  
+**Last Updated:** October 2, 2025
+
+---
+
+**[← Back to Main README](README.md)**

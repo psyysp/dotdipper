@@ -1,6 +1,10 @@
 # Dotdipper Commands Reference Card
 
-Quick reference for all dotdipper commands.
+> Quick reference for all dotdipper commands and options.
+
+📚 **Quick Navigation:** [Main README](README.md) | [Quick Start](QUICK_START.md) | [Feature Overview](README_FEATURES.md) | [Architecture](ARCHITECTURE.md)
+
+---
 
 ## 🔧 Core Commands
 
@@ -365,6 +369,11 @@ sh -c "your-hook-command"
 
 ---
 
-**Version:** 0.2.0 (Milestones 1-2)  
+**Version:** 0.2.0 (Milestones 1-2 Complete)  
 **Last Updated:** October 2, 2025  
-**More Info:** See QUICK_START.md, README_FEATURES.md
+**Status:** Production-ready for core features, secrets, and selective apply  
+**More Info:** See [README.md](README.md), [QUICK_START.md](QUICK_START.md), [README_FEATURES.md](README_FEATURES.md)
+
+---
+
+**[← Back to Main README](README.md)**
