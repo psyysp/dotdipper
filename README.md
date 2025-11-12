@@ -121,6 +121,7 @@ dotdipper apply
 ```
 
 **Security Features:**
+
 - Age encryption with public/private keys
 - In-memory decryption (never writes plaintext to repo)
 - Seamless edit workflow (decrypt → edit → re-encrypt)
@@ -142,6 +143,7 @@ dotdipper apply --only "~/.zshrc,~/.config/nvim"
 ```
 
 **Features:**
+
 - Pre-apply diffs with colored output
 - Interactive TUI for file selection
 - Path filtering (files or directories)
@@ -166,6 +168,7 @@ dotdipper snapshot delete <id>
 ```
 
 **Features:**
+
 - Hardlink optimization for efficient storage
 - ISO-8601 timestamp IDs
 - Safety snapshots before rollback
@@ -191,6 +194,7 @@ dotdipper profile remove work
 ```
 
 **Features:**
+
 - Base + overlay config merging
 - Per-profile manifests and compiled directories
 - Profile-specific configurations
@@ -217,11 +221,13 @@ dotdipper remote pull
 ```
 
 **Supported Backends:**
+
 - ✅ LocalFS (fully implemented)
 - 🚧 S3 (feature-gated, stub implementation)
 - 🚧 WebDAV (feature-gated, stub implementation)
 
 **Features:**
+
 - Compressed bundles (tar.zst)
 - Bundle metadata tracking
 - Dry-run support
@@ -243,6 +249,7 @@ dotdipper daemon stop
 ```
 
 **Features:**
+
 - File watching with debouncing
 - Two modes: "auto" (automatic) or "ask" (prompt)
 - PID file management
@@ -263,6 +270,7 @@ post_snapshot = ["git add -A && git commit -m 'Snapshot' || true"]
 ```
 
 **Use Cases:**
+
 - Reload services after apply
 - Auto-commit snapshots
 - Validate configs before apply
@@ -592,7 +600,6 @@ MIT License - See LICENSE file for details
 
 - **Age:** Modern encryption by Filippo Valsorda
 - **Rust Community:** Amazing crates ecosystem
-- **Chezmoi:** Feature inspiration
 
 ---
 
