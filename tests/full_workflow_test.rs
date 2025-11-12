@@ -173,11 +173,14 @@ tracked_files = []
         .arg(&config_path)
         .arg("doctor");
     
-    // Should run checks
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Git"))
-        .stdout(predicate::str::contains("Age"));
+    // Should run checks (some output may be in stdout, some in stderr)
+    let output = cmd.assert().success();
+    let stdout_str = String::from_utf8_lossy(&output.get_output().stdout);
+    let stderr_str = String::from_utf8_lossy(&output.get_output().stderr);
+    let combined = format!("{}{}", stdout_str, stderr_str);
+    
+    assert!(combined.contains("Git"), "Output should mention Git");
+    assert!(combined.contains("Age") || combined.contains("age"), "Output should mention Age");
 }
 
 #[test]

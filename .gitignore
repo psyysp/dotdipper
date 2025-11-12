@@ -47,16 +47,21 @@ snapshots/
 profiles/*/manifest.lock
 profiles/*/compiled/
 
-# md files from development
+# Development documentation (internal only)
+DEV_NOTES.md
+ROADMAP.md
+FIXES_APPLIED.md
+TEST_REPORT.md
+
+# Old/deprecated documentation
 ARCHITECTURE.md
 BUILD_AND_TEST.md
+COMMANDS_REFERENCE.md
 DELIVERY_SUMMARY.md
 IMPLEMENTATION_SUMMARY.md
 MILESTONE_STATUS.md
 MILESTONES_3-6_IMPLEMENTATION.md
+QUICK_START.md
+README_FEATURES.md
 REMOTE_BACKENDS.md
 VERIFICATION_CHECKLIST.md
-
-# README_FEATURES.md
-# COMMANDS_REFERENCE.md
-# QUICK_START.md

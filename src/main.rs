@@ -226,12 +226,20 @@ enum SnapshotCommands {
     Rollback {
         /// Snapshot ID
         id: String,
+        
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
     },
     
     /// Delete a snapshot
     Delete {
         /// Snapshot ID
         id: String,
+        
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
@@ -256,6 +264,10 @@ enum ProfileCommands {
     Remove {
         /// Profile name
         name: String,
+        
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
@@ -697,11 +709,11 @@ async fn cmd_snapshot_mgmt(config_path: PathBuf, subcmd: SnapshotCommands) -> Re
             let snaps = snapshots::list(&config)?;
             ui::info(&format!("Found {} snapshots", snaps.len()));
         }
-        SnapshotCommands::Rollback { id } => {
-            snapshots::rollback(&config, &id)?;
+        SnapshotCommands::Rollback { id, force } => {
+            snapshots::rollback(&config, &id, force)?;
         }
-        SnapshotCommands::Delete { id } => {
-            snapshots::delete(&config, &id)?;
+        SnapshotCommands::Delete { id, force } => {
+            snapshots::delete(&config, &id, force)?;
         }
     }
     
@@ -722,8 +734,8 @@ async fn cmd_profile(config_path: PathBuf, subcmd: ProfileCommands) -> Result<()
         ProfileCommands::Switch { name } => {
             profiles::switch(&config, &name)?;
         }
-        ProfileCommands::Remove { name } => {
-            profiles::remove(&config, &name)?;
+        ProfileCommands::Remove { name, force } => {
+            profiles::remove(&config, &name, force)?;
         }
     }
     

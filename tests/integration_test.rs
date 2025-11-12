@@ -9,7 +9,7 @@ fn test_help_command() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("A smart dotfiles manager"));
+        .stdout(predicate::str::contains("A CLI tool for managing dotfiles"));
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn test_init_command() {
     
     // Check config content
     let content = fs::read_to_string(&config_path).unwrap();
-    assert!(content.contains("[dotfiles]"));
+    assert!(content.contains("[general]"));
     assert!(content.contains("[github]"));
     assert!(content.contains("[packages]"));
 }
@@ -79,7 +79,7 @@ fn test_init_force_overwrites() {
     // Check that config was overwritten
     let content = fs::read_to_string(&config_path).unwrap();
     assert!(!content.contains("test content"));
-    assert!(content.contains("[dotfiles]"));
+    assert!(content.contains("[general]"));
 }
 
 #[test]

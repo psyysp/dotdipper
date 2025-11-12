@@ -152,7 +152,7 @@ pub fn switch(_config: &Config, name: &str) -> Result<()> {
 }
 
 /// Remove a profile
-pub fn remove(_config: &Config, name: &str) -> Result<()> {
+pub fn remove(_config: &Config, name: &str, force: bool) -> Result<()> {
     if name == "default" {
         bail!("Cannot remove the default profile");
     }
@@ -165,15 +165,17 @@ pub fn remove(_config: &Config, name: &str) -> Result<()> {
         bail!("Profile '{}' does not exist", name);
     }
     
-    // Confirm deletion
-    let proceed = dialoguer::Confirm::new()
-        .with_prompt(format!("Delete profile '{}'? This will remove all profile data", name))
-        .default(false)
-        .interact()?;
-    
-    if !proceed {
-        ui::info("Deletion cancelled");
-        return Ok(());
+    // Confirm deletion (unless force is set)
+    if !force {
+        let proceed = dialoguer::Confirm::new()
+            .with_prompt(format!("Delete profile '{}'? This will remove all profile data", name))
+            .default(false)
+            .interact()?;
+        
+        if !proceed {
+            ui::info("Deletion cancelled");
+            return Ok(());
+        }
     }
     
     // Check if it's the active profile
