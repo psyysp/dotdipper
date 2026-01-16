@@ -1,10 +1,15 @@
 [package]
 name = "dotdipper"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
-description = "A CLI tool for managing dotfiles with GitHub sync and machine bootstrapping"
+description = "A safe, deterministic, and feature-rich dotfiles manager built in Rust with encryption, selective apply, snapshots, profiles, and cloud sync"
 license = "MIT"
+repository = "https://github.com/psyysp/dotdipper"
+homepage = "https://github.com/psyysp/dotdipper"
+keywords = ["dotfiles", "cli", "configuration", "backup", "sync"]
+categories = ["command-line-utilities", "config"]
+readme = "README.md"
 
 [dependencies]
 # CLI and UI

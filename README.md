@@ -29,28 +29,54 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 
 ## 🚀 Quick Start
 
-### Prerequisites
-
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install age (for secrets encryption)
-# macOS
-brew install age
-
-# Ubuntu/Debian
-sudo apt install age
-
-# Arch Linux
-sudo pacman -S age
-```
-
 ### Installation
 
+#### macOS (Homebrew) - Recommended
+
 ```bash
+# Add the tap and install
+brew tap psyysp/dotdipper
+brew install dotdipper
+
+# Verify installation
+dotdipper --version
+```
+
+This will also install `age` (required for secrets encryption) as a dependency.
+
+#### macOS / Linux (Manual Binary)
+
+```bash
+# Download the latest release for your platform
+# Apple Silicon (M1/M2/M3)
+curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-aarch64-apple-darwin.tar.gz
+tar -xzf dotdipper-aarch64-apple-darwin.tar.gz
+sudo mv dotdipper /usr/local/bin/
+
+# Intel Mac
+curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-x86_64-apple-darwin.tar.gz
+tar -xzf dotdipper-x86_64-apple-darwin.tar.gz
+sudo mv dotdipper /usr/local/bin/
+
+# Linux x86_64
+curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf dotdipper-x86_64-unknown-linux-gnu.tar.gz
+sudo mv dotdipper /usr/local/bin/
+
+# Also install age for secrets encryption
+# macOS: brew install age
+# Ubuntu/Debian: sudo apt install age
+# Arch Linux: sudo pacman -S age
+```
+
+#### Build from Source
+
+```bash
+# Prerequisites: Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
 # Clone and build
-git clone https://github.com/yourusername/dotdipper
+git clone https://github.com/psyysp/dotdipper
 cd dotdipper
 cargo install --path .
 
@@ -294,7 +320,7 @@ tracked_files = [
 ]
 
 [github]
-username = "yourusername"
+username = "psyysp"
 repo_name = "dotfiles"
 private = true
 
@@ -613,6 +639,7 @@ MIT License - See LICENSE file for details
 
 **Version:** 0.3.0 (All Milestones Complete)  
 **Status:** Production-ready  
-**Last Updated:** November 11, 2025
+**Last Updated:** January 16, 2026  
+**Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
 
 **Happy dotfile management! 🚀**
