@@ -24,7 +24,6 @@ pub struct Profile {
 
 #[derive(Debug, Clone)]
 pub struct ProfilePaths {
-    pub config: PathBuf,
     pub compiled: PathBuf,
     pub manifest: PathBuf,
     pub root: PathBuf,
@@ -234,94 +233,10 @@ pub fn profile_paths(name: &str) -> Result<ProfilePaths> {
     ensure_exists(name)?;
     
     Ok(ProfilePaths {
-        config: profile_dir.join("config.toml"),
         compiled: profile_dir.join("compiled"),
         manifest: profile_dir.join("manifest.lock"),
         root: profile_dir,
     })
-}
-
-/// Build overlay view: base (default) + overlay (selected profile)
-/// Returns merged config and compiled path
-pub fn build_overlay(profile_name: &str) -> Result<(Config, PathBuf)> {
-    let dotdipper_dir = get_dotdipper_dir()?;
-    let _profiles_dir = dotdipper_dir.join("profiles");
-    
-    // Ensure default profile exists
-    ensure_default_profile()?;
-    
-    // Load base (default profile) config
-    let default_paths = profile_paths("default")?;
-    let mut base_config = if default_paths.config.exists() {
-        crate::cfg::load(&default_paths.config)?
-    } else {
-        Config::default()
-    };
-    
-    // If requesting default, return as-is
-    if profile_name == "default" {
-        return Ok((base_config, default_paths.compiled));
-    }
-    
-    // Load overlay profile config
-    let overlay_paths = profile_paths(profile_name)?;
-    if !overlay_paths.config.exists() {
-        // Return base if overlay doesn't have config yet
-        return Ok((base_config, overlay_paths.compiled));
-    }
-    
-    let overlay_config = crate::cfg::load(&overlay_paths.config)?;
-    
-    // Merge configs: overlay takes precedence
-    merge_configs(&mut base_config, &overlay_config);
-    
-    Ok((base_config, overlay_paths.compiled))
-}
-
-/// Merge overlay config into base (overlay wins)
-fn merge_configs(base: &mut Config, overlay: &Config) {
-    // Merge general settings
-    if overlay.general.tracked_files.len() > 0 {
-        base.general.tracked_files = overlay.general.tracked_files.clone();
-    }
-    
-    // Merge file overrides
-    for (path, override_val) in &overlay.files {
-        base.files.insert(path.clone(), override_val.clone());
-    }
-    
-    // Merge packages
-    if !overlay.packages.common.is_empty() {
-        base.packages.common = overlay.packages.common.clone();
-    }
-    if !overlay.packages.macos.is_empty() {
-        base.packages.macos = overlay.packages.macos.clone();
-    }
-    if !overlay.packages.linux.is_empty() {
-        base.packages.linux = overlay.packages.linux.clone();
-    }
-    
-    // Merge patterns
-    if !overlay.exclude_patterns.is_empty() {
-        base.exclude_patterns = overlay.exclude_patterns.clone();
-    }
-    if !overlay.include_patterns.is_empty() {
-        base.include_patterns = overlay.include_patterns.clone();
-    }
-    
-    // Overlay specific configs
-    if overlay.secrets.is_some() {
-        base.secrets = overlay.secrets.clone();
-    }
-    if overlay.hooks.is_some() {
-        base.hooks = overlay.hooks.clone();
-    }
-    if overlay.daemon.is_some() {
-        base.daemon = overlay.daemon.clone();
-    }
-    if overlay.remote.is_some() {
-        base.remote = overlay.remote.clone();
-    }
 }
 
 fn get_dotdipper_dir() -> Result<PathBuf> {
@@ -358,8 +273,6 @@ fn ensure_default_profile() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    
     #[test]
     fn test_profile_name_validation() {
         // Valid names would not trigger errors in actual create
@@ -371,16 +284,4 @@ mod tests {
         assert!("bad\\path".contains('\\'));
     }
     
-    #[test]
-    fn test_config_merge() {
-        let mut base = Config::default();
-        base.general.tracked_files = vec![PathBuf::from("/base/file")];
-        
-        let mut overlay = Config::default();
-        overlay.general.tracked_files = vec![PathBuf::from("/overlay/file")];
-        
-        merge_configs(&mut base, &overlay);
-        
-        assert_eq!(base.general.tracked_files, vec![PathBuf::from("/overlay/file")]);
-    }
 }

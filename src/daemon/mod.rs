@@ -19,7 +19,6 @@ use crate::cfg::Config;
 use crate::ui;
 
 const DAEMON_PID_FILE: &str = "daemon.pid";
-const DEFAULT_DEBOUNCE_MS: u64 = 1500;
 
 /// Start the daemon
 pub fn start(config: &Config) -> Result<()> {

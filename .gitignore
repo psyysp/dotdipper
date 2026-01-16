@@ -20,6 +20,7 @@ Thumbs.db
 
 # dotdipper specific
 .dotctl/
+homebrew-tap/
 
 # Test artifacts
 *.profraw
@@ -65,3 +66,4 @@ QUICK_START.md
 README_FEATURES.md
 REMOTE_BACKENDS.md
 VERIFICATION_CHECKLIST.md
+README_VERIFICATION_REPORT.md

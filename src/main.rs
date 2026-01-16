@@ -54,17 +54,6 @@ enum Commands {
         all: bool,
     },
 
-    /// Create a snapshot of current dotfiles state
-    Snapshot {
-        /// Force snapshot even if no changes detected
-        #[arg(short, long)]
-        force: bool,
-        
-        /// Snapshot message/description
-        #[arg(short, long)]
-        message: Option<String>,
-    },
-
     /// Show status of dotfiles (changes since last snapshot)
     Status {
         /// Show detailed diff
@@ -102,19 +91,19 @@ enum Commands {
     #[command(subcommand)]
     Secrets(SecretsCommands),
 
-    /// Manage snapshots (Milestone 3 - stub)
+    /// Manage snapshots (create, list, rollback, delete)
     #[command(subcommand)]
-    SnapshotCmd(SnapshotCommands),
+    Snapshot(SnapshotCommands),
 
-    /// Manage profiles (Milestone 4 - stub)
+    /// Manage profiles
     #[command(subcommand)]
     Profile(ProfileCommands),
 
-    /// Manage remote backups (Milestone 5 - stub)
+    /// Manage remote backups
     #[command(subcommand)]
     Remote(RemoteCommands),
 
-    /// Control auto-sync daemon (Milestone 6 - stub)
+    /// Control auto-sync daemon
     #[command(subcommand)]
     Daemon(DaemonCommands),
 
@@ -217,6 +206,10 @@ enum SnapshotCommands {
         /// Snapshot description
         #[arg(short, long)]
         message: Option<String>,
+        
+        /// Force snapshot even if no changes detected
+        #[arg(short, long)]
+        force: bool,
     },
     
     /// List all snapshots
@@ -275,8 +268,24 @@ enum ProfileCommands {
 enum RemoteCommands {
     /// Configure remote backend
     Set {
-        /// Remote kind (github, s3, gcs, webdav)
+        /// Remote kind (localfs, s3, gcs, webdav)
         kind: String,
+        
+        /// Endpoint URL or path (required for localfs, webdav)
+        #[arg(long)]
+        endpoint: Option<String>,
+        
+        /// S3 bucket name (required for s3)
+        #[arg(long)]
+        bucket: Option<String>,
+        
+        /// AWS region (for s3, defaults to us-east-1)
+        #[arg(long)]
+        region: Option<String>,
+        
+        /// Prefix/path within bucket or endpoint
+        #[arg(long)]
+        prefix: Option<String>,
     },
     
     /// Show remote configuration
@@ -328,14 +337,13 @@ async fn main() -> Result<()> {
     let result = match cli.command {
         Commands::Init { force } => cmd_init(config_path, force).await,
         Commands::Discover { write, all } => cmd_discover(config_path, write, all).await,
-        Commands::Snapshot { force, message } => cmd_snapshot(config_path, force, message).await,
         Commands::Status { detailed } => cmd_status(config_path, detailed).await,
         Commands::Diff { detailed } => cmd_diff(config_path, detailed).await,
         Commands::Apply { force, interactive, only, unsafe_allow_outside_home } => {
             cmd_apply(config_path, force, interactive, only, unsafe_allow_outside_home).await
         }
         Commands::Secrets(subcmd) => cmd_secrets(config_path, subcmd).await,
-        Commands::SnapshotCmd(subcmd) => cmd_snapshot_mgmt(config_path, subcmd).await,
+        Commands::Snapshot(subcmd) => cmd_snapshot(config_path, subcmd).await,
         Commands::Profile(subcmd) => cmd_profile(config_path, subcmd).await,
         Commands::Remote(subcmd) => cmd_remote(config_path, subcmd).await,
         Commands::Daemon(subcmd) => cmd_daemon(config_path, subcmd).await,
@@ -387,7 +395,7 @@ async fn cmd_discover(config_path: PathBuf, write: bool, all: bool) -> Result<()
     Ok(())
 }
 
-async fn cmd_snapshot(config_path: PathBuf, force: bool, _message: Option<String>) -> Result<()> {
+async fn cmd_snapshot_create(config_path: PathBuf, force: bool, message: Option<String>) -> Result<()> {
     ui::info("Creating snapshot...");
     let config = cfg::load(&config_path)?;
     
@@ -399,16 +407,12 @@ async fn cmd_snapshot(config_path: PathBuf, force: bool, _message: Option<String
         }
     }
     
-    let snapshot = repo::snapshot(&config, force)?;
-    ui::success(&format!("Snapshot created with {} files", snapshot.file_count));
+    // First, compile tracked files into the compiled directory
+    let snapshot_result = repo::snapshot(&config, force)?;
+    ui::success(&format!("Compiled {} files", snapshot_result.file_count));
     
-    // Run post-snapshot hooks
-    if let Some(hooks) = &config.hooks {
-        for hook in &hooks.post_snapshot {
-            ui::info(&format!("Running post-snapshot hook: {}", hook));
-            run_hook(hook)?;
-        }
-    }
+    // Then create a versioned snapshot with the message
+    snapshots::create(&config, message)?;
     
     Ok(())
 }
@@ -698,21 +702,22 @@ async fn cmd_secrets(config_path: PathBuf, subcmd: SecretsCommands) -> Result<()
     Ok(())
 }
 
-async fn cmd_snapshot_mgmt(config_path: PathBuf, subcmd: SnapshotCommands) -> Result<()> {
-    let config = cfg::load(&config_path)?;
-    
+async fn cmd_snapshot(config_path: PathBuf, subcmd: SnapshotCommands) -> Result<()> {
     match subcmd {
-        SnapshotCommands::Create { message } => {
-            snapshots::create(&config, message)?;
+        SnapshotCommands::Create { message, force } => {
+            cmd_snapshot_create(config_path, force, message).await?;
         }
         SnapshotCommands::List => {
+            let config = cfg::load(&config_path)?;
             let snaps = snapshots::list(&config)?;
             ui::info(&format!("Found {} snapshots", snaps.len()));
         }
         SnapshotCommands::Rollback { id, force } => {
+            let config = cfg::load(&config_path)?;
             snapshots::rollback(&config, &id, force)?;
         }
         SnapshotCommands::Delete { id, force } => {
+            let config = cfg::load(&config_path)?;
             snapshots::delete(&config, &id, force)?;
         }
     }
@@ -746,8 +751,21 @@ async fn cmd_remote(config_path: PathBuf, subcmd: RemoteCommands) -> Result<()> 
     let config = cfg::load(&config_path)?;
     
     match subcmd {
-        RemoteCommands::Set { kind } => {
-            remote::set(&config, &kind, vec![])?;
+        RemoteCommands::Set { kind, endpoint, bucket, region, prefix } => {
+            let mut options = Vec::new();
+            if let Some(e) = endpoint {
+                options.push(("endpoint".to_string(), e));
+            }
+            if let Some(b) = bucket {
+                options.push(("bucket".to_string(), b));
+            }
+            if let Some(r) = region {
+                options.push(("region".to_string(), r));
+            }
+            if let Some(p) = prefix {
+                options.push(("prefix".to_string(), p));
+            }
+            remote::set(&config, &kind, options)?;
         }
         RemoteCommands::Show => {
             remote::show(&config)?;

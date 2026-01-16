@@ -11,8 +11,6 @@ use crate::ui;
 
 pub struct Snapshot {
     pub file_count: usize,
-    pub total_size: u64,
-    pub manifest: Manifest,
 }
 
 pub struct Status {
@@ -83,8 +81,6 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
             ui::info("No changes detected, skipping snapshot");
             return Ok(Snapshot {
                 file_count: current_manifest.files.len(),
-                total_size: current_manifest.files.values().map(|f| f.size).sum(),
-                manifest: current_manifest,
             });
         }
     }
@@ -130,12 +126,8 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     // Save manifest
     manifest.save(&manifest_path)?;
     
-    let total_size = manifest.files.values().map(|f| f.size).sum();
-    
     Ok(Snapshot {
         file_count: manifest.files.len(),
-        total_size,
-        manifest,
     })
 }
 
@@ -193,30 +185,6 @@ pub fn status(config: &Config) -> Result<Status> {
     }
     
     Ok(status)
-}
-
-pub fn apply(config: &Config, force: bool) -> Result<()> {
-    let compiled_path = get_compiled_path()?;
-    
-    if !compiled_path.exists() {
-        anyhow::bail!("Compiled directory not found at {}. Run 'dotdipper pull' first.", compiled_path.display());
-    }
-    
-    let manifest_path = get_manifest_path()?;
-    if !manifest_path.exists() {
-        anyhow::bail!("Manifest not found. Run 'dotdipper pull' first.");
-    }
-    
-    let manifest = Manifest::load(&manifest_path)?;
-    
-    let opts = apply::ApplyOpts {
-        force,
-        allow_outside_home: false,
-    };
-    
-    let _actions = apply::apply(&compiled_path, &manifest, config, &opts)?;
-    
-    Ok(())
 }
 
 pub fn check_manifest(config_path: &Path) -> Result<()> {

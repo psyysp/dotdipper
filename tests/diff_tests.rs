@@ -1,7 +1,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]
@@ -110,7 +109,6 @@ tracked_files = []
 #[cfg(test)]
 mod integration {
     use super::*;
-    use std::io::Write;
     
     #[test]
     fn test_diff_shows_changes() {

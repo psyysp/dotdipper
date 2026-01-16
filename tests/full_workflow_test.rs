@@ -9,7 +9,6 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
-use std::io::Write;
 use tempfile::TempDir;
 
 #[test]
@@ -310,7 +309,8 @@ post_snapshot = ["echo 'post' >> {}"]
         cmd.env("HOME", temp_dir.path())
             .arg("--config")
             .arg(&config_path)
-            .arg("snapshot");
+            .arg("snapshot")
+            .arg("create");
         
         cmd.assert().success();
         

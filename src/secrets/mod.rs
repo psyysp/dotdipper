@@ -378,8 +378,6 @@ pub fn check_age() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
-    use std::io::Write;
     
     #[test]
     fn test_provider_from_str() {

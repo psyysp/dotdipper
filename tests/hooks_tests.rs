@@ -62,7 +62,8 @@ post_snapshot = ["echo 'Snapshot complete'"]
     cmd.env("HOME", temp_dir.path())
         .arg("--config")
         .arg(&config_path)
-        .arg("snapshot");
+        .arg("snapshot")
+        .arg("create");
     
     // Should execute hooks
     cmd.assert().success();
@@ -93,7 +94,8 @@ pre_snapshot = ["exit 1"]
     cmd.env("HOME", temp_dir.path())
         .arg("--config")
         .arg(&config_path)
-        .arg("snapshot");
+        .arg("snapshot")
+        .arg("create");
     
     // Should fail due to hook failure
     cmd.assert()

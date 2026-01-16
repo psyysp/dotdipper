@@ -9,7 +9,7 @@ fn test_help_command() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("A CLI tool for managing dotfiles"));
+        .stdout(predicate::str::contains("dotfiles manager"));
 }
 
 #[test]

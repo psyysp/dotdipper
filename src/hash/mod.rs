@@ -59,60 +59,6 @@ impl Manifest {
     pub fn has_file(&self, path: &Path) -> bool {
         self.files.contains_key(path)
     }
-
-    pub fn remove_file(&mut self, path: &Path) -> Option<FileHash> {
-        self.files.remove(path)
-    }
-
-    pub fn diff(&self, other: &Manifest) -> ManifestDiff {
-        let mut diff = ManifestDiff::default();
-
-        // Check for modified and deleted files
-        for (path, hash) in &self.files {
-            match other.files.get(path) {
-                Some(other_hash) => {
-                    if hash.hash != other_hash.hash {
-                        diff.modified.push(path.clone());
-                    }
-                }
-                None => diff.deleted.push(path.clone()),
-            }
-        }
-
-        // Check for added files
-        for path in other.files.keys() {
-            if !self.files.contains_key(path) {
-                diff.added.push(path.clone());
-            }
-        }
-
-        diff
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct ManifestDiff {
-    pub added: Vec<PathBuf>,
-    pub modified: Vec<PathBuf>,
-    pub deleted: Vec<PathBuf>,
-}
-
-impl ManifestDiff {
-    pub fn is_empty(&self) -> bool {
-        self.added.is_empty() && self.modified.is_empty() && self.deleted.is_empty()
-    }
-
-    pub fn print_summary(&self) {
-        if !self.added.is_empty() {
-            println!("Added files: {}", self.added.len());
-        }
-        if !self.modified.is_empty() {
-            println!("Modified files: {}", self.modified.len());
-        }
-        if !self.deleted.is_empty() {
-            println!("Deleted files: {}", self.deleted.len());
-        }
-    }
 }
 
 pub fn hash_file(path: &Path) -> Result<FileHash> {
@@ -225,43 +171,4 @@ mod tests {
         assert!(!hash.hash.is_empty());
     }
 
-    #[test]
-    fn test_manifest_diff() {
-        let mut manifest1 = Manifest::new();
-        let mut manifest2 = Manifest::new();
-        
-        let hash1 = FileHash {
-            path: PathBuf::from("/test/file1.txt"),
-            hash: "hash1".to_string(),
-            size: 100,
-            mode: 0o644,
-            modified: Utc::now(),
-        };
-        
-        let hash2 = FileHash {
-            path: PathBuf::from("/test/file2.txt"),
-            hash: "hash2".to_string(),
-            size: 200,
-            mode: 0o644,
-            modified: Utc::now(),
-        };
-        
-        let hash1_modified = FileHash {
-            path: PathBuf::from("/test/file1.txt"),
-            hash: "hash1_modified".to_string(),
-            size: 150,
-            mode: 0o644,
-            modified: Utc::now(),
-        };
-        
-        manifest1.add_file(hash1.clone());
-        manifest2.add_file(hash1_modified);
-        manifest2.add_file(hash2);
-        
-        let diff = manifest1.diff(&manifest2);
-        
-        assert_eq!(diff.modified.len(), 1);
-        assert_eq!(diff.added.len(), 1);
-        assert_eq!(diff.deleted.len(), 0);
-    }
 }

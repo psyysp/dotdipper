@@ -34,15 +34,6 @@ impl DiffStatus {
             DiffStatus::Identical => "=".dimmed(),
         }
     }
-    
-    pub fn description(&self) -> &str {
-        match self {
-            DiffStatus::Modified => "modified",
-            DiffStatus::New => "new",
-            DiffStatus::Missing => "missing from system",
-            DiffStatus::Identical => "identical",
-        }
-    }
 }
 
 /// Generate diff between compiled files and system files
@@ -276,10 +267,11 @@ mod tests {
     
     #[test]
     fn test_diff_status_symbol() {
-        assert_eq!(DiffStatus::Modified.description(), "modified");
-        assert_eq!(DiffStatus::New.description(), "new");
-        assert_eq!(DiffStatus::Missing.description(), "missing from system");
-        assert_eq!(DiffStatus::Identical.description(), "identical");
+        // Verify symbols are created without panicking
+        let _ = DiffStatus::Modified.symbol();
+        let _ = DiffStatus::New.symbol();
+        let _ = DiffStatus::Missing.symbol();
+        let _ = DiffStatus::Identical.symbol();
     }
 }
 

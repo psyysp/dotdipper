@@ -392,28 +392,3 @@ pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
     
     Ok(())
 }
-
-pub fn check_package_manager(os: &str) -> Result<String> {
-    let pm = match os {
-        "macos" => "brew",
-        "ubuntu" | "debian" => "apt",
-        "arch" | "manjaro" => "pacman",
-        "fedora" | "redhat" => "dnf",
-        _ => "unknown",
-    };
-    
-    let check_cmd = match os {
-        "macos" => "brew",
-        _ => pm,
-    };
-    
-    let output = Command::new("which")
-        .arg(check_cmd)
-        .output();
-    
-    if output.is_ok() && output.unwrap().status.success() {
-        Ok(pm.to_string())
-    } else {
-        anyhow::bail!("Package manager '{}' not found for OS '{}'", pm, os)
-    }
-}

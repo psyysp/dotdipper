@@ -59,10 +59,51 @@ impl RemoteKind {
 }
 
 /// Configure a remote
-pub fn set(_config: &Config, kind_str: &str, _options: Vec<(String, String)>) -> Result<()> {
+pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> Result<()> {
     let kind = RemoteKind::from_str(kind_str)?;
     
     ui::info(&format!("Configuring remote: {:?}", kind));
+    
+    // Parse options into a hashmap for easier lookup
+    let opts: std::collections::HashMap<String, String> = options.into_iter().collect();
+    
+    // Get endpoint value, expanding ~ to home directory if present
+    let endpoint = opts.get("endpoint").map(|e| {
+        if e.starts_with("~/") {
+            if let Some(home) = dirs::home_dir() {
+                home.join(&e[2..]).to_string_lossy().to_string()
+            } else {
+                e.clone()
+            }
+        } else {
+            e.clone()
+        }
+    });
+    
+    // Validate required options based on remote kind
+    match kind {
+        RemoteKind::LocalFS => {
+            if endpoint.is_none() {
+                bail!("LocalFS remote requires --endpoint (directory path).\n\
+                       Example: dotdipper remote set localfs --endpoint ~/dotfiles-backup");
+            }
+        }
+        RemoteKind::S3 => {
+            if opts.get("bucket").is_none() {
+                bail!("S3 remote requires --bucket.\n\
+                       Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1");
+            }
+        }
+        RemoteKind::WebDAV => {
+            if endpoint.is_none() {
+                bail!("WebDAV remote requires --endpoint (URL).\n\
+                       Example: dotdipper remote set webdav --endpoint https://dav.example.com/dotfiles");
+            }
+        }
+        RemoteKind::GitHub | RemoteKind::GCS => {
+            // GitHub uses vcs module, GCS may have different requirements
+        }
+    }
     
     // Update config with remote settings
     let dotdipper_dir = get_dotdipper_dir()?;
@@ -74,18 +115,37 @@ pub fn set(_config: &Config, kind_str: &str, _options: Vec<(String, String)>) ->
     };
     
     let remote_config = crate::cfg::RemoteConfig {
-        kind: kind_str.to_string(),
-        bucket: None,
-        prefix: None,
-        region: None,
-        endpoint: None,
+        kind: kind_str.to_lowercase(),
+        bucket: opts.get("bucket").cloned(),
+        prefix: opts.get("prefix").cloned(),
+        region: opts.get("region").cloned(),
+        endpoint,
     };
     
     cfg.remote = Some(remote_config);
     crate::cfg::save(&config_path, &cfg)?;
     
     ui::success(&format!("Remote configured: {}", kind_str));
-    ui::hint("Set credentials via environment variables (AWS_ACCESS_KEY_ID, etc.)");
+    
+    // Show configured values
+    if let Some(ref remote) = cfg.remote {
+        if let Some(ref e) = remote.endpoint {
+            ui::info(&format!("  Endpoint: {}", e));
+        }
+        if let Some(ref b) = remote.bucket {
+            ui::info(&format!("  Bucket: {}", b));
+        }
+        if let Some(ref r) = remote.region {
+            ui::info(&format!("  Region: {}", r));
+        }
+        if let Some(ref p) = remote.prefix {
+            ui::info(&format!("  Prefix: {}", p));
+        }
+    }
+    
+    if matches!(kind, RemoteKind::S3) {
+        ui::hint("Set credentials via environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)");
+    }
     
     Ok(())
 }

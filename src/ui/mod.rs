@@ -46,18 +46,6 @@ pub fn progress_bar(total: u64, message: &str) -> ProgressBar {
     pb
 }
 
-pub fn spinner(message: &str) -> ProgressBar {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")
-            .expect("Invalid spinner template"),
-    );
-    pb.set_message(message.to_string());
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb
-}
-
 pub fn prompt_confirm(message: &str, default: bool) -> bool {
     dialoguer::Confirm::new()
         .with_prompt(message)
@@ -75,15 +63,6 @@ pub fn prompt_text(message: &str, default: Option<&str>) -> String {
     }
     
     prompt.interact_text().unwrap_or_default()
-}
-
-pub fn prompt_select<T: ToString>(message: &str, items: &[T], default: usize) -> usize {
-    dialoguer::Select::new()
-        .with_prompt(message)
-        .items(items)
-        .default(default)
-        .interact()
-        .unwrap_or(default)
 }
 
 pub fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
@@ -118,17 +97,4 @@ pub fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
         }
         println!();
     }
-}
-
-pub fn format_bytes(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
-    
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-    
-    format!("{:.1} {}", size, UNITS[unit_index])
 }

@@ -200,7 +200,6 @@ fn count_files_and_size(dir: &Path) -> Result<(usize, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     
     #[test]
     fn test_bundle_meta_serialization() {
