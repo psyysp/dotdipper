@@ -1,369 +1,355 @@
 name: Release
 
 on:
-    push:
-        tags:
-            - "v*"
+  push:
+    tags:
+      - "v*"
 
 env:
-    CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: always
 
 permissions:
-    contents: write
+  contents: write
 
 jobs:
-    build-macos:
-        name: Build macOS (${{ matrix.target }})
-        runs-on: ${{ matrix.os }}
-        strategy:
-            matrix:
-                include:
-                    - os: macos-latest
-                      target: x86_64-apple-darwin
-                      artifact_name: dotdipper-x86_64-apple-darwin
-                    - os: macos-latest
-                      target: aarch64-apple-darwin
-                      artifact_name: dotdipper-aarch64-apple-darwin
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: dotdipper-x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: dotdipper-aarch64-apple-darwin
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-            - name: Cache cargo registry
-              uses: actions/cache@v4
-              with:
-                  path: ~/.cargo/registry
-                  key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-            - name: Cache cargo index
-              uses: actions/cache@v4
-              with:
-                  path: ~/.cargo/git
-                  key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
-            - name: Build release binary
-              run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
 
-            - name: Create tarball
-              run: |
-                  mkdir -p release
-                  cp target/${{ matrix.target }}/release/dotdipper release/
-                  cd release
-                  tar -czvf ../${{ matrix.artifact_name }}.tar.gz dotdipper
-                  cd ..
-                  shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+      - name: Create tarball
+        run: |
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/dotdipper release/
+          cd release
+          tar -czvf ../${{ matrix.artifact_name }}.tar.gz dotdipper
+          cd ..
+          shasum -a 256 ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ matrix.artifact_name }}
-                  path: |
-                      ${{ matrix.artifact_name }}.tar.gz
-                      ${{ matrix.artifact_name }}.tar.gz.sha256
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.tar.gz.sha256
 
-    build-linux:
-        name: Build Linux (${{ matrix.target }})
-        runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                include:
-                    - target: x86_64-unknown-linux-gnu
-                      artifact_name: dotdipper-x86_64-unknown-linux-gnu
-                    - target: aarch64-unknown-linux-gnu
-                      artifact_name: dotdipper-aarch64-unknown-linux-gnu
+  build-linux:
+    name: Build Linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: dotdipper-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            artifact_name: dotdipper-aarch64-unknown-linux-gnu
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-            - name: Install cross-compilation tools
-              if: matrix.target == 'aarch64-unknown-linux-gnu'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
-            - name: Cache cargo registry
-              uses: actions/cache@v4
-              with:
-                  path: ~/.cargo/registry
-                  key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-            - name: Build release binary
-              run: |
-                  if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-                    export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-                  fi
-                  cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary
+        run: |
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          cargo build --release --target ${{ matrix.target }}
 
-            - name: Create tarball
-              run: |
-                  mkdir -p release
-                  cp target/${{ matrix.target }}/release/dotdipper release/
-                  cd release
-                  tar -czvf ../${{ matrix.artifact_name }}.tar.gz dotdipper
-                  cd ..
-                  sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
+      - name: Create tarball
+        run: |
+          mkdir -p release
+          cp target/${{ matrix.target }}/release/dotdipper release/
+          cd release
+          tar -czvf ../${{ matrix.artifact_name }}.tar.gz dotdipper
+          cd ..
+          sha256sum ${{ matrix.artifact_name }}.tar.gz > ${{ matrix.artifact_name }}.tar.gz.sha256
 
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ matrix.artifact_name }}
-                  path: |
-                      ${{ matrix.artifact_name }}.tar.gz
-                      ${{ matrix.artifact_name }}.tar.gz.sha256
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.tar.gz
+            ${{ matrix.artifact_name }}.tar.gz.sha256
 
-    build-windows:
-        name: Build Windows (${{ matrix.target }})
-        runs-on: windows-latest
-        strategy:
-            matrix:
-                include:
-                    - target: x86_64-pc-windows-msvc
-                      artifact_name: dotdipper-x86_64-pc-windows-msvc
+  build-windows:
+    name: Build Windows (${{ matrix.target }})
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            artifact_name: dotdipper-x86_64-pc-windows-msvc
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target }}
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
-            - name: Cache cargo registry
-              uses: actions/cache@v4
-              with:
-                  path: ~/.cargo/registry
-                  key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-            - name: Build release binary
-              run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
 
-            - name: Create zip archive
-              shell: pwsh
-              run: |
-                  New-Item -ItemType Directory -Force -Path release
-                  Copy-Item "target/${{ matrix.target }}/release/dotdipper.exe" -Destination release/
-                  Compress-Archive -Path release/dotdipper.exe -DestinationPath "${{ matrix.artifact_name }}.zip"
-                  $hash = (Get-FileHash "${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
-                  "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256" -Encoding ascii
+      - name: Create zip archive
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item "target/${{ matrix.target }}/release/dotdipper.exe" -Destination release/
+          Compress-Archive -Path release/dotdipper.exe -DestinationPath "${{ matrix.artifact_name }}.zip"
+          $hash = (Get-FileHash "${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256" -Encoding ascii
 
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  name: ${{ matrix.artifact_name }}
-                  path: |
-                      ${{ matrix.artifact_name }}.zip
-                      ${{ matrix.artifact_name }}.zip.sha256
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ matrix.artifact_name }}.zip
+            ${{ matrix.artifact_name }}.zip.sha256
 
-    create-release:
-        name: Create GitHub Release
-        needs: [build-macos, build-linux, build-windows]
-        runs-on: ubuntu-latest
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-            - name: Download all artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  path: artifacts
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-            - name: Prepare release assets
-              run: |
-                  mkdir -p release-assets
-                  find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
-                  ls -la release-assets/
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
+          ls -la release-assets/
 
-            - name: Generate release notes
-              id: release_notes
-              run: |
-                  VERSION=${GITHUB_REF#refs/tags/}
-                  echo "version=$VERSION" >> $GITHUB_OUTPUT
-                  cat << 'EOF' > release_notes.md
-                  ## Dotdipper $VERSION
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          cat > release_notes.md << EOF
+          ## Dotdipper $VERSION
 
-                  ### Installation
+          ### Installation
 
-                  #### macOS (Homebrew) - Recommended
-                  ```bash
-                  brew tap psyysp/dotdipper
-                  brew install dotdipper
-                  ```
+          #### macOS (Homebrew) - Recommended
+          \`\`\`bash
+          brew tap psyysp/dotdipper
+          brew install dotdipper
+          \`\`\`
 
-                  #### Arch Linux (AUR)
-                  ```bash
-                  yay -S dotdipper
-                  # or
-                  yay -S dotdipper-bin
-                  ```
+          #### Arch Linux (AUR)
+          \`\`\`bash
+          yay -S dotdipper
+          # or
+          yay -S dotdipper-bin
+          \`\`\`
 
-                  #### Cargo (Rust)
-                  ```bash
-                  cargo install dotdipper
-                  ```
+          #### Cargo (Rust)
+          \`\`\`bash
+          cargo install dotdipper
+          \`\`\`
 
-                  #### Windows (Scoop)
-                  ```powershell
-                  scoop bucket add dotdipper https://github.com/psyysp/scoop-dotdipper
-                  scoop install dotdipper
-                  ```
+          #### Windows (Scoop)
+          \`\`\`powershell
+          scoop bucket add dotdipper https://github.com/psyysp/scoop-dotdipper
+          scoop install dotdipper
+          \`\`\`
 
-                  #### Manual Download
-                  | Platform | Architecture | Download |
-                  |----------|--------------|----------|
-                  | macOS | Apple Silicon | [dotdipper-aarch64-apple-darwin.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-aarch64-apple-darwin.tar.gz) |
-                  | macOS | Intel | [dotdipper-x86_64-apple-darwin.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-apple-darwin.tar.gz) |
-                  | Linux | x86_64 | [dotdipper-x86_64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-unknown-linux-gnu.tar.gz) |
-                  | Linux | ARM64 | [dotdipper-aarch64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-aarch64-unknown-linux-gnu.tar.gz) |
-                  | Windows | x86_64 | [dotdipper-x86_64-pc-windows-msvc.zip](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-pc-windows-msvc.zip) |
+          #### Manual Download
+          | Platform | Architecture | Download |
+          |----------|--------------|----------|
+          | macOS | Apple Silicon | [dotdipper-aarch64-apple-darwin.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-aarch64-apple-darwin.tar.gz) |
+          | macOS | Intel | [dotdipper-x86_64-apple-darwin.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-apple-darwin.tar.gz) |
+          | Linux | x86_64 | [dotdipper-x86_64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-unknown-linux-gnu.tar.gz) |
+          | Linux | ARM64 | [dotdipper-aarch64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-aarch64-unknown-linux-gnu.tar.gz) |
+          | Windows | x86_64 | [dotdipper-x86_64-pc-windows-msvc.zip](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-pc-windows-msvc.zip) |
 
-                  ### Checksums
-                  SHA256 checksums are provided for all binaries.
+          ### Checksums
+          SHA256 checksums are provided for all binaries.
 
-                  ### What's Changed
-                  See the [CHANGELOG](https://github.com/psyysp/dotdipper/blob/main/CHANGELOG.md) for details.
-                  EOF
-                  # Replace $VERSION placeholder
-                  sed -i "s/\$VERSION/$VERSION/g" release_notes.md
+          ### What's Changed
+          See the [CHANGELOG](https://github.com/psyysp/dotdipper/blob/main/CHANGELOG.md) for details.
+          EOF
 
-            - name: Create Release
-              uses: softprops/action-gh-release@v1
-              with:
-                  body_path: release_notes.md
-                  files: release-assets/*
-                  draft: false
-                  prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body_path: release_notes.md
+          files: release-assets/*
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    update-homebrew:
-        name: Update Homebrew Formula
-        needs: create-release
-        runs-on: ubuntu-latest
-        if: "!contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha')"
+  update-homebrew:
+    name: Update Homebrew Formula
+    needs: create-release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
 
-        steps:
-            - name: Checkout tap repository
-              uses: actions/checkout@v4
-              with:
-                  repository: psyysp/homebrew-dotdipper
-                  token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-                  path: homebrew-tap
+    steps:
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: psyysp/homebrew-dotdipper
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
 
-            - name: Download all artifacts
-              uses: actions/download-artifact@v4
-              with:
-                  path: artifacts
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-            - name: Update formula
-              run: |
-                  VERSION=${GITHUB_REF#refs/tags/v}
+      - name: Update formula
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
+          SHA256_MACOS_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
 
-                  # Get SHA256 checksums for macOS platforms
-                  SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-                  SHA256_MACOS_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
+          echo "Updating formula to version $VERSION"
+          echo "  macOS x86_64: $SHA256_MACOS_X86"
+          echo "  macOS ARM64:  $SHA256_MACOS_ARM"
 
-                  echo "Updating formula to version $VERSION"
-                  echo "  macOS x86_64: $SHA256_MACOS_X86"
-                  echo "  macOS ARM64:  $SHA256_MACOS_ARM"
+          cat > homebrew-tap/Formula/dotdipper.rb << EOF
+          # Homebrew Formula for Dotdipper
+          # brew tap psyysp/dotdipper && brew install dotdipper
 
-                  # Update formula for macOS only
-                  cat > homebrew-tap/Formula/dotdipper.rb << FORMULA_EOF
-# Homebrew Formula for Dotdipper
-# This formula installs pre-built binaries for macOS
-#
-# To use this tap:
-#   brew tap psyysp/dotdipper
-#   brew install dotdipper
-#
-# Or install directly:
-#   brew install psyysp/dotdipper/dotdipper
+          class Dotdipper < Formula
+            desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
+            homepage "https://github.com/psyysp/dotdipper"
+            version "$VERSION"
+            license "MIT"
 
-class Dotdipper < Formula
-  desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
-  homepage "https://github.com/psyysp/dotdipper"
-  version "$VERSION"
-  license "MIT"
+            on_macos do
+              on_arm do
+                url "https://github.com/psyysp/dotdipper/releases/download/v$VERSION/dotdipper-aarch64-apple-darwin.tar.gz"
+                sha256 "$SHA256_MACOS_ARM"
+              end
+              on_intel do
+                url "https://github.com/psyysp/dotdipper/releases/download/v$VERSION/dotdipper-x86_64-apple-darwin.tar.gz"
+                sha256 "$SHA256_MACOS_X86"
+              end
+            end
 
-  on_macos do
-    on_arm do
-      url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-aarch64-apple-darwin.tar.gz"
-      sha256 "$SHA256_MACOS_ARM"
-    end
-    on_intel do
-      url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-x86_64-apple-darwin.tar.gz"
-      sha256 "$SHA256_MACOS_X86"
-    end
-  end
+            depends_on :macos
+            depends_on "age"
 
-  depends_on :macos
-  depends_on "age"
+            def install
+              bin.install "dotdipper"
+            end
 
-  def install
-    bin.install "dotdipper"
-  end
+            def caveats
+              <<~EOS
+                Dotdipper has been installed!
 
-  def caveats
-    <<~EOS
-      Dotdipper has been installed!
+                To get started:
+                  dotdipper init
 
-      To get started:
-        dotdipper init
+                For help:
+                  dotdipper --help
+              EOS
+            end
 
-      For help:
-        dotdipper --help
+            test do
+              assert_match "dotdipper", shell_output("#{bin}/dotdipper --version")
+            end
+          end
+          EOF
 
-      For secrets encryption, 'age' has been installed as a dependency.
-      To set up secrets encryption:
-        dotdipper secrets init
-    EOS
-  end
+          # Remove leading spaces from heredoc content
+          sed -i 's/^          //' homebrew-tap/Formula/dotdipper.rb
 
-  test do
-    assert_match "dotdipper", shell_output("#{bin}/dotdipper --version")
-    assert_match "dotfiles", shell_output("#{bin}/dotdipper --help")
-  end
-end
-FORMULA_EOF
+          echo "Formula updated:"
+          cat homebrew-tap/Formula/dotdipper.rb
 
-                  echo "Formula updated:"
-                  cat homebrew-tap/Formula/dotdipper.rb
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/dotdipper.rb
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Update dotdipper to ${GITHUB_REF#refs/tags/v}"
+          git push
 
-            - name: Commit and push
-              run: |
-                  cd homebrew-tap
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git add Formula/dotdipper.rb
-                  git diff --staged --quiet && echo "No changes to commit" && exit 0
-                  git commit -m "Update dotdipper to ${GITHUB_REF#refs/tags/v}"
-                  git push
+  publish-crates:
+    name: Publish to crates.io
+    needs: create-release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
 
-    publish-crates:
-        name: Publish to crates.io
-        needs: create-release
-        runs-on: ubuntu-latest
-        if: "!contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha')"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        steps:
-            - name: Checkout code
-              uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-            - name: Install Rust
-              uses: dtolnay/rust-toolchain@stable
-
-            - name: Publish to crates.io
-              run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-              continue-on-error: true
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true
