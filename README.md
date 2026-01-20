@@ -21,7 +21,7 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 - 🤖 **Auto-Sync Daemon** - Watch files and auto-snapshot on changes
 - 🪝 **Hooks System** - Automate workflows with pre/post hooks
 - 🔄 **GitHub Sync** - Push/pull dotfiles to/from GitHub
-- 📦 **Package Management** - Bootstrap new machines with system packages
+- 📦 **Package Management** - Auto-discover and install system packages from dotfiles
 - 🔍 **Smart Diff** - Git-style diffs before applying changes
 - 🛡️ **Safety First** - Backups, confirmations, and HOME boundary enforcement
 
@@ -34,26 +34,68 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 #### macOS (Homebrew) - Recommended
 
 ```bash
-# Add the tap and install
 brew tap psyysp/dotdipper
 brew install dotdipper
-
-# Verify installation
-dotdipper --version
 ```
 
 This will also install `age` (required for secrets encryption) as a dependency.
 
-#### macOS / Linux (Manual Binary)
+#### Arch Linux (AUR)
 
 ```bash
-# Download the latest release for your platform
-# Apple Silicon (M1/M2/M3)
+# Using yay
+yay -S dotdipper
+
+# Or using paru
+paru -S dotdipper
+
+# Binary version (faster install)
+yay -S dotdipper-bin
+```
+
+#### Nix / NixOS
+
+```bash
+# Using flakes (recommended)
+nix profile install github:psyysp/dotdipper
+
+# Or add to your flake.nix inputs
+# inputs.dotdipper.url = "github:psyysp/dotdipper";
+
+# Traditional nix-env
+nix-env -iA nixpkgs.dotdipper  # Once in nixpkgs
+```
+
+#### Cargo (Rust)
+
+```bash
+# Install from crates.io
+cargo install dotdipper
+
+# Or from source
+cargo install --git https://github.com/psyysp/dotdipper
+```
+
+#### Windows (Scoop)
+
+```powershell
+# Add the bucket and install
+scoop bucket add dotdipper https://github.com/psyysp/scoop-dotdipper
+scoop install dotdipper
+
+# Also install age for secrets
+scoop install age
+```
+
+#### Manual Binary Download
+
+```bash
+# macOS Apple Silicon (M1/M2/M3)
 curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-aarch64-apple-darwin.tar.gz
 tar -xzf dotdipper-aarch64-apple-darwin.tar.gz
 sudo mv dotdipper /usr/local/bin/
 
-# Intel Mac
+# macOS Intel
 curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-x86_64-apple-darwin.tar.gz
 tar -xzf dotdipper-x86_64-apple-darwin.tar.gz
 sudo mv dotdipper /usr/local/bin/
@@ -63,10 +105,10 @@ curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-
 tar -xzf dotdipper-x86_64-unknown-linux-gnu.tar.gz
 sudo mv dotdipper /usr/local/bin/
 
-# Also install age for secrets encryption
-# macOS: brew install age
-# Ubuntu/Debian: sudo apt install age
-# Arch Linux: sudo pacman -S age
+# Linux ARM64
+curl -LO https://github.com/psyysp/dotdipper/releases/latest/download/dotdipper-aarch64-unknown-linux-gnu.tar.gz
+tar -xzf dotdipper-aarch64-unknown-linux-gnu.tar.gz
+sudo mv dotdipper /usr/local/bin/
 ```
 
 #### Build from Source
@@ -82,6 +124,25 @@ cargo install --path .
 
 # Verify
 dotdipper --version
+```
+
+#### Install age (Required for Secrets)
+
+```bash
+# macOS
+brew install age
+
+# Ubuntu/Debian
+sudo apt install age
+
+# Arch Linux
+sudo pacman -S age
+
+# Fedora
+sudo dnf install age
+
+# Windows
+scoop install age
 ```
 
 ### First-Time Setup
@@ -200,6 +261,20 @@ dotdipper snapshot delete <id>
 - Safety snapshots before rollback
 - Metadata tracking (file count, size, message)
 
+#### Auto-Pruning
+
+Automatically prune old snapshots after creation to manage disk space:
+
+```toml
+[auto_prune]
+enabled = true
+keep_count = 10      # Keep 10 most recent snapshots
+keep_age = "30d"     # Keep snapshots from last 30 days
+keep_size = "1GB"    # Keep until total size exceeds 1GB
+```
+
+Any combination of criteria can be used. Snapshots are kept if they match ANY criterion. Auto-pruning runs automatically after each snapshot creation.
+
 ### 👤 Multiple Profiles
 
 Manage different dotfile sets for different contexts:
@@ -231,10 +306,22 @@ dotdipper profile remove work
 Push/pull dotfiles to remote storage:
 
 ```bash
-# Configure remote
+# Configure LocalFS remote
 dotdipper remote set localfs --endpoint ~/dotfiles-backup
-# or
+
+# Configure S3 remote (requires --features s3)
 dotdipper remote set s3 --bucket my-dotfiles --region us-east-1
+# Set credentials via environment:
+export AWS_ACCESS_KEY_ID=your-key
+export AWS_SECRET_ACCESS_KEY=your-secret
+# Or use custom S3-compatible endpoint (MinIO, DigitalOcean Spaces):
+export AWS_ENDPOINT_URL=https://nyc3.digitaloceanspaces.com
+
+# Configure WebDAV remote (requires --features webdav)
+dotdipper remote set webdav --endpoint https://cloud.example.com/remote.php/webdav
+# Set credentials via environment:
+export WEBDAV_USERNAME=your-username
+export WEBDAV_PASSWORD=your-password
 
 # Show configuration
 dotdipper remote show
@@ -249,8 +336,8 @@ dotdipper remote pull
 **Supported Backends:**
 
 - ✅ LocalFS (fully implemented)
-- 🚧 S3 (feature-gated, stub implementation)
-- 🚧 WebDAV (feature-gated, stub implementation)
+- ✅ S3 (fully implemented, feature-gated)
+- ✅ WebDAV (fully implemented, feature-gated)
 
 **Features:**
 
@@ -258,28 +345,104 @@ dotdipper remote pull
 - Bundle metadata tracking
 - Dry-run support
 - Profile-aware backups
+- S3-compatible storage support (MinIO, DigitalOcean Spaces)
+- WebDAV servers (Nextcloud, ownCloud, etc.)
 
-### 🤖 Auto-Sync Daemon
+### 🔀 Git vs Remote Backends: When to Use Each
 
-Automatically watch files and create snapshots:
+Dotdipper provides two ways to sync your dotfiles to the cloud:
+
+| Feature | GitHub Sync (`push`/`pull`) | Remote Backends (`remote push`/`remote pull`) |
+|---------|----------------------------|----------------------------------------------|
+| **Storage** | Git repository (GitHub, GitLab, etc.) | S3, WebDAV, LocalFS |
+| **Version Control** | Full git history | Bundle-based (latest only by default) |
+| **Collaboration** | Pull requests, issues, forks | Not designed for collaboration |
+| **Setup Complexity** | Requires git + GitHub token | Environment variables only |
+| **File Size Limits** | GitHub's limits apply | No practical limits |
+| **Privacy** | Public/private repos | Fully private (your storage) |
+| **Offline Access** | Clone repo locally | Download bundle when needed |
+
+**Use GitHub Sync when you want:**
+
+- Version history of all changes
+- Collaboration with others
+- Public sharing of your dotfiles
+- Integration with GitHub workflows
+- Easy cloning on new machines (`git clone`)
 
 ```bash
-# Start daemon
+# GitHub workflow
+dotdipper push -m "Update vim config"
+dotdipper pull --apply
+```
+
+**Use Remote Backends when you want:**
+
+- Simple backups without git complexity
+- Private storage (your own S3/WebDAV)
+- No GitHub account required
+- Large files that exceed git limits
+- Integration with existing cloud storage
+
+```bash
+# Remote backend workflow
+dotdipper remote push
+dotdipper remote pull
+```
+
+**Combined Approach:** You can use both! Use GitHub for version control and collaboration, while also pushing backups to S3/WebDAV for redundancy.
+
+### 🤖 Auto-Sync Daemon (Opt-In)
+
+The daemon watches your dotfiles and automatically creates snapshots when changes are detected. This is an **opt-in feature** that must be explicitly enabled in your configuration.
+
+**When to use the daemon:**
+
+- You want automatic backups without running `dotdipper snapshot` manually
+- You make frequent changes to your dotfiles
+- You want to catch every change without thinking about it
+
+**When NOT to use the daemon:**
+
+- You prefer manual control over when snapshots are created
+- You're on a resource-constrained system
+- You only occasionally modify dotfiles
+
+**Setup:**
+
+```bash
+# 1. Enable the daemon (creates config if needed)
+dotdipper daemon enable
+
+# 2. Start the daemon
 dotdipper daemon start
 
-# Check status
+# 3. Check status
 dotdipper daemon status
 
-# Stop daemon
+# 4. Stop the daemon
 dotdipper daemon stop
+
+# 5. Disable the daemon
+dotdipper daemon disable
+```
+
+Or manually configure in `config.toml`:
+
+```toml
+[daemon]
+enabled = true
+mode = "ask"      # "ask" = prompt before snapshot, "auto" = auto-snapshot
+debounce_ms = 1500  # Wait time after changes before processing
 ```
 
 **Features:**
 
-- File watching with debouncing
-- Two modes: "auto" (automatic) or "ask" (prompt)
-- PID file management
-- Graceful start/stop
+- File watching with configurable debouncing
+- Two modes: "auto" (automatic snapshots) or "ask" (prompt before snapshot)
+- PID file management for single-instance enforcement
+- Graceful start/stop with cleanup
+- CLI commands to enable/disable without editing config
 
 ### 🪝 Hooks System
 
@@ -331,10 +494,11 @@ key_path = "~/.config/age/keys.txt"
 [hooks]
 post_apply = ["tmux source-file ~/.tmux.conf || true"]
 
-[daemon]
-enabled = true
-mode = "ask"  # or "auto"
-debounce_ms = 1500
+# Daemon is opt-in - uncomment to enable
+# [daemon]
+# enabled = true
+# mode = "ask"  # or "auto"
+# debounce_ms = 1500
 
 [remote]
 kind = "localfs"
@@ -366,6 +530,7 @@ linux = ["neovim", "fzf", "bat"]
 ```bash
 dotdipper init                    # Initialize dotdipper
 dotdipper discover [--write]      # Find dotfiles
+dotdipper discover --packages     # Discover required packages from dotfiles
 dotdipper snapshot [-m "msg"]     # Create snapshot (legacy)
 dotdipper status [--detailed]     # Check status
 dotdipper config --show | --edit  # View/edit config
@@ -397,6 +562,26 @@ dotdipper snapshot create [-m "msg"]  # Create snapshot
 dotdipper snapshot list               # List snapshots
 dotdipper snapshot rollback <id>      # Rollback
 dotdipper snapshot delete <id>        # Delete snapshot
+dotdipper snapshot prune              # Prune old snapshots
+```
+
+**Pruning options:**
+
+```bash
+# Keep only the 10 most recent snapshots
+dotdipper snapshot prune --keep-count 10
+
+# Keep snapshots from the last 30 days
+dotdipper snapshot prune --keep-age 30d
+
+# Keep snapshots until total size exceeds 1GB
+dotdipper snapshot prune --keep-size 1GB
+
+# Combine criteria (keep if ANY criterion is met)
+dotdipper snapshot prune --keep-count 5 --keep-age 7d
+
+# Dry run - see what would be deleted without deleting
+dotdipper snapshot prune --keep-count 5 --dry-run
 ```
 
 ### Profile Management
@@ -420,6 +605,8 @@ dotdipper remote pull               # Pull from remote
 ### Daemon
 
 ```bash
+dotdipper daemon enable             # Enable daemon in config
+dotdipper daemon disable            # Disable daemon in config
 dotdipper daemon start              # Start daemon
 dotdipper daemon status             # Check status
 dotdipper daemon stop               # Stop daemon
@@ -435,6 +622,13 @@ dotdipper pull [--apply]            # Pull from GitHub
 ### Package Management
 
 ```bash
+# Discover packages from your dotfiles
+dotdipper discover --packages                     # Auto-detect required packages
+dotdipper discover --packages --validate          # Check which are already installed
+dotdipper discover --packages --write             # Add discovered packages to config
+dotdipper discover --packages --include-low-confidence  # Include uncertain matches
+
+# Install packages
 dotdipper install [--dry-run]       # Install packages
 dotdipper install --target-os ubuntu  # Target specific OS
 ```
@@ -516,17 +710,12 @@ dotdipper profile switch default
 - **Milestone 2:** Selective Apply & Diff (interactive TUI)
 - **Milestone 3:** Snapshot Management (hardlink optimization)
 - **Milestone 4:** Multi-Profile Support (overlay semantics)
-- **Milestone 5:** Remote Backends (LocalFS complete, S3/WebDAV stubs)
+- **Milestone 5:** Remote Backends (LocalFS, S3, WebDAV fully implemented)
 - **Milestone 6:** Auto-Sync Daemon (file watching, debouncing)
 - **Core Features:** Init, discover, status, push, pull
 - **Hooks System:** Pre/post hooks for operations
 - **Package Management:** OS-specific installation
 - **GitHub Sync:** Full push/pull support
-
-### 🚧 Partial Implementation
-
-- **S3 Backend:** Interface ready, needs API implementation
-- **WebDAV Backend:** Interface ready, needs API implementation
 
 ---
 
@@ -639,7 +828,7 @@ MIT License - See LICENSE file for details
 
 **Version:** 0.3.0 (All Milestones Complete)  
 **Status:** Production-ready  
-**Last Updated:** January 16, 2026  
+**Last Updated:** January 20, 2026  
 **Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
 
 **Happy dotfile management! 🚀**

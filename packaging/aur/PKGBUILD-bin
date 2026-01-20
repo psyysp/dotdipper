@@ -1,0 +1,22 @@
+# Maintainer: psyysp <your.email@example.com>
+# AUR Binary Package for dotdipper
+# https://github.com/psyysp/dotdipper
+
+pkgname=dotdipper-bin
+pkgver=0.3.1
+pkgrel=1
+pkgdesc="A safe, deterministic, and feature-rich dotfiles manager built in Rust (prebuilt binary)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/psyysp/dotdipper"
+license=('MIT')
+depends=('age')
+provides=('dotdipper')
+conflicts=('dotdipper')
+source_x86_64=("https://github.com/psyysp/dotdipper/releases/download/v$pkgver/dotdipper-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("https://github.com/psyysp/dotdipper/releases/download/v$pkgver/dotdipper-aarch64-unknown-linux-gnu.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm0755 -t "$pkgdir/usr/bin/" dotdipper
+}
