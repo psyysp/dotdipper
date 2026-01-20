@@ -275,24 +275,24 @@ jobs:
           echo "  macOS x86_64: $SHA256_MACOS_X86"
           echo "  macOS ARM64:  $SHA256_MACOS_ARM"
 
-          cat > homebrew-tap/Formula/dotdipper.rb << EOF
+          cat > homebrew-tap/Formula/dotdipper.rb << FORMULA
           # Homebrew Formula for Dotdipper
           # brew tap psyysp/dotdipper && brew install dotdipper
 
           class Dotdipper < Formula
             desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
             homepage "https://github.com/psyysp/dotdipper"
-            version "$VERSION"
+            version "${VERSION}"
             license "MIT"
 
             on_macos do
               on_arm do
-                url "https://github.com/psyysp/dotdipper/releases/download/v$VERSION/dotdipper-aarch64-apple-darwin.tar.gz"
-                sha256 "$SHA256_MACOS_ARM"
+                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-aarch64-apple-darwin.tar.gz"
+                sha256 "${SHA256_MACOS_ARM}"
               end
               on_intel do
-                url "https://github.com/psyysp/dotdipper/releases/download/v$VERSION/dotdipper-x86_64-apple-darwin.tar.gz"
-                sha256 "$SHA256_MACOS_X86"
+                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-x86_64-apple-darwin.tar.gz"
+                sha256 "${SHA256_MACOS_X86}"
               end
             end
 
@@ -316,12 +316,12 @@ jobs:
             end
 
             test do
-              assert_match "dotdipper", shell_output("#{bin}/dotdipper --version")
+              assert_match "dotdipper", shell_output("\#{bin}/dotdipper --version")
             end
           end
-          EOF
+          FORMULA
 
-          # Remove leading spaces from heredoc content
+          # Remove leading spaces from heredoc content (10 spaces)
           sed -i 's/^          //' homebrew-tap/Formula/dotdipper.rb
 
           echo "Formula updated:"
