@@ -1,16 +1,16 @@
-mod cfg;
-mod daemon;
-mod diff;
-mod hash;
-mod install;
-mod profiles;
-mod remote;
-mod repo;
-mod scan;
-mod secrets;
-mod snapshots;
-mod ui;
-mod vcs;
+use dotdipper::cfg;
+use dotdipper::daemon;
+use dotdipper::diff;
+use dotdipper::hash;
+use dotdipper::install;
+use dotdipper::profiles;
+use dotdipper::remote;
+use dotdipper::repo;
+use dotdipper::scan;
+use dotdipper::secrets;
+use dotdipper::snapshots;
+use dotdipper::ui;
+use dotdipper::vcs;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -52,6 +52,22 @@ enum Commands {
         /// Show all files including ignored ones
         #[arg(long)]
         all: bool,
+
+        /// Also discover required packages from dotfiles
+        #[arg(long)]
+        packages: bool,
+
+        /// Target OS for package discovery (auto-detected if not specified)
+        #[arg(long)]
+        target_os: Option<String>,
+
+        /// Include low-confidence package matches
+        #[arg(long)]
+        include_low_confidence: bool,
+
+        /// Validate if discovered packages are already installed
+        #[arg(long)]
+        validate: bool,
     },
 
     /// Show status of dotfiles (changes since last snapshot)
@@ -234,6 +250,25 @@ enum SnapshotCommands {
         #[arg(short, long)]
         force: bool,
     },
+    
+    /// Prune old snapshots based on criteria
+    Prune {
+        /// Keep N most recent snapshots
+        #[arg(long)]
+        keep_count: Option<usize>,
+        
+        /// Keep snapshots newer than duration (e.g., "30d", "7d", "2w", "1m")
+        #[arg(long)]
+        keep_age: Option<String>,
+        
+        /// Keep snapshots until total size is under limit (e.g., "1GB", "500MB")
+        #[arg(long)]
+        keep_size: Option<String>,
+        
+        /// Show what would be deleted without actually deleting
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -312,6 +347,12 @@ enum DaemonCommands {
     
     /// Check daemon status
     Status,
+    
+    /// Enable the daemon in configuration
+    Enable,
+    
+    /// Disable the daemon in configuration
+    Disable,
 }
 
 #[tokio::main]
@@ -336,7 +377,9 @@ async fn main() -> Result<()> {
 
     let result = match cli.command {
         Commands::Init { force } => cmd_init(config_path, force).await,
-        Commands::Discover { write, all } => cmd_discover(config_path, write, all).await,
+        Commands::Discover { write, all, packages, target_os, include_low_confidence, validate } => {
+            cmd_discover(config_path, write, all, packages, target_os, include_low_confidence, validate).await
+        }
         Commands::Status { detailed } => cmd_status(config_path, detailed).await,
         Commands::Diff { detailed } => cmd_diff(config_path, detailed).await,
         Commands::Apply { force, interactive, only, unsafe_allow_outside_home } => {
@@ -372,24 +415,125 @@ async fn cmd_init(config_path: PathBuf, force: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_discover(config_path: PathBuf, write: bool, all: bool) -> Result<()> {
+async fn cmd_discover(
+    config_path: PathBuf,
+    write: bool,
+    all: bool,
+    packages: bool,
+    target_os: Option<String>,
+    include_low_confidence: bool,
+    validate: bool,
+) -> Result<()> {
     ui::info("Discovering dotfiles...");
     let config = cfg::load(&config_path)?;
     let discovered = scan::discover(&config, all)?;
     
     ui::info(&format!("Found {} dotfiles", discovered.len()));
     
-    if write {
-        cfg::update_discovered(&config_path, &discovered)?;
-        ui::success("Updated configuration with discovered files");
-    } else {
-        for file in discovered.iter().take(10) {
-            println!("  {}", file.display().to_string().dimmed());
+    // Handle package discovery if requested
+    if packages {
+        ui::info("Discovering required packages from dotfiles...");
+        
+        let os = target_os.unwrap_or_else(|| install::detect_os());
+        ui::info(&format!("Target OS: {}", os));
+        
+        let discovery_config = install::DiscoveryConfig {
+            target_os: os.clone(),
+            include_low_confidence,
+            custom_mappings: std::collections::HashMap::new(),
+            exclude_patterns: config.exclude_patterns.clone(),
+        };
+        
+        let result = install::discover::discover_packages(&config, &discovery_config)?;
+        
+        // Display discovered packages
+        if result.has_packages() {
+            ui::section("Discovered Packages:");
+            let display_list = install::discover::get_package_display_list(&result);
+            
+            for (binary, package, confidence) in &display_list {
+                if binary == package {
+                    println!("  {} ({})", binary.green(), confidence.dimmed());
+                } else {
+                    println!("  {} -> {} ({})", binary, package.green(), confidence.dimmed());
+                }
+            }
+            
+            println!();
+            ui::info(&format!(
+                "Found {} unique packages from {} binaries",
+                result.unique_packages().len(),
+                result.packages.len()
+            ));
+        } else {
+            ui::info("No packages discovered from tracked dotfiles");
         }
-        if discovered.len() > 10 {
-            println!("  ... and {} more", discovered.len() - 10);
+        
+        // Show unmapped binaries
+        if !result.unmapped_binaries.is_empty() {
+            println!();
+            ui::warn("Unmapped binaries (not in package database):");
+            for binary in &result.unmapped_binaries {
+                println!("  {}", binary.yellow());
+            }
         }
-        ui::hint("Use --write to add these files to your configuration");
+        
+        // Show errors
+        if result.has_errors() {
+            println!();
+            ui::warn("Errors during analysis:");
+            for (path, error) in &result.errors {
+                println!("  {}: {}", path.display(), error.red());
+            }
+        }
+        
+        // Validate packages if requested
+        if validate && result.has_packages() {
+            println!();
+            ui::info("Validating package installation status...");
+            
+            let validation = install::validators::validate_packages(&result)?;
+            
+            if !validation.installed.is_empty() {
+                ui::success(&format!("{} packages already installed", validation.installed.len()));
+            }
+            
+            if !validation.missing.is_empty() {
+                ui::warn(&format!("{} packages need installation:", validation.missing.len()));
+                for binary in &validation.missing {
+                    if let Some(package) = result.packages.get(binary) {
+                        let instruction = install::validators::get_install_instructions(package, &os);
+                        println!("    {} -> {}", binary.red(), instruction.dimmed());
+                    }
+                }
+            }
+        }
+        
+        // Write packages to config if requested
+        if write && result.has_packages() {
+            install::discover::update_config_with_packages(&config_path, &result)?;
+            ui::success("Updated configuration with discovered packages");
+        } else if result.has_packages() && !write {
+            println!();
+            ui::hint("Use --write to add discovered packages to your configuration");
+        }
+    }
+    
+    // Handle file discovery display and write
+    if !packages || write {
+        if write {
+            cfg::update_discovered(&config_path, &discovered)?;
+            ui::success("Updated configuration with discovered files");
+        } else if !packages {
+            // Only show file list if not doing package discovery
+            for file in discovered.iter().take(10) {
+                println!("  {}", file.display().to_string().dimmed());
+            }
+            if discovered.len() > 10 {
+                println!("  ... and {} more", discovered.len() - 10);
+            }
+            ui::hint("Use --write to add these files to your configuration");
+        }
     }
     
     Ok(())
@@ -413,6 +557,14 @@ async fn cmd_snapshot_create(config_path: PathBuf, force: bool, message: Option<
     
     // Then create a versioned snapshot with the message
     snapshots::create(&config, message)?;
+    
+    // Run post-snapshot hooks
+    if let Some(hooks) = &config.hooks {
+        for hook in &hooks.post_snapshot {
+            ui::info(&format!("Running post-snapshot hook: {}", hook));
+            run_hook(hook)?;
+        }
+    }
     
     Ok(())
 }
@@ -491,12 +643,54 @@ async fn cmd_pull(config_path: PathBuf, apply: bool, force: bool, allow_outside_
 
 async fn cmd_install(config_path: PathBuf, dry_run: bool, target_os: Option<String>, allow_outside_home: bool) -> Result<()> {
     ui::info("Generating installation scripts...");
-    let config = cfg::load(&config_path)?;
+    let mut config = cfg::load(&config_path)?;
     
     let os = target_os.unwrap_or_else(|| install::detect_os());
+    
+    // Auto-discover packages if none are configured
+    if config.packages.common.is_empty() {
+        ui::info("No packages configured, discovering from dotfiles...");
+        
+        let discovery_config = install::DiscoveryConfig {
+            target_os: os.clone(),
+            include_low_confidence: false,
+            custom_mappings: std::collections::HashMap::new(),
+            exclude_patterns: config.exclude_patterns.clone(),
+        };
+        
+        let result = install::discover::discover_packages(&config, &discovery_config)?;
+        
+        if result.has_packages() {
+            ui::info(&format!("Discovered {} packages from dotfiles", result.unique_packages().len()));
+            
+            // Add discovered packages to the config for script generation
+            let discovered_packages = result.unique_packages();
+            config.packages.common.extend(discovered_packages);
+            
+            // Show what was discovered
+            ui::section("Auto-discovered packages:");
+            for (binary, package, _) in install::discover::get_package_display_list(&result).iter().take(10) {
+                if binary == package {
+                    println!("  {}", binary);
+                } else {
+                    println!("  {} -> {}", binary, package);
+                }
+            }
+            if result.packages.len() > 10 {
+                println!("  ... and {} more", result.packages.len() - 10);
+            }
+            println!();
+        }
+    }
+    
     let scripts = install::generate_scripts(&config, &os)?;
     
     ui::success(&format!("Generated {} installation scripts", scripts.len()));
+    
+    // Show script locations
+    for script in &scripts {
+        ui::info(&format!("  {}: {}", script.name, script.path.display()));
+    }
     
     if !dry_run {
         ui::info("Running installation scripts...");
@@ -720,6 +914,16 @@ async fn cmd_snapshot(config_path: PathBuf, subcmd: SnapshotCommands) -> Result<
             let config = cfg::load(&config_path)?;
             snapshots::delete(&config, &id, force)?;
         }
+        SnapshotCommands::Prune { keep_count, keep_age, keep_size, dry_run } => {
+            let config = cfg::load(&config_path)?;
+            let opts = snapshots::PruneOpts {
+                keep_count,
+                keep_age,
+                keep_size,
+                dry_run,
+            };
+            snapshots::prune(&config, &opts)?;
+        }
     }
     
     Ok(())
@@ -782,17 +986,24 @@ async fn cmd_remote(config_path: PathBuf, subcmd: RemoteCommands) -> Result<()> 
 }
 
 async fn cmd_daemon(config_path: PathBuf, subcmd: DaemonCommands) -> Result<()> {
-    let config = cfg::load(&config_path)?;
-    
     match subcmd {
         DaemonCommands::Start => {
+            let config = cfg::load(&config_path)?;
             daemon::start(&config)?;
         }
         DaemonCommands::Stop => {
+            let config = cfg::load(&config_path)?;
             daemon::stop(&config)?;
         }
         DaemonCommands::Status => {
+            let config = cfg::load(&config_path)?;
             daemon::status(&config)?;
+        }
+        DaemonCommands::Enable => {
+            daemon::enable(&config_path)?;
+        }
+        DaemonCommands::Disable => {
+            daemon::disable(&config_path)?;
         }
     }
     

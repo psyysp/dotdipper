@@ -57,18 +57,49 @@ post_apply = ["tmux source-file ~/.tmux.conf || true"]
 pre_snapshot = []
 post_snapshot = []
 
-# Daemon configuration (Milestone 6 - not yet implemented)
-[daemon]
-enabled = false
-mode = "ask"  # "ask" or "auto"
-debounce_ms = 1500
+# Daemon configuration (opt-in feature)
+# The daemon watches your dotfiles and creates snapshots when changes are detected.
+# This is useful if you want automatic backups without manual intervention.
+# 
+# WARNING: The daemon runs in the foreground and consumes system resources.
+# Only enable if you want automatic file watching.
+#
+# [daemon]
+# enabled = true          # Set to true to enable the daemon
+# mode = "ask"            # "ask" = prompt before snapshot, "auto" = auto-snapshot
+# debounce_ms = 1500      # Wait time (ms) after last change before processing
 
-# Remote backup configuration (Milestone 5 - not yet implemented)
+# Auto-pruning configuration
+# Automatically prune old snapshots after creating new ones.
+# This helps manage disk space by removing old snapshots based on configurable criteria.
+# Snapshots are kept if they match ANY of the criteria (keep_count OR keep_age OR keep_size).
+#
+# [auto_prune]
+# enabled = true          # Set to true to enable auto-pruning
+# keep_count = 10         # Keep the 10 most recent snapshots
+# keep_age = "30d"        # Keep snapshots from the last 30 days (supports: d=days, w=weeks, m=months, h=hours)
+# keep_size = "1GB"       # Keep snapshots until total size exceeds 1GB (not yet implemented)
+
+# Remote backup configuration
+# Supports LocalFS, S3, and WebDAV backends for cloud backups.
+# Use `dotdipper remote set <type>` to configure.
+#
+# LocalFS example:
+# [remote]
+# kind = "localfs"
+# endpoint = "~/dotfiles-backup"
+#
+# S3 example (requires --features s3):
 # [remote]
 # kind = "s3"
 # bucket = "my-dotdipper"
 # prefix = "profiles/default"
 # region = "us-east-1"
+#
+# WebDAV example (requires --features webdav):
+# [remote]
+# kind = "webdav"
+# endpoint = "https://cloud.example.com/remote.php/webdav"
 
 # Include patterns (what to discover)
 include_patterns = [

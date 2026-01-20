@@ -38,12 +38,34 @@ pub fn start(config: &Config) -> Result<()> {
         }
     }
     
-    let daemon_config = config.daemon.as_ref()
-        .context("Daemon configuration not found in config")?;
-    
-    if !daemon_config.enabled {
-        bail!("Daemon is disabled in configuration. Enable it first.");
-    }
+    // Check if daemon is configured and enabled
+    let daemon_config = match config.daemon.as_ref() {
+        Some(cfg) if cfg.enabled => cfg,
+        Some(_) => {
+            ui::info("Daemon is not enabled in configuration.");
+            ui::hint("To enable the daemon, add the following to your config.toml:");
+            println!();
+            println!("  [daemon]");
+            println!("  enabled = true");
+            println!("  mode = \"ask\"  # or \"auto\"");
+            println!("  debounce_ms = 1500");
+            println!();
+            ui::hint("Then run: dotdipper daemon start");
+            return Ok(());
+        }
+        None => {
+            ui::info("Daemon is not configured.");
+            ui::hint("To enable the daemon, add the following to your config.toml:");
+            println!();
+            println!("  [daemon]");
+            println!("  enabled = true");
+            println!("  mode = \"ask\"  # or \"auto\"");
+            println!("  debounce_ms = 1500");
+            println!();
+            ui::hint("Then run: dotdipper daemon start");
+            return Ok(());
+        }
+    };
     
     let mode = daemon_config.mode.as_str();
     let debounce_ms = daemon_config.debounce_ms;
@@ -170,7 +192,67 @@ pub fn status(_config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// Enable the daemon in configuration
+pub fn enable(config_path: &std::path::Path) -> Result<()> {
+    let mut config = crate::cfg::load(config_path)?;
+    
+    // Create daemon config if it doesn't exist
+    if config.daemon.is_none() {
+        config.daemon = Some(crate::cfg::DaemonConfig {
+            enabled: true,
+            mode: default_daemon_mode(),
+            debounce_ms: default_debounce_ms(),
+        });
+    } else {
+        // Update existing config
+        if let Some(ref mut daemon) = config.daemon {
+            daemon.enabled = true;
+        }
+    }
+    
+    crate::cfg::save(config_path, &config)?;
+    ui::success("Daemon enabled in configuration");
+    ui::hint("Start the daemon with: dotdipper daemon start");
+    
+    Ok(())
+}
+
+/// Disable the daemon in configuration
+pub fn disable(config_path: &std::path::Path) -> Result<()> {
+    let mut config = crate::cfg::load(config_path)?;
+    
+    if let Some(ref mut daemon) = config.daemon {
+        daemon.enabled = false;
+        crate::cfg::save(config_path, &config)?;
+        ui::success("Daemon disabled in configuration");
+        
+        // Check if daemon is running and warn user
+        let dotdipper_dir = get_dotdipper_dir()?;
+        let pid_file = dotdipper_dir.join(DAEMON_PID_FILE);
+        if pid_file.exists() {
+            let pid_str = fs::read_to_string(&pid_file)?;
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                if is_process_running(pid) {
+                    ui::warn("Daemon is currently running. Stop it with: dotdipper daemon stop");
+                }
+            }
+        }
+    } else {
+        ui::info("Daemon was not configured");
+    }
+    
+    Ok(())
+}
+
 // Private helper functions
+
+fn default_daemon_mode() -> String {
+    "ask".to_string()
+}
+
+fn default_debounce_ms() -> u64 {
+    1500
+}
 
 fn run_daemon_loop(tracked_files: Vec<PathBuf>, debounce_ms: u64, mode: &str) -> Result<()> {
     // Set up file watcher
@@ -260,11 +342,13 @@ fn handle_changes_auto(changed_files: &HashSet<PathBuf>) -> Result<()> {
     let config_path = dotdipper_dir.join("config.toml");
     let config = crate::cfg::load(&config_path)?;
     
-    // Create snapshot
-    let _message = format!("Auto-snapshot: {} files changed", changed_files.len());
+    // Create compiled snapshot first
     let snapshot = crate::repo::snapshot(&config, false)?;
+    ui::success(&format!("Compiled {} files", snapshot.file_count));
     
-    ui::success(&format!("Snapshot created with {} files", snapshot.file_count));
+    // Create versioned snapshot (this will also trigger auto-pruning if configured)
+    let message = format!("Auto-snapshot: {} files changed", changed_files.len());
+    crate::snapshots::create(&config, Some(message))?;
     
     Ok(())
 }
@@ -290,10 +374,13 @@ fn handle_changes_ask(changed_files: &HashSet<PathBuf>) -> Result<()> {
         let config_path = dotdipper_dir.join("config.toml");
         let config = crate::cfg::load(&config_path)?;
         
-        let _message = format!("Manual snapshot: {} files changed", changed_files.len());
+        // Create compiled snapshot first
         let snapshot = crate::repo::snapshot(&config, false)?;
+        ui::success(&format!("Compiled {} files", snapshot.file_count));
         
-        ui::success(&format!("Snapshot created with {} files", snapshot.file_count));
+        // Create versioned snapshot (this will also trigger auto-pruning if configured)
+        let message = format!("Manual snapshot: {} files changed", changed_files.len());
+        crate::snapshots::create(&config, Some(message))?;
     } else {
         ui::info("Skipped snapshot");
     }

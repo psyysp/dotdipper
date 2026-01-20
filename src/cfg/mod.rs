@@ -37,6 +37,10 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonConfig>,
     
+    // Auto-pruning configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_prune: Option<AutoPruneConfig>,
+    
     // Remote configuration (future milestone)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
@@ -156,6 +160,24 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoPruneConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    
+    /// Keep N most recent snapshots
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_count: Option<usize>,
+    
+    /// Keep snapshots newer than this duration (e.g., "30d", "7d", "2w")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_age: Option<String>,
+    
+    /// Keep snapshots until total size is under this limit (e.g., "1GB", "500MB")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_size: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Kind: "github", "s3", "gcs", "webdav"
     pub kind: String,
@@ -185,6 +207,7 @@ impl Default for Config {
             secrets: None,
             hooks: None,
             daemon: None,
+            auto_prune: None,
             remote: None,
             dotfiles: None,
         }

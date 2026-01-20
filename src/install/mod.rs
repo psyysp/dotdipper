@@ -1,3 +1,8 @@
+pub mod analyzers;
+pub mod discover;
+pub mod package_map;
+pub mod validators;
+
 use anyhow::{Context, Result};
 use os_info::Type as OsType;
 use std::fs;
@@ -6,6 +11,11 @@ use std::process::Command;
 
 use crate::cfg::{Config, PackagesConfig};
 use crate::ui;
+
+// Re-export commonly used types
+pub use discover::{DiscoveryConfig, DiscoveryResult};
+pub use package_map::PackageMapper;
+pub use validators::ValidationResult;
 
 #[derive(Debug, Clone)]
 pub struct InstallScript {

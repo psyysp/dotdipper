@@ -1,172 +1,153 @@
-use assert_cmd::Command;
-use predicates::prelude::*;
-use std::fs;
-use tempfile::TempDir;
+//! Integration tests for the secrets module
+
+use dotdipper::secrets::SecretsProvider;
 
 #[test]
-fn test_secrets_init_without_age() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
-    
-    // Create minimal config
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-
-[secrets]
-provider = "age"
-key_path = "~/.config/age/keys.txt"
-"#,
-    )
-    .unwrap();
-    
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
-        .arg("secrets")
-        .arg("init");
-    
-    // This might fail if age is not installed, which is expected
-    // The test just verifies the command structure is correct
-    let _ = cmd.assert();
+fn test_secrets_provider_from_str_age() {
+    assert_eq!(SecretsProvider::from_str("age"), Some(SecretsProvider::Age));
+    assert_eq!(SecretsProvider::from_str("Age"), Some(SecretsProvider::Age));
+    assert_eq!(SecretsProvider::from_str("AGE"), Some(SecretsProvider::Age));
 }
 
 #[test]
-fn test_secrets_encrypt_missing_file() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
-    let nonexistent = temp_dir.path().join("nonexistent.txt");
-    
-    // Create minimal config
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-
-[secrets]
-provider = "age"
-"#,
-    )
-    .unwrap();
-    
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
-        .arg("secrets")
-        .arg("encrypt")
-        .arg(&nonexistent);
-    
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("does not exist"));
+fn test_secrets_provider_from_str_sops() {
+    assert_eq!(SecretsProvider::from_str("sops"), Some(SecretsProvider::Sops));
+    assert_eq!(SecretsProvider::from_str("Sops"), Some(SecretsProvider::Sops));
+    assert_eq!(SecretsProvider::from_str("SOPS"), Some(SecretsProvider::Sops));
 }
 
 #[test]
-fn test_secrets_provider_validation() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
-    
-    // Create config with invalid provider
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
+fn test_secrets_provider_from_str_invalid() {
+    assert_eq!(SecretsProvider::from_str("invalid"), None);
+    assert_eq!(SecretsProvider::from_str(""), None);
+    assert_eq!(SecretsProvider::from_str("gpg"), None);
+    assert_eq!(SecretsProvider::from_str("vault"), None);
+}
 
-[secrets]
-provider = "invalid_provider"
-"#,
-    )
-    .unwrap();
-    
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
-        .arg("secrets")
-        .arg("init");
-    
-    cmd.assert()
-        .failure()
-        .stderr(predicate::str::contains("Unknown secrets provider"));
+#[test]
+fn test_secrets_provider_equality() {
+    assert_eq!(SecretsProvider::Age, SecretsProvider::Age);
+    assert_eq!(SecretsProvider::Sops, SecretsProvider::Sops);
+    assert_ne!(SecretsProvider::Age, SecretsProvider::Sops);
+}
+
+#[test]
+fn test_secrets_provider_copy() {
+    let provider = SecretsProvider::Age;
+    let copied = provider;
+    assert_eq!(provider, copied);
 }
 
 #[cfg(test)]
-mod integration {
-    use super::*;
-    use std::io::Write;
-    
-    // This test only runs if age is installed
+mod age_encryption_tests {
+    use dotdipper::cfg::Config;
+    use tempfile::TempDir;
+
+    // Note: These tests require 'age' to be installed on the system
+    // They will be skipped if age is not available
+
+    fn age_available() -> bool {
+        std::process::Command::new("age")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
     #[test]
-    #[ignore] // Ignored by default, run with --ignored if age is available
-    fn test_full_encryption_workflow() {
-        let temp_dir = TempDir::new().unwrap();
-        let config_path = temp_dir.path().join("config.toml");
-        let key_path = temp_dir.path().join("test_key.txt");
-        let test_file = temp_dir.path().join("secret.txt");
-        
-        // Create test file
-        let mut file = fs::File::create(&test_file).unwrap();
-        file.write_all(b"This is a secret").unwrap();
-        drop(file);
-        
-        // Generate age key first
-        let output = std::process::Command::new("age-keygen")
-            .arg("-o")
-            .arg(&key_path)
-            .output();
-        
-        if output.is_err() {
-            println!("age-keygen not available, skipping test");
+    fn test_check_age_installed() {
+        if !age_available() {
+            println!("Skipping test: age not installed");
             return;
         }
         
-        // Create config
-        fs::write(
-            &config_path,
-            format!(
-                r#"
-[general]
-tracked_files = []
+        let result = dotdipper::secrets::check_age();
+        assert!(result.is_ok());
+    }
 
-[secrets]
-provider = "age"
-key_path = "{}"
-"#,
-                key_path.display()
-            ),
-        )
-        .unwrap();
+    #[test]
+    fn test_encrypt_nonexistent_file() {
+        if !age_available() {
+            println!("Skipping test: age not installed");
+            return;
+        }
         
-        // Encrypt
-        let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-        cmd.arg("--config")
-            .arg(&config_path)
-            .arg("secrets")
-            .arg("encrypt")
-            .arg(&test_file);
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent.txt");
         
-        cmd.assert().success();
+        let config = Config::default();
+        let result = dotdipper::secrets::encrypt(&config, &nonexistent, None);
         
-        // Check encrypted file exists
-        let encrypted_path = test_file.with_extension("txt.age");
-        assert!(encrypted_path.exists());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decrypt_nonexistent_file() {
+        if !age_available() {
+            println!("Skipping test: age not installed");
+            return;
+        }
         
-        // Decrypt
-        let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-        cmd.arg("--config")
-            .arg(&config_path)
-            .arg("secrets")
-            .arg("decrypt")
-            .arg(&encrypted_path);
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent.age");
         
-        cmd.assert().success();
+        let config = Config::default();
+        let result = dotdipper::secrets::decrypt(&config, &nonexistent, None);
         
-        // Verify decrypted content
-        let decrypted_content = fs::read_to_string(&test_file).unwrap();
-        assert_eq!(decrypted_content, "This is a secret");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_edit_nonexistent_file() {
+        if !age_available() {
+            println!("Skipping test: age not installed");
+            return;
+        }
+        
+        let temp_dir = TempDir::new().unwrap();
+        let nonexistent = temp_dir.path().join("nonexistent.age");
+        
+        let config = Config::default();
+        let result = dotdipper::secrets::edit(&config, &nonexistent);
+        
+        assert!(result.is_err());
     }
 }
 
+#[cfg(test)]
+mod secrets_config_tests {
+    use dotdipper::cfg::{Config, SecretsConfig};
+
+    #[test]
+    fn test_secrets_config_optional() {
+        let config = Config::default();
+        assert!(config.secrets.is_none());
+    }
+
+    #[test]
+    fn test_secrets_config_with_values() {
+        let mut config = Config::default();
+        config.secrets = Some(SecretsConfig {
+            provider: Some("age".to_string()),
+            key_path: Some("~/.config/age/keys.txt".to_string()),
+        });
+        
+        let secrets = config.secrets.as_ref().unwrap();
+        assert_eq!(secrets.provider, Some("age".to_string()));
+        assert!(secrets.key_path.is_some());
+    }
+
+    #[test]
+    fn test_secrets_config_serialization() {
+        let secrets = SecretsConfig {
+            provider: Some("age".to_string()),
+            key_path: Some("/path/to/keys.txt".to_string()),
+        };
+        
+        let toml = toml::to_string(&secrets).unwrap();
+        assert!(toml.contains("age"));
+        assert!(toml.contains("/path/to/keys.txt"));
+        
+        let deserialized: SecretsConfig = toml::from_str(&toml).unwrap();
+        assert_eq!(deserialized.provider, secrets.provider);
+    }
+}

@@ -1,0 +1,267 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Override version (e.g., 1.0.0). Leave empty for automatic bump.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run - preview what would be released without actually releasing'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  analyze-commits:
+    name: Analyze Commits
+    runs-on: ubuntu-latest
+    # Skip if commit message contains [skip ci] or [no release]
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[no release]')
+    outputs:
+      should_release: ${{ steps.analyze.outputs.should_release }}
+      bump_type: ${{ steps.analyze.outputs.bump_type }}
+      current_version: ${{ steps.analyze.outputs.current_version }}
+      new_version: ${{ steps.analyze.outputs.new_version }}
+      release_notes: ${{ steps.analyze.outputs.release_notes }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Analyze commits and determine version bump
+        id: analyze
+        run: |
+          set -e
+
+          # Get current version from Cargo.toml
+          CURRENT_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+
+          # Check if version override is provided
+          if [ -n "${{ github.event.inputs.version_override }}" ]; then
+            NEW_VERSION="${{ github.event.inputs.version_override }}"
+            echo "Version override provided: $NEW_VERSION"
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "bump_type=override" >> $GITHUB_OUTPUT
+            echo "should_release=true" >> $GITHUB_OUTPUT
+            echo "release_notes=Manual release triggered with version $NEW_VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get the last release tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          if [ -z "$LAST_TAG" ]; then
+            echo "No previous tags found, analyzing all commits"
+            COMMIT_RANGE="HEAD"
+          else
+            echo "Last tag: $LAST_TAG"
+            COMMIT_RANGE="$LAST_TAG..HEAD"
+          fi
+
+          # Get commits since last tag
+          COMMITS=$(git log $COMMIT_RANGE --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+
+          if [ -z "$COMMITS" ]; then
+            echo "No commits to analyze"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Commits to analyze:"
+          echo "$COMMITS"
+
+          # Analyze commit messages for conventional commits
+          MAJOR_BUMP=false
+          MINOR_BUMP=false
+          PATCH_BUMP=false
+          RELEASE_NOTES=""
+
+          while IFS= read -r commit; do
+            # Skip empty lines
+            [ -z "$commit" ] && continue
+
+            # Check for breaking changes (MAJOR bump)
+            if echo "$commit" | grep -qiE "^.*!:|BREAKING CHANGE"; then
+              MAJOR_BUMP=true
+              RELEASE_NOTES="${RELEASE_NOTES}\n- 💥 $commit"
+            # Check for features (MINOR bump)
+            elif echo "$commit" | grep -qE "^feat(\([^)]+\))?:"; then
+              MINOR_BUMP=true
+              RELEASE_NOTES="${RELEASE_NOTES}\n- ✨ $commit"
+            # Check for fixes (PATCH bump)
+            elif echo "$commit" | grep -qE "^fix(\([^)]+\))?:"; then
+              PATCH_BUMP=true
+              RELEASE_NOTES="${RELEASE_NOTES}\n- 🐛 $commit"
+            # Check for performance improvements (PATCH bump)
+            elif echo "$commit" | grep -qE "^perf(\([^)]+\))?:"; then
+              PATCH_BUMP=true
+              RELEASE_NOTES="${RELEASE_NOTES}\n- ⚡ $commit"
+            # Skip docs, chore, ci, style, refactor, test (no release)
+            elif echo "$commit" | grep -qE "^(docs|chore|ci|style|refactor|test)(\([^)]+\))?:"; then
+              echo "Skipping non-release commit: $commit"
+            fi
+          done <<< "$COMMITS"
+
+          # Determine bump type (major > minor > patch)
+          if [ "$MAJOR_BUMP" = true ]; then
+            BUMP_TYPE="major"
+          elif [ "$MINOR_BUMP" = true ]; then
+            BUMP_TYPE="minor"
+          elif [ "$PATCH_BUMP" = true ]; then
+            BUMP_TYPE="patch"
+          else
+            echo "No releasable commits found"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Bump type: $BUMP_TYPE"
+
+          # Calculate new version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          
+          case $BUMP_TYPE in
+            major)
+              NEW_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
+              ;;
+            patch)
+              NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+          esac
+
+          echo "New version: $NEW_VERSION"
+
+          # Check if tag already exists
+          if git rev-parse "v$NEW_VERSION" >/dev/null 2>&1; then
+            echo "Tag v$NEW_VERSION already exists, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "should_release=true" >> $GITHUB_OUTPUT
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          
+          # Escape release notes for GitHub Actions output
+          RELEASE_NOTES_ESCAPED=$(echo -e "$RELEASE_NOTES" | sed 's/"/\\"/g' | tr '\n' ' ')
+          echo "release_notes=$RELEASE_NOTES_ESCAPED" >> $GITHUB_OUTPUT
+
+  bump-version:
+    name: Bump Version
+    needs: analyze-commits
+    if: needs.analyze-commits.outputs.should_release == 'true' && github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      tag_created: ${{ steps.create_tag.outputs.tag_created }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update Cargo.toml version
+        run: |
+          NEW_VERSION="${{ needs.analyze-commits.outputs.new_version }}"
+          echo "Updating version to $NEW_VERSION"
+          
+          # Update version in Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          
+          # Verify the change
+          grep "^version" Cargo.toml
+
+      - name: Update Cargo.lock
+        run: |
+          cargo update --workspace
+
+      - name: Commit version bump
+        run: |
+          NEW_VERSION="${{ needs.analyze-commits.outputs.new_version }}"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
+
+      - name: Create and push tag
+        id: create_tag
+        run: |
+          NEW_VERSION="${{ needs.analyze-commits.outputs.new_version }}"
+          TAG_NAME="v$NEW_VERSION"
+          
+          echo "Creating tag $TAG_NAME"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+          
+          # Push commit and tag
+          git push origin main
+          git push origin "$TAG_NAME"
+          
+          echo "tag_created=true" >> $GITHUB_OUTPUT
+          echo "Tag $TAG_NAME created and pushed successfully"
+
+  dry-run-summary:
+    name: Dry Run Summary
+    needs: analyze-commits
+    if: needs.analyze-commits.outputs.should_release == 'true' && github.event.inputs.dry_run == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print dry run summary
+        run: |
+          echo "## 🔍 Dry Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Current Version:** ${{ needs.analyze-commits.outputs.current_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**New Version:** ${{ needs.analyze-commits.outputs.new_version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump Type:** ${{ needs.analyze-commits.outputs.bump_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Changes to be released:" >> $GITHUB_STEP_SUMMARY
+          echo "${{ needs.analyze-commits.outputs.release_notes }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*This was a dry run. No changes were made.*" >> $GITHUB_STEP_SUMMARY
+
+  no-release-summary:
+    name: No Release Needed
+    needs: analyze-commits
+    if: needs.analyze-commits.outputs.should_release != 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print summary
+        run: |
+          echo "## ℹ️ No Release Needed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "No releasable commits found since the last release." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commits that trigger releases:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`feat:\` or \`feat(scope):\` → Minor version bump" >> $GITHUB_STEP_SUMMARY
+          echo "- \`fix:\` or \`fix(scope):\` → Patch version bump" >> $GITHUB_STEP_SUMMARY
+          echo "- \`perf:\` or \`perf(scope):\` → Patch version bump" >> $GITHUB_STEP_SUMMARY
+          echo "- \`BREAKING CHANGE:\` or \`!:\` → Major version bump" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commits that do NOT trigger releases:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`docs:\`, \`chore:\`, \`ci:\`, \`style:\`, \`refactor:\`, \`test:\`" >> $GITHUB_STEP_SUMMARY
