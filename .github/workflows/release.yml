@@ -262,7 +262,7 @@ jobs:
                   token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
                   path: homebrew-tap
 
-            - name: Download macOS artifacts
+            - name: Download all artifacts
               uses: actions/download-artifact@v4
               with:
                   path: artifacts
@@ -271,58 +271,83 @@ jobs:
               run: |
                   VERSION=${GITHUB_REF#refs/tags/v}
 
-                  # Get SHA256 checksums
-                  SHA256_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-                  SHA256_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
+                  # Get SHA256 checksums for macOS platforms
+                  SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
+                  SHA256_MACOS_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
 
-                  # Update formula
-                  cat > homebrew-tap/Formula/dotdipper.rb << EOF
-                  class Dotdipper < Formula
-                    desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
-                    homepage "https://github.com/psyysp/dotdipper"
-                    version "$VERSION"
-                    license "MIT"
+                  echo "Updating formula to version $VERSION"
+                  echo "  macOS x86_64: $SHA256_MACOS_X86"
+                  echo "  macOS ARM64:  $SHA256_MACOS_ARM"
 
-                    on_macos do
-                      if Hardware::CPU.arm?
-                        url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-aarch64-apple-darwin.tar.gz"
-                        sha256 "$SHA256_ARM"
-                      else
-                        url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-x86_64-apple-darwin.tar.gz"
-                        sha256 "$SHA256_X86"
-                      end
-                    end
+                  # Update formula for macOS only
+                  cat > homebrew-tap/Formula/dotdipper.rb << FORMULA_EOF
+# Homebrew Formula for Dotdipper
+# This formula installs pre-built binaries for macOS
+#
+# To use this tap:
+#   brew tap psyysp/dotdipper
+#   brew install dotdipper
+#
+# Or install directly:
+#   brew install psyysp/dotdipper/dotdipper
 
-                    depends_on "age"
+class Dotdipper < Formula
+  desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
+  homepage "https://github.com/psyysp/dotdipper"
+  version "$VERSION"
+  license "MIT"
 
-                    def install
-                      bin.install "dotdipper"
-                    end
+  on_macos do
+    on_arm do
+      url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-aarch64-apple-darwin.tar.gz"
+      sha256 "$SHA256_MACOS_ARM"
+    end
+    on_intel do
+      url "https://github.com/psyysp/dotdipper/releases/download/v#{version}/dotdipper-x86_64-apple-darwin.tar.gz"
+      sha256 "$SHA256_MACOS_X86"
+    end
+  end
 
-                    def caveats
-                      <<~EOS
-                        Dotdipper has been installed!
+  depends_on :macos
+  depends_on "age"
 
-                        To get started:
-                          dotdipper init
+  def install
+    bin.install "dotdipper"
+  end
 
-                        For help:
-                          dotdipper --help
-                      EOS
-                    end
+  def caveats
+    <<~EOS
+      Dotdipper has been installed!
 
-                    test do
-                      assert_match "dotdipper", shell_output("#{bin}/dotdipper --version")
-                    end
-                  end
-                  EOF
+      To get started:
+        dotdipper init
+
+      For help:
+        dotdipper --help
+
+      For secrets encryption, 'age' has been installed as a dependency.
+      To set up secrets encryption:
+        dotdipper secrets init
+    EOS
+  end
+
+  test do
+    assert_match "dotdipper", shell_output("#{bin}/dotdipper --version")
+    assert_match "dotfiles", shell_output("#{bin}/dotdipper --help")
+  end
+end
+FORMULA_EOF
+
+                  echo "Formula updated:"
+                  cat homebrew-tap/Formula/dotdipper.rb
 
             - name: Commit and push
               run: |
                   cd homebrew-tap
-                  git config user.name "GitHub Actions"
-                  git config user.email "actions@github.com"
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
                   git add Formula/dotdipper.rb
+                  git diff --staged --quiet && echo "No changes to commit" && exit 0
                   git commit -m "Update dotdipper to ${GITHUB_REF#refs/tags/v}"
                   git push
 
