@@ -48,8 +48,9 @@ keys.txt
 daemon.pid
 daemon.log
 
-# Snapshots (local only)
+# Snapshots (local only) - but not src/snapshots source code
 snapshots/
+!src/snapshots/
 
 # Profile data (local only)
 profiles/*/manifest.lock
