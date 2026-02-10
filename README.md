@@ -55,15 +55,23 @@ yay -S dotdipper-bin
 
 #### Nix / NixOS
 
+The repo provides a flake at the repo root. The Nix package wraps the binary so `age` is on `PATH` (secrets encryption works without a separate `age` install).
+
 ```bash
-# Using flakes (recommended)
+# Install into your user profile (recommended)
 nix profile install github:psyysp/dotdipper
 
-# Or add to your flake.nix inputs
-# inputs.dotdipper.url = "github:psyysp/dotdipper";
+# Or from a local clone
+git clone https://github.com/psyysp/dotdipper && cd dotdipper
+nix profile install .#dotdipper
+```
 
-# Traditional nix-env
-nix-env -iA nixpkgs.dotdipper  # Once in nixpkgs
+**NixOS (flake-based config):** add to your flake inputs `dotdipper.url = "github:psyysp/dotdipper";`, then in `environment.systemPackages` (or Home Manager `home.packages`) add `inputs.dotdipper.packages.${pkgs.system}.default`.
+
+**Development shell** (Rust + pkg-config, openssl, age):
+
+```bash
+nix develop
 ```
 
 #### Cargo (Rust)
@@ -128,6 +136,8 @@ dotdipper --version
 
 #### Install age (Required for Secrets)
 
+When using the Nix flake, `age` is included on the binary’s `PATH`—no separate install needed. For other install methods:
+
 ```bash
 # macOS
 brew install age
@@ -140,6 +150,9 @@ sudo pacman -S age
 
 # Fedora
 sudo dnf install age
+
+# Nix (if not using the dotdipper flake)
+nix profile install nixpkgs#age
 
 # Windows
 scoop install age
