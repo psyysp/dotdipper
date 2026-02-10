@@ -22,7 +22,7 @@
 
         dotdipper = pkgs.rustPlatform.buildRustPackage {
           pname = "dotdipper";
-          version = "0.3.1";
+          version = "0.4.0";
 
           src = self;
 
@@ -30,8 +30,11 @@
             lockFile = self + "/Cargo.lock";
           };
 
-          nativeBuildInputs = [ pkgs.pkg-config ];
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = [ pkgs.openssl ];
+
+          # Skip tests that require system binaries not available in Nix sandbox
+          doCheck = false;
 
           # age is a runtime dependency for secrets encryption
           postInstall = ''
