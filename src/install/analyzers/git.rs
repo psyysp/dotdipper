@@ -174,8 +174,7 @@ fn map_merge_tool(tool: &str) -> Option<&str> {
 fn is_common_command(cmd: &str) -> bool {
     matches!(
         cmd,
-        "sh"
-            | "bash"
+        "sh" | "bash"
             | "zsh"
             | "echo"
             | "cat"

@@ -46,7 +46,7 @@ fn get_snapshots_dir() -> Result<PathBuf> {
         .context("Failed to find home directory")?
         .join(".dotdipper")
         .join("snapshots");
-    
+
     Ok(base_dir)
 }
 
@@ -54,24 +54,24 @@ fn get_snapshots_dir() -> Result<PathBuf> {
 pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
     let snapshots_dir = get_snapshots_dir()?;
     fs::create_dir_all(&snapshots_dir)?;
-    
+
     // Generate unique ID based on timestamp
     let now = Utc::now();
     let id = now.format("%Y%m%d_%H%M%S").to_string();
-    
+
     // Create snapshot directory
     let snapshot_dir = snapshots_dir.join(&id);
     fs::create_dir_all(&snapshot_dir)?;
-    
+
     // Copy compiled files to snapshot
     let compiled_dir = dirs::home_dir()
         .context("Failed to find home directory")?
         .join(".dotdipper")
         .join("compiled");
-    
+
     let mut file_count = 0;
     let mut size_bytes = 0u64;
-    
+
     if compiled_dir.exists() {
         for entry in walkdir::WalkDir::new(&compiled_dir)
             .into_iter()
@@ -80,18 +80,18 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
             if entry.file_type().is_file() {
                 let rel_path = entry.path().strip_prefix(&compiled_dir)?;
                 let target_path = snapshot_dir.join(rel_path);
-                
+
                 if let Some(parent) = target_path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                
+
                 fs::copy(entry.path(), &target_path)?;
                 file_count += 1;
                 size_bytes += entry.metadata()?.len();
             }
         }
     }
-    
+
     let snapshot = Snapshot {
         id: id.clone(),
         message,
@@ -99,14 +99,14 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
         file_count,
         size_bytes,
     };
-    
+
     // Save snapshot metadata
     let metadata_path = snapshot_dir.join("snapshot.json");
     let metadata_json = serde_json::to_string_pretty(&snapshot)?;
     fs::write(metadata_path, metadata_json)?;
-    
+
     ui::success(&format!("Created snapshot: {} ({} files)", id, file_count));
-    
+
     // Auto-prune if configured
     if let Some(opts) = build_prune_opts_from_config(_config) {
         ui::info("Auto-pruning old snapshots...");
@@ -115,7 +115,7 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
             // Don't fail snapshot creation if pruning fails
         }
     }
-    
+
     Ok(snapshot)
 }
 
@@ -123,13 +123,13 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
 pub fn list(config: &Config) -> Result<Vec<Snapshot>> {
     let _ = config; // Config might be used for filtering in the future
     let snapshots_dir = get_snapshots_dir()?;
-    
+
     if !snapshots_dir.exists() {
         return Ok(Vec::new());
     }
-    
+
     let mut snapshots = Vec::new();
-    
+
     for entry in fs::read_dir(snapshots_dir)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
@@ -142,10 +142,10 @@ pub fn list(config: &Config) -> Result<Vec<Snapshot>> {
             }
         }
     }
-    
+
     // Sort by creation time, newest first
     snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    
+
     // Display snapshots
     if snapshots.is_empty() {
         ui::info("No snapshots found");
@@ -156,14 +156,11 @@ pub fn list(config: &Config) -> Result<Vec<Snapshot>> {
             let size = humansize::format_size(snap.size_bytes, humansize::BINARY);
             println!(
                 "  {} - {} ({} files, {})",
-                snap.id,
-                msg,
-                snap.file_count,
-                size
+                snap.id, msg, snap.file_count, size
             );
         }
     }
-    
+
     Ok(snapshots)
 }
 
@@ -172,15 +169,18 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
     let _ = config;
     let snapshots_dir = get_snapshots_dir()?;
     let snapshot_dir = snapshots_dir.join(id);
-    
+
     if !snapshot_dir.exists() {
         anyhow::bail!("Snapshot not found: {}", id);
     }
-    
+
     // Confirm with user unless force is set
     if !force {
         let confirm = ui::prompt_confirm(
-            &format!("Rollback to snapshot {}? This will overwrite current compiled files.", id),
+            &format!(
+                "Rollback to snapshot {}? This will overwrite current compiled files.",
+                id
+            ),
             false,
         );
         if !confirm {
@@ -188,19 +188,19 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
             return Ok(());
         }
     }
-    
+
     // Get compiled directory
     let compiled_dir = dirs::home_dir()
         .context("Failed to find home directory")?
         .join(".dotdipper")
         .join("compiled");
-    
+
     // Clear current compiled directory
     if compiled_dir.exists() {
         fs::remove_dir_all(&compiled_dir)?;
     }
     fs::create_dir_all(&compiled_dir)?;
-    
+
     // Copy snapshot files to compiled directory
     let mut file_count = 0;
     for entry in walkdir::WalkDir::new(&snapshot_dir)
@@ -212,22 +212,25 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
             if file_name == "snapshot.json" {
                 continue; // Skip metadata file
             }
-            
+
             let rel_path = entry.path().strip_prefix(&snapshot_dir)?;
             let target_path = compiled_dir.join(rel_path);
-            
+
             if let Some(parent) = target_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            
+
             fs::copy(entry.path(), &target_path)?;
             file_count += 1;
         }
     }
-    
-    ui::success(&format!("Rolled back to snapshot {} ({} files restored)", id, file_count));
+
+    ui::success(&format!(
+        "Rolled back to snapshot {} ({} files restored)",
+        id, file_count
+    ));
     ui::hint("Run 'dotdipper apply' to apply the restored files to your system");
-    
+
     Ok(())
 }
 
@@ -236,11 +239,11 @@ pub fn delete(config: &Config, id: &str, force: bool) -> Result<()> {
     let _ = config;
     let snapshots_dir = get_snapshots_dir()?;
     let snapshot_dir = snapshots_dir.join(id);
-    
+
     if !snapshot_dir.exists() {
         anyhow::bail!("Snapshot not found: {}", id);
     }
-    
+
     // Confirm with user unless force is set
     if !force {
         let confirm = ui::prompt_confirm(
@@ -252,25 +255,25 @@ pub fn delete(config: &Config, id: &str, force: bool) -> Result<()> {
             return Ok(());
         }
     }
-    
+
     fs::remove_dir_all(&snapshot_dir)?;
     ui::success(&format!("Deleted snapshot: {}", id));
-    
+
     Ok(())
 }
 
 /// Prune old snapshots based on criteria
 pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
     let snapshots = list(config)?;
-    
+
     if snapshots.is_empty() {
         ui::info("No snapshots to prune");
         return Ok(());
     }
-    
+
     let mut to_delete: Vec<&Snapshot> = Vec::new();
     let mut to_keep: Vec<&Snapshot> = Vec::new();
-    
+
     // Apply keep_count filter
     if let Some(keep_count) = opts.keep_count {
         for (i, snap) in snapshots.iter().enumerate() {
@@ -284,7 +287,7 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
         // If no specific criteria, keep all
         to_keep.extend(snapshots.iter());
     }
-    
+
     // Apply keep_age filter
     if let Some(age_str) = &opts.keep_age {
         if let Some(duration) = parse_duration(age_str) {
@@ -293,37 +296,40 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
             to_keep.retain(|snap| snap.created_at >= cutoff);
         }
     }
-    
+
     // Apply keep_size filter (simplified - would need proper implementation)
     if let Some(_size_str) = &opts.keep_size {
         // TODO: Implement size-based pruning
         ui::warn("Size-based pruning not yet implemented");
     }
-    
+
     if to_delete.is_empty() {
         ui::info("No snapshots to prune based on criteria");
         return Ok(());
     }
-    
+
     // Show what will be deleted
     ui::section("Snapshots to delete:");
     for snap in &to_delete {
         let msg = snap.message.as_deref().unwrap_or("(no message)");
         println!("  {} - {}", snap.id, msg);
     }
-    
+
     if opts.dry_run {
-        ui::info(&format!("Would delete {} snapshots (dry run)", to_delete.len()));
+        ui::info(&format!(
+            "Would delete {} snapshots (dry run)",
+            to_delete.len()
+        ));
         return Ok(());
     }
-    
+
     // Actually delete
     for snap in &to_delete {
         delete(config, &snap.id, true)?;
     }
-    
+
     ui::success(&format!("Pruned {} snapshots", to_delete.len()));
-    
+
     Ok(())
 }
 
@@ -333,14 +339,15 @@ pub fn build_prune_opts_from_config(config: &Config) -> Option<PruneOpts> {
     if !auto_prune.enabled {
         return None;
     }
-    
+
     // If all options are None, don't prune
-    if auto_prune.keep_count.is_none() 
-        && auto_prune.keep_age.is_none() 
-        && auto_prune.keep_size.is_none() {
+    if auto_prune.keep_count.is_none()
+        && auto_prune.keep_age.is_none()
+        && auto_prune.keep_size.is_none()
+    {
         return None;
     }
-    
+
     Some(PruneOpts {
         keep_count: auto_prune.keep_count,
         keep_age: auto_prune.keep_age.clone(),
@@ -355,10 +362,10 @@ fn parse_duration(s: &str) -> Option<chrono::Duration> {
     if s.is_empty() {
         return None;
     }
-    
+
     let (num_str, unit) = s.split_at(s.len() - 1);
     let num: i64 = num_str.parse().ok()?;
-    
+
     match unit {
         "d" => Some(chrono::Duration::days(num)),
         "w" => Some(chrono::Duration::weeks(num)),

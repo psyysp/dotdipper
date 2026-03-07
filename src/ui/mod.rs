@@ -57,11 +57,11 @@ pub fn prompt_confirm(message: &str, default: bool) -> bool {
 pub fn prompt_text(message: &str, default: Option<&str>) -> String {
     let mut prompt = dialoguer::Input::new();
     prompt = prompt.with_prompt(message);
-    
+
     if let Some(default_value) = default {
         prompt = prompt.default(default_value.to_string());
     }
-    
+
     prompt.interact_text().unwrap_or_default()
 }
 
@@ -75,19 +75,19 @@ pub fn print_table(headers: &[&str], rows: Vec<Vec<String>>) {
             }
         }
     }
-    
+
     // Print headers
     for (i, header) in headers.iter().enumerate() {
         print!("{:width$} ", header.bold(), width = widths[i]);
     }
     println!();
-    
+
     // Print separator
     for width in &widths {
         print!("{} ", "-".repeat(*width).dimmed());
     }
     println!();
-    
+
     // Print rows
     for row in rows {
         for (i, cell) in row.iter().enumerate() {

@@ -9,27 +9,27 @@ use crate::cfg::Config;
 pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
     let mut discovered = Vec::new();
-    
+
     // Build gitignore-style matcher from exclude patterns
     let excluder = build_excluder(&config.exclude_patterns, &home)?;
-    
+
     // Process include patterns
     for pattern in &config.include_patterns {
         let expanded = expand_tilde(pattern, &home);
         discover_pattern(&expanded, &excluder, &mut discovered, show_all)?;
     }
-    
+
     // Add already tracked files (they should always be included)
     for file in &config.general.tracked_files {
         if file.exists() && !discovered.contains(file) {
             discovered.push(file.clone());
         }
     }
-    
+
     // Sort for deterministic output
     discovered.sort();
     discovered.dedup();
-    
+
     Ok(discovered)
 }
 
@@ -40,28 +40,28 @@ fn discover_pattern(
     show_all: bool,
 ) -> Result<()> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
-    
+
     // Check if it's a glob pattern or a direct path
     if pattern.contains('*') {
         // It's a glob pattern
-        let glob_pattern = Pattern::new(pattern)
-            .with_context(|| format!("Invalid glob pattern: {}", pattern))?;
-        
+        let glob_pattern =
+            Pattern::new(pattern).with_context(|| format!("Invalid glob pattern: {}", pattern))?;
+
         // Determine the base directory for walking
         let base_dir = get_base_dir_from_pattern(pattern, &home);
-        
+
         for entry in WalkDir::new(&base_dir)
             .follow_links(false)
             .into_iter()
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
-            
+
             // Skip if excluded
             if !show_all && excluder.matched(path, path.is_dir()).is_ignore() {
                 continue;
             }
-            
+
             // Check if it matches the pattern
             if glob_pattern.matches_path(path) {
                 discovered.push(path.to_path_buf());
@@ -79,7 +79,7 @@ fn discover_pattern(
                     .filter_map(|e| e.ok())
                 {
                     let entry_path = entry.path();
-                    
+
                     if entry_path.is_file() {
                         // Skip if excluded
                         if !show_all && excluder.matched(entry_path, false).is_ignore() {
@@ -96,20 +96,20 @@ fn discover_pattern(
             }
         }
     }
-    
+
     Ok(())
 }
 
 fn build_excluder(patterns: &[String], home: &Path) -> Result<Gitignore> {
     let mut builder = GitignoreBuilder::new(home);
-    
+
     for pattern in patterns {
         let expanded = expand_tilde(pattern, home);
         builder
             .add_line(None, &expanded)
             .with_context(|| format!("Invalid exclude pattern: {}", pattern))?;
     }
-    
+
     Ok(builder.build()?)
 }
 
@@ -125,7 +125,7 @@ fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
     // Find the first non-glob component and use that as base
     let expanded = expand_tilde(pattern, home);
     let parts: Vec<&str> = expanded.split('/').collect();
-    
+
     let mut base_parts = Vec::new();
     for part in parts {
         if part.contains('*') || part.contains('?') || part.contains('[') {
@@ -133,7 +133,7 @@ fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
         }
         base_parts.push(part);
     }
-    
+
     if base_parts.is_empty() {
         home.to_path_buf()
     } else {

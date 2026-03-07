@@ -449,7 +449,10 @@ mod tests {
         assert_eq!(mapper.map_binary("rg"), Some("ripgrep".to_string()));
         assert_eq!(mapper.map_binary("ripgrep"), Some("ripgrep".to_string()));
         assert_eq!(mapper.map_binary("nvim"), Some("neovim".to_string()));
-        assert_eq!(mapper.map_binary("kubectl"), Some("kubernetes-cli".to_string()));
+        assert_eq!(
+            mapper.map_binary("kubectl"),
+            Some("kubernetes-cli".to_string())
+        );
     }
 
     #[test]
@@ -475,7 +478,10 @@ mod tests {
         let mut mapper = PackageMapper::new("macos").unwrap();
         mapper.add_custom_mapping("my-tool".to_string(), "my-custom-package".to_string());
 
-        assert_eq!(mapper.map_binary("my-tool"), Some("my-custom-package".to_string()));
+        assert_eq!(
+            mapper.map_binary("my-tool"),
+            Some("my-custom-package".to_string())
+        );
     }
 
     #[test]
@@ -483,7 +489,10 @@ mod tests {
         let mapper = PackageMapper::new("macos").unwrap();
 
         // Unknown binaries should return the binary name as package name
-        assert_eq!(mapper.map_binary("unknown-tool"), Some("unknown-tool".to_string()));
+        assert_eq!(
+            mapper.map_binary("unknown-tool"),
+            Some("unknown-tool".to_string())
+        );
     }
 
     #[test]

@@ -49,10 +49,7 @@ impl DetectedBinary {
 /// Analyze a file and extract binary dependencies based on file type
 pub fn analyze_file(file_path: &Path) -> Result<HashSet<String>> {
     let content = std::fs::read_to_string(file_path)?;
-    let file_name = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let extension = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     // Determine file type and use appropriate analyzer
@@ -102,8 +99,7 @@ fn is_vim_config(name: &str) -> bool {
 
 /// Check if a filename indicates a git configuration file
 fn is_git_config(name: &str) -> bool {
-    matches!(name, ".gitconfig" | ".gitignore" | ".gitattributes")
-        || name.contains("git")
+    matches!(name, ".gitconfig" | ".gitignore" | ".gitattributes") || name.contains("git")
 }
 
 #[cfg(test)]

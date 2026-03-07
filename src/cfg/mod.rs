@@ -9,42 +9,42 @@ use std::process::Command;
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
-    
+
     #[serde(default)]
     pub github: GitHubConfig,
-    
+
     #[serde(default)]
     pub packages: PackagesConfig,
-    
+
     #[serde(default)]
     pub exclude_patterns: Vec<String>,
-    
+
     #[serde(default)]
     pub include_patterns: Vec<String>,
-    
+
     #[serde(default)]
     pub files: BTreeMap<String, FileOverride>,
-    
+
     // Secrets configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SecretsConfig>,
-    
+
     // Hooks configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<HooksConfig>,
-    
+
     // Daemon configuration (future milestone)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonConfig>,
-    
+
     // Auto-pruning configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_prune: Option<AutoPruneConfig>,
-    
+
     // Remote configuration (future milestone)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
-    
+
     // Legacy field for compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dotfiles: Option<DotfilesConfig>,
@@ -54,13 +54,13 @@ pub struct Config {
 pub struct GeneralConfig {
     #[serde(default = "default_mode")]
     pub default_mode: RestoreMode,
-    
+
     #[serde(default = "default_backup")]
     pub backup: bool,
-    
+
     #[serde(default)]
     pub tracked_files: Vec<PathBuf>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
 }
@@ -76,7 +76,7 @@ pub enum RestoreMode {
 pub struct FileOverride {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<RestoreMode>,
-    
+
     #[serde(default)]
     pub exclude: bool,
 }
@@ -86,10 +86,10 @@ pub struct FileOverride {
 pub struct DotfilesConfig {
     #[serde(default = "default_repo_path")]
     pub repo_path: PathBuf,
-    
+
     #[serde(default = "default_symlink")]
     pub use_symlinks: bool,
-    
+
     #[serde(default)]
     pub tracked_files: Vec<PathBuf>,
 }
@@ -106,16 +106,16 @@ pub struct GitHubConfig {
 pub struct PackagesConfig {
     #[serde(default)]
     pub common: Vec<String>,
-    
+
     #[serde(default)]
     pub macos: Vec<String>,
-    
+
     #[serde(default)]
     pub linux: Vec<String>,
-    
+
     #[serde(default)]
     pub ubuntu: Vec<String>,
-    
+
     #[serde(default)]
     pub arch: Vec<String>,
 }
@@ -125,7 +125,7 @@ pub struct SecretsConfig {
     /// Provider: "age" or "sops"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    
+
     /// Path to key file (e.g., "~/.config/age/keys.txt")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_path: Option<String>,
@@ -135,13 +135,13 @@ pub struct SecretsConfig {
 pub struct HooksConfig {
     #[serde(default)]
     pub pre_apply: Vec<String>,
-    
+
     #[serde(default)]
     pub post_apply: Vec<String>,
-    
+
     #[serde(default)]
     pub pre_snapshot: Vec<String>,
-    
+
     #[serde(default)]
     pub post_snapshot: Vec<String>,
 }
@@ -150,11 +150,11 @@ pub struct HooksConfig {
 pub struct DaemonConfig {
     #[serde(default)]
     pub enabled: bool,
-    
+
     /// Mode: "ask" or "auto"
     #[serde(default = "default_daemon_mode")]
     pub mode: String,
-    
+
     #[serde(default = "default_debounce_ms")]
     pub debounce_ms: u64,
 }
@@ -163,15 +163,15 @@ pub struct DaemonConfig {
 pub struct AutoPruneConfig {
     #[serde(default)]
     pub enabled: bool,
-    
+
     /// Keep N most recent snapshots
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_count: Option<usize>,
-    
+
     /// Keep snapshots newer than this duration (e.g., "30d", "7d", "2w")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_age: Option<String>,
-    
+
     /// Keep snapshots until total size is under this limit (e.g., "1GB", "500MB")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_size: Option<String>,
@@ -181,16 +181,16 @@ pub struct AutoPruneConfig {
 pub struct RemoteConfig {
     /// Kind: "github", "s3", "gcs", "webdav"
     pub kind: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bucket: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
 }
@@ -323,7 +323,7 @@ fn default_include_patterns() -> Vec<String> {
         "~/.gitignore_global".to_string(),
         "~/.vimrc".to_string(),
         "~/.tmux.conf".to_string(),
-        "~/.ssh/config".to_string(),  // Only SSH config, not keys
+        "~/.ssh/config".to_string(), // Only SSH config, not keys
     ]
 }
 
@@ -342,34 +342,34 @@ pub fn init(config_path: PathBuf, force: bool) -> Result<()> {
             config_path.display()
         );
     }
-    
+
     // Create directory if it doesn't exist
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).context("Failed to create config directory")?;
     }
-    
+
     // Create default config
     let config = Config::default();
-    
+
     // Write config to file
     let toml_string = toml::to_string_pretty(&config).context("Failed to serialize config")?;
     fs::write(&config_path, toml_string).context("Failed to write config file")?;
-    
+
     // Create required directories
     let base_dir = dirs::home_dir()
         .context("Failed to find home directory")?
         .join(".dotdipper");
-    
+
     fs::create_dir_all(base_dir.join("compiled")).context("Failed to create compiled directory")?;
     fs::create_dir_all(base_dir.join("install")).context("Failed to create install directory")?;
     fs::create_dir_all(base_dir.join("cache")).context("Failed to create cache directory")?;
-    
+
     // Create manifest directory
     let manifest_dir = config_path
         .parent()
         .expect("Config path should have parent");
     fs::create_dir_all(manifest_dir).context("Failed to create manifest directory")?;
-    
+
     Ok(())
 }
 
@@ -380,16 +380,16 @@ pub fn load(config_path: &Path) -> Result<Config> {
             config_path.display()
         );
     }
-    
+
     let contents = fs::read_to_string(config_path).context("Failed to read config file")?;
     let mut config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
-    
+
     // Migrate from legacy dotfiles config if present
     if let Some(dotfiles) = &config.dotfiles {
         config.general.tracked_files = dotfiles.tracked_files.clone();
         // Note: we keep the dotfiles section for backward compatibility but use general.tracked_files
     }
-    
+
     Ok(config)
 }
 
@@ -401,29 +401,29 @@ pub fn save(config_path: &Path, config: &Config) -> Result<()> {
 
 pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
     let mut config = load(config_path)?;
-    
+
     // Add new files that aren't already tracked
     for file in files {
         if !config.general.tracked_files.contains(file) {
             config.general.tracked_files.push(file.clone());
         }
     }
-    
+
     // Sort for deterministic output
     config.general.tracked_files.sort();
-    
+
     save(config_path, &config)?;
     Ok(())
 }
 
 pub fn edit(config_path: &Path) -> Result<()> {
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
-    
+
     Command::new(editor)
         .arg(config_path)
         .status()
         .context("Failed to open editor")?;
-    
+
     Ok(())
 }
 

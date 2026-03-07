@@ -75,7 +75,7 @@ age = "0.10"
 notify = "6.1"
 
 # Templating (for future milestone)
-tera = "1.19"
+tera = "1.20.1"
 
 # Process execution
 which = "6.0"

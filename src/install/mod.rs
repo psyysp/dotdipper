@@ -37,31 +37,31 @@ pub fn detect_os() -> String {
 
 pub fn generate_scripts(config: &Config, target_os: &str) -> Result<Vec<InstallScript>> {
     let mut scripts = Vec::new();
-    
+
     // Generate main install script
     let main_script = generate_main_script(config, target_os)?;
     scripts.push(main_script);
-    
+
     // Generate OS-specific package install script
     let package_script = generate_package_script(&config.packages, target_os)?;
     scripts.push(package_script);
-    
+
     // Generate dotfiles setup script
     let dotfiles_script = generate_dotfiles_script(config)?;
     scripts.push(dotfiles_script);
-    
+
     // Save scripts to disk
     let script_dir = dirs::home_dir()
         .context("Failed to find home directory")?
         .join(".dotdipper")
         .join("install");
-    
+
     fs::create_dir_all(&script_dir)?;
-    
+
     for script in &mut scripts {
         script.path = script_dir.join(&script.name);
         fs::write(&script.path, &script.content)?;
-        
+
         // Make script executable on Unix
         #[cfg(unix)]
         {
@@ -71,12 +71,13 @@ pub fn generate_scripts(config: &Config, target_os: &str) -> Result<Vec<InstallS
             fs::set_permissions(&script.path, perms)?;
         }
     }
-    
+
     Ok(scripts)
 }
 
 fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScript> {
-    let content = format!(r#"#!/usr/bin/env bash
+    let content = format!(
+        r#"#!/usr/bin/env bash
 #
 # Dotdipper Installation Script
 # Generated: {}
@@ -145,7 +146,12 @@ fi
 
 log_info "Installation complete!"
 log_info "Run 'dotdipper status' to check your dotfiles"
-"#, chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"), target_os, target_os, target_os);
+"#,
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        target_os,
+        target_os,
+        target_os
+    );
 
     Ok(InstallScript {
         name: "install.sh".to_string(),
@@ -162,9 +168,9 @@ fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result
         "fedora" | "redhat" => ("dnf", "sudo dnf install -y", "sudo dnf check-update"),
         _ => ("apt", "sudo apt install -y", "sudo apt update"),
     };
-    
+
     let mut all_packages = packages.common.clone();
-    
+
     match target_os {
         "macos" => all_packages.extend(packages.macos.clone()),
         "ubuntu" | "debian" => {
@@ -177,12 +183,13 @@ fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result
         }
         _ => all_packages.extend(packages.linux.clone()),
     }
-    
+
     // Remove duplicates
     all_packages.sort();
     all_packages.dedup();
-    
-    let content = format!(r#"#!/usr/bin/env bash
+
+    let content = format!(
+        r#"#!/usr/bin/env bash
 #
 # Package Installation Script for {}
 # Package Manager: {}
@@ -229,13 +236,20 @@ for package in "${{packages[@]}}"; do
 done
 
 log_info "Package installation complete"
-"#, 
+"#,
         target_os,
         package_manager,
-        package_manager.split_whitespace().next().unwrap_or(package_manager),
+        package_manager
+            .split_whitespace()
+            .next()
+            .unwrap_or(package_manager),
         package_manager,
         update_cmd,
-        all_packages.iter().map(|p| format!("    \"{}\"", p)).collect::<Vec<_>>().join("\n"),
+        all_packages
+            .iter()
+            .map(|p| format!("    \"{}\"", p))
+            .collect::<Vec<_>>()
+            .join("\n"),
         install_cmd
     );
 
@@ -247,9 +261,14 @@ log_info "Package installation complete"
 }
 
 fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let use_symlinks = config.dotfiles.as_ref().map(|d| d.use_symlinks).unwrap_or(false);
-    
-    let content = format!(r#"#!/usr/bin/env bash
+    let use_symlinks = config
+        .dotfiles
+        .as_ref()
+        .map(|d| d.use_symlinks)
+        .unwrap_or(false);
+
+    let content = format!(
+        r#"#!/usr/bin/env bash
 #
 # Dotfiles Setup Script
 # Method: {}
@@ -354,7 +373,8 @@ find "$COMPILED_DIR" -type f | while read -r source_file; do
     # Create symlink
     ln -s "$source_file" "$target_file"
     log_info "Linked $rel_path"
-done"#.to_string()
+done"#
+        .to_string()
 }
 
 fn generate_copy_setup() -> String {
@@ -380,25 +400,26 @@ find "$COMPILED_DIR" -type f | while read -r source_file; do
     # Copy file with permissions
     cp -p "$source_file" "$target_file"
     log_info "Copied $rel_path"
-done"#.to_string()
+done"#
+        .to_string()
 }
 
 pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
     for script in scripts {
         ui::info(&format!("Running {}...", script.name));
-        
+
         let output = Command::new("bash")
             .arg(&script.path)
             .output()
             .with_context(|| format!("Failed to run script: {}", script.name))?;
-        
+
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             anyhow::bail!("Script {} failed: {}", script.name, stderr);
         }
-        
+
         ui::success(&format!("{} completed", script.name));
     }
-    
+
     Ok(())
 }

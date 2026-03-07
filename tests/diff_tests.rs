@@ -1,6 +1,6 @@
 //! Integration tests for the diff module
 
-use dotdipper::diff::{DiffEntry, DiffStatus, filter_by_paths};
+use dotdipper::diff::{filter_by_paths, DiffEntry, DiffStatus};
 use std::path::PathBuf;
 
 #[test]
@@ -18,7 +18,7 @@ fn test_diff_status_equality() {
     assert_eq!(DiffStatus::New, DiffStatus::New);
     assert_eq!(DiffStatus::Missing, DiffStatus::Missing);
     assert_eq!(DiffStatus::Identical, DiffStatus::Identical);
-    
+
     assert_ne!(DiffStatus::Modified, DiffStatus::New);
     assert_ne!(DiffStatus::Missing, DiffStatus::Identical);
 }
@@ -31,7 +31,7 @@ fn test_diff_entry_struct() {
         target_path: PathBuf::from("/home/user/.zshrc"),
         status: DiffStatus::Modified,
     };
-    
+
     assert_eq!(entry.rel_path, PathBuf::from(".zshrc"));
     assert_eq!(entry.status, DiffStatus::Modified);
 }
@@ -52,7 +52,7 @@ fn test_filter_by_paths_empty_filter() {
             status: DiffStatus::New,
         },
     ];
-    
+
     // Empty filter should return all entries
     let filtered = filter_by_paths(entries.clone(), &[]).unwrap();
     assert_eq!(filtered.len(), 2);
@@ -80,10 +80,10 @@ fn test_filter_by_paths_specific() {
             status: DiffStatus::Missing,
         },
     ];
-    
+
     let filter_paths = vec![".zshrc".to_string()];
     let filtered = filter_by_paths(entries, &filter_paths).unwrap();
-    
+
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].rel_path, PathBuf::from(".zshrc"));
 }
@@ -110,10 +110,10 @@ fn test_filter_by_paths_directory() {
             status: DiffStatus::Modified,
         },
     ];
-    
+
     let filter_paths = vec![".config/nvim".to_string()];
     let filtered = filter_by_paths(entries, &filter_paths).unwrap();
-    
+
     assert_eq!(filtered.len(), 2);
 }
 
@@ -125,7 +125,7 @@ fn test_diff_entry_clone() {
         target_path: PathBuf::from("/target/.tmux.conf"),
         status: DiffStatus::Identical,
     };
-    
+
     let cloned = entry.clone();
     assert_eq!(entry.rel_path, cloned.rel_path);
     assert_eq!(entry.status, cloned.status);
@@ -160,27 +160,25 @@ fn test_filter_by_paths_multiple_filters() {
             status: DiffStatus::Missing,
         },
     ];
-    
+
     let filter_paths = vec![".zshrc".to_string(), ".bashrc".to_string()];
     let filtered = filter_by_paths(entries, &filter_paths).unwrap();
-    
+
     assert_eq!(filtered.len(), 2);
 }
 
 #[test]
 fn test_filter_by_paths_no_match() {
-    let entries = vec![
-        DiffEntry {
-            rel_path: PathBuf::from(".zshrc"),
-            source_path: PathBuf::from("/source/.zshrc"),
-            target_path: PathBuf::from("/target/.zshrc"),
-            status: DiffStatus::Modified,
-        },
-    ];
-    
+    let entries = vec![DiffEntry {
+        rel_path: PathBuf::from(".zshrc"),
+        source_path: PathBuf::from("/source/.zshrc"),
+        target_path: PathBuf::from("/target/.zshrc"),
+        status: DiffStatus::Modified,
+    }];
+
     let filter_paths = vec!["nonexistent".to_string()];
     let filtered = filter_by_paths(entries, &filter_paths).unwrap();
-    
+
     assert!(filtered.is_empty());
 }
 
@@ -193,7 +191,7 @@ fn test_diff_status_variants_complete() {
         DiffStatus::Missing,
         DiffStatus::Identical,
     ];
-    
+
     for variant in variants {
         // Each variant should produce a symbol without panicking
         let _ = variant.symbol();

@@ -90,38 +90,25 @@ pub fn suggest_alternatives(binary: &str) -> Vec<(&'static str, &'static str)> {
             ("grep", "Standard grep (slower but universally available)"),
             ("ag", "The Silver Searcher (another fast search tool)"),
         ],
-        "fd" | "fd-find" => vec![
-            ("find", "Standard find (slower but universally available)"),
-        ],
+        "fd" | "fd-find" => vec![("find", "Standard find (slower but universally available)")],
         "bat" => vec![
             ("cat", "Standard cat (no syntax highlighting)"),
             ("less", "Pager with some highlighting support"),
         ],
-        "exa" | "eza" | "lsd" => vec![
-            ("ls", "Standard ls (no icons or colors)"),
-        ],
-        "nvim" | "neovim" => vec![
-            ("vim", "Original Vim editor"),
-            ("vi", "Basic vi editor"),
-        ],
-        "htop" | "btop" | "bottom" => vec![
-            ("top", "Standard top (less features but universally available)"),
-        ],
-        "delta" | "diff-so-fancy" => vec![
-            ("diff", "Standard diff (no syntax highlighting)"),
-        ],
-        "fzf" => vec![
-            ("select", "Basic shell selection (if available)"),
-        ],
-        "zoxide" => vec![
-            ("cd", "Standard cd (no frecency-based jumping)"),
-        ],
-        "starship" => vec![
-            ("PS1", "Custom PS1 prompt configuration"),
-        ],
-        "jq" => vec![
-            ("python", "Use python -m json.tool for basic JSON formatting"),
-        ],
+        "exa" | "eza" | "lsd" => vec![("ls", "Standard ls (no icons or colors)")],
+        "nvim" | "neovim" => vec![("vim", "Original Vim editor"), ("vi", "Basic vi editor")],
+        "htop" | "btop" | "bottom" => vec![(
+            "top",
+            "Standard top (less features but universally available)",
+        )],
+        "delta" | "diff-so-fancy" => vec![("diff", "Standard diff (no syntax highlighting)")],
+        "fzf" => vec![("select", "Basic shell selection (if available)")],
+        "zoxide" => vec![("cd", "Standard cd (no frecency-based jumping)")],
+        "starship" => vec![("PS1", "Custom PS1 prompt configuration")],
+        "jq" => vec![(
+            "python",
+            "Use python -m json.tool for basic JSON formatting",
+        )],
         _ => vec![],
     }
 }
@@ -160,7 +147,10 @@ pub fn format_validation_report(
         for binary in &validation_result.missing {
             if let Some(package) = discovery_result.packages.get(binary) {
                 let instruction = get_install_instructions(package, target_os);
-                report.push_str(&format!("  ✗ {} ({})\n    {}\n", binary, package, instruction));
+                report.push_str(&format!(
+                    "  ✗ {} ({})\n    {}\n",
+                    binary, package, instruction
+                ));
             }
         }
         report.push('\n');

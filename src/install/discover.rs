@@ -122,7 +122,10 @@ impl Default for DiscoveryConfig {
 }
 
 /// Discover packages from dotfiles
-pub fn discover_packages(config: &Config, discovery_config: &DiscoveryConfig) -> Result<DiscoveryResult> {
+pub fn discover_packages(
+    config: &Config,
+    discovery_config: &DiscoveryConfig,
+) -> Result<DiscoveryResult> {
     let mut result = DiscoveryResult::new();
     let mut all_binaries = HashSet::new();
 
@@ -165,7 +168,9 @@ pub fn discover_packages(config: &Config, discovery_config: &DiscoveryConfig) ->
     // Map binaries to packages
     for binary in all_binaries {
         // Set confidence level (default to High for now, could be enhanced)
-        result.confidence.insert(binary.clone(), ConfidenceLevel::High);
+        result
+            .confidence
+            .insert(binary.clone(), ConfidenceLevel::High);
 
         match mapper.map_binary(&binary) {
             Some(package_name) => {
@@ -301,8 +306,12 @@ mod tests {
     #[test]
     fn test_discovery_result_unique_packages() {
         let mut result = DiscoveryResult::new();
-        result.packages.insert("rg".to_string(), "ripgrep".to_string());
-        result.packages.insert("ripgrep".to_string(), "ripgrep".to_string());
+        result
+            .packages
+            .insert("rg".to_string(), "ripgrep".to_string());
+        result
+            .packages
+            .insert("ripgrep".to_string(), "ripgrep".to_string());
         result.packages.insert("fzf".to_string(), "fzf".to_string());
 
         let unique = result.unique_packages();
@@ -315,9 +324,15 @@ mod tests {
     fn test_should_skip_file() {
         let patterns = vec!["*.bak".to_string(), "/tmp/".to_string()];
 
-        assert!(should_skip_file(&PathBuf::from("/home/user/file.bak"), &patterns));
+        assert!(should_skip_file(
+            &PathBuf::from("/home/user/file.bak"),
+            &patterns
+        ));
         assert!(should_skip_file(&PathBuf::from("/tmp/test.txt"), &patterns));
-        assert!(!should_skip_file(&PathBuf::from("/home/user/.zshrc"), &patterns));
+        assert!(!should_skip_file(
+            &PathBuf::from("/home/user/.zshrc"),
+            &patterns
+        ));
     }
 
     #[test]

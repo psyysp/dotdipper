@@ -51,9 +51,7 @@ pub fn analyze(content: &str) -> Result<HashSet<String>> {
     }
 
     // Pattern 7: git (required for many plugins and fugitive)
-    if content.contains("fugitive")
-        || content.contains("gitgutter")
-        || content.contains("gitsigns")
+    if content.contains("fugitive") || content.contains("gitgutter") || content.contains("gitsigns")
     {
         binaries.insert("git".to_string());
     }
@@ -135,7 +133,9 @@ fn analyze_lsp_servers(content: &str, binaries: &mut HashSet<String>) {
     }
 
     // Generic LSP/nvim-lspconfig detection
-    if content.contains("lsp") || content.contains("LanguageServer") || content.contains("lspconfig")
+    if content.contains("lsp")
+        || content.contains("LanguageServer")
+        || content.contains("lspconfig")
     {
         // Check for specific language mentions
         if content.contains("rust") {

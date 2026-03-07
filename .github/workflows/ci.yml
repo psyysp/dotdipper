@@ -96,7 +96,7 @@ jobs:
         run: cargo build --release --verbose
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: dotdipper-${{ matrix.os }}
           path: target/release/dotdipper
@@ -128,15 +128,7 @@ jobs:
 
       - name: Check documentation files exist
         run: |
-          test -f MILESTONE_STATUS.md
-          test -f ARCHITECTURE.md
-          test -f QUICK_START.md
-          test -f README_FEATURES.md
-          test -f BUILD_AND_TEST.md
-          test -f IMPLEMENTATION_SUMMARY.md
-          test -f VERIFICATION_CHECKLIST.md
-          test -f DELIVERY_SUMMARY.md
-          test -f COMMANDS_REFERENCE.md
+          test -f README.md
 
       - name: Verify example config exists
         run: test -f example-config.toml

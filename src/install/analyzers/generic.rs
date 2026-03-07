@@ -256,10 +256,7 @@ fn is_meaningful_reference(content: &str, binary: &str) -> bool {
 
 /// Add binaries based on the file path context
 fn add_context_based_binaries(file_path: &Path, binaries: &mut HashSet<String>) {
-    let file_name = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // Starship configuration
     if file_name == "starship.toml" {

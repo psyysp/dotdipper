@@ -11,9 +11,18 @@ fn test_secrets_provider_from_str_age() {
 
 #[test]
 fn test_secrets_provider_from_str_sops() {
-    assert_eq!(SecretsProvider::from_str("sops"), Some(SecretsProvider::Sops));
-    assert_eq!(SecretsProvider::from_str("Sops"), Some(SecretsProvider::Sops));
-    assert_eq!(SecretsProvider::from_str("SOPS"), Some(SecretsProvider::Sops));
+    assert_eq!(
+        SecretsProvider::from_str("sops"),
+        Some(SecretsProvider::Sops)
+    );
+    assert_eq!(
+        SecretsProvider::from_str("Sops"),
+        Some(SecretsProvider::Sops)
+    );
+    assert_eq!(
+        SecretsProvider::from_str("SOPS"),
+        Some(SecretsProvider::Sops)
+    );
 }
 
 #[test]
@@ -59,7 +68,7 @@ mod age_encryption_tests {
             println!("Skipping test: age not installed");
             return;
         }
-        
+
         let result = dotdipper::secrets::check_age();
         assert!(result.is_ok());
     }
@@ -70,13 +79,13 @@ mod age_encryption_tests {
             println!("Skipping test: age not installed");
             return;
         }
-        
+
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.txt");
-        
+
         let config = Config::default();
         let result = dotdipper::secrets::encrypt(&config, &nonexistent, None);
-        
+
         assert!(result.is_err());
     }
 
@@ -86,13 +95,13 @@ mod age_encryption_tests {
             println!("Skipping test: age not installed");
             return;
         }
-        
+
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.age");
-        
+
         let config = Config::default();
         let result = dotdipper::secrets::decrypt(&config, &nonexistent, None);
-        
+
         assert!(result.is_err());
     }
 
@@ -102,13 +111,13 @@ mod age_encryption_tests {
             println!("Skipping test: age not installed");
             return;
         }
-        
+
         let temp_dir = TempDir::new().unwrap();
         let nonexistent = temp_dir.path().join("nonexistent.age");
-        
+
         let config = Config::default();
         let result = dotdipper::secrets::edit(&config, &nonexistent);
-        
+
         assert!(result.is_err());
     }
 }
@@ -130,7 +139,7 @@ mod secrets_config_tests {
             provider: Some("age".to_string()),
             key_path: Some("~/.config/age/keys.txt".to_string()),
         });
-        
+
         let secrets = config.secrets.as_ref().unwrap();
         assert_eq!(secrets.provider, Some("age".to_string()));
         assert!(secrets.key_path.is_some());
@@ -142,11 +151,11 @@ mod secrets_config_tests {
             provider: Some("age".to_string()),
             key_path: Some("/path/to/keys.txt".to_string()),
         };
-        
+
         let toml = toml::to_string(&secrets).unwrap();
         assert!(toml.contains("age"));
         assert!(toml.contains("/path/to/keys.txt"));
-        
+
         let deserialized: SecretsConfig = toml::from_str(&toml).unwrap();
         assert_eq!(deserialized.provider, secrets.provider);
     }
