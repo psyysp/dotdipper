@@ -84,17 +84,6 @@ cargo install dotdipper
 cargo install --git https://github.com/psyysp/dotdipper
 ```
 
-#### Windows (Scoop)
-
-```powershell
-# Add the bucket and install
-scoop bucket add dotdipper https://github.com/psyysp/scoop-dotdipper
-scoop install dotdipper
-
-# Also install age for secrets
-scoop install age
-```
-
 #### Manual Binary Download
 
 ```bash
@@ -153,9 +142,6 @@ sudo dnf install age
 
 # Nix (if not using the dotdipper flake)
 nix profile install nixpkgs#age
-
-# Windows
-scoop install age
 ```
 
 ### First-Time Setup
