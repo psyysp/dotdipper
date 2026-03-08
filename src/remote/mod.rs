@@ -16,6 +16,7 @@ mod webdav_backend;
 mod local_fs;
 
 use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -23,10 +24,11 @@ use crate::cfg::Config;
 use crate::ui;
 
 /// Remote backend trait
+#[async_trait]
 pub trait Remote: Send + Sync {
     fn name(&self) -> &str;
-    fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject>;
-    fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject>;
+    async fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject>;
+    async fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,9 +70,9 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
 
     // Get endpoint value, expanding ~ to home directory if present
     let endpoint = opts.get("endpoint").map(|e| {
-        if e.starts_with("~/") {
+        if let Some(stripped) = e.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
-                home.join(&e[2..]).to_string_lossy().to_string()
+                home.join(stripped).to_string_lossy().to_string()
             } else {
                 e.clone()
             }
@@ -90,7 +92,7 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
             }
         }
         RemoteKind::S3 => {
-            if opts.get("bucket").is_none() {
+            if !opts.contains_key("bucket") {
                 bail!(
                     "S3 remote requires --bucket.\n\
                        Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1"
@@ -182,7 +184,7 @@ pub fn show(config: &Config) -> Result<()> {
 }
 
 /// Push to remote
-pub fn push(config: &Config, dry_run: bool) -> Result<()> {
+pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
     let remote_cfg = config
         .remote
         .as_ref()
@@ -227,7 +229,7 @@ pub fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     // Push bundle
     ui::info("Uploading bundle...");
-    let obj = remote.push_bundle(&bundle_path)?;
+    let obj = remote.push_bundle(&bundle_path).await?;
 
     let uploaded_size = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!(
@@ -242,7 +244,7 @@ pub fn push(config: &Config, dry_run: bool) -> Result<()> {
 }
 
 /// Pull from remote
-pub fn pull(config: &Config) -> Result<()> {
+pub async fn pull(config: &Config) -> Result<()> {
     let remote_cfg = config.remote.as_ref().context("No remote configured")?;
 
     let remote = create_remote(remote_cfg)?;
@@ -254,7 +256,7 @@ pub fn pull(config: &Config) -> Result<()> {
     let bundle_path = dotdipper_dir.join("bundle_download.tar.zst");
 
     ui::info("Downloading bundle...");
-    let obj = remote.pull_latest(&bundle_path)?;
+    let obj = remote.pull_latest(&bundle_path).await?;
 
     let size_str = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!("Downloaded: {} ({})", obj.etag_or_rev, size_str));

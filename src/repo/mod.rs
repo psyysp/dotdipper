@@ -176,7 +176,7 @@ pub fn status(config: &Config) -> Result<Status> {
     }
 
     // Check for files in manifest that are no longer tracked
-    for (rel_path, _) in &manifest.files {
+    for rel_path in manifest.files.keys() {
         let full_path = home.join(rel_path);
         if !config.general.tracked_files.contains(&full_path) {
             status.deleted.push(full_path);

@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::cfg::Config;
 use crate::install::analyzers;
@@ -189,7 +189,7 @@ pub fn discover_packages(
 }
 
 /// Check if a file should be skipped based on exclude patterns
-fn should_skip_file(file_path: &PathBuf, exclude_patterns: &[String]) -> bool {
+fn should_skip_file(file_path: &Path, exclude_patterns: &[String]) -> bool {
     let path_str = file_path.to_string_lossy();
 
     for pattern in exclude_patterns {
@@ -218,7 +218,7 @@ fn should_skip_file(file_path: &PathBuf, exclude_patterns: &[String]) -> bool {
 }
 
 /// Update configuration with discovered packages
-pub fn update_config_with_packages(config_path: &PathBuf, result: &DiscoveryResult) -> Result<()> {
+pub fn update_config_with_packages(config_path: &Path, result: &DiscoveryResult) -> Result<()> {
     let mut config = crate::cfg::load(config_path)?;
 
     // Merge discovered packages with existing common packages

@@ -1,6 +1,7 @@
+use anyhow::{Context, Result};
 /// LocalFS remote backend - stores bundles in a local directory
 /// Useful for testing and local backups
-use anyhow::{Context, Result};
+use async_trait::async_trait;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -22,12 +23,13 @@ impl LocalFsRemote {
     }
 }
 
+#[async_trait]
 impl Remote for LocalFsRemote {
     fn name(&self) -> &str {
         "LocalFS"
     }
 
-    fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
+    async fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
         let filename = bundle_path.file_name().context("Invalid bundle path")?;
 
         let dest_path = self.storage_dir.join(filename);
@@ -44,7 +46,7 @@ impl Remote for LocalFsRemote {
         })
     }
 
-    fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
+    async fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
         // Find latest bundle in storage dir
         let mut bundles: Vec<PathBuf> = Vec::new();
 
@@ -95,6 +97,7 @@ mod tests {
 
     #[test]
     fn test_local_fs_push_pull() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
         let temp_storage = tempfile::tempdir().unwrap();
         let temp_bundle = tempfile::tempdir().unwrap();
 
@@ -107,12 +110,14 @@ mod tests {
         drop(file);
 
         // Push
-        let obj = remote.push_bundle(&bundle_path).unwrap();
+        let obj = runtime.block_on(remote.push_bundle(&bundle_path)).unwrap();
         assert!(obj.size_bytes > 0);
 
         // Pull
         let download_path = temp_bundle.path().join("downloaded.tar.zst");
-        let obj2 = remote.pull_latest(&download_path).unwrap();
+        let obj2 = runtime
+            .block_on(remote.pull_latest(&download_path))
+            .unwrap();
         assert!(obj2.size_bytes > 0);
         assert!(download_path.exists());
     }

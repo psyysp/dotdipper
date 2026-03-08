@@ -468,7 +468,7 @@ async fn cmd_discover(
     if packages {
         ui::info("Discovering required packages from dotfiles...");
 
-        let os = target_os.unwrap_or_else(|| install::detect_os());
+        let os = target_os.unwrap_or_else(install::detect_os);
         ui::info(&format!("Target OS: {}", os));
 
         let discovery_config = install::DiscoveryConfig {
@@ -705,7 +705,7 @@ async fn cmd_install(
     ui::info("Generating installation scripts...");
     let mut config = cfg::load(&config_path)?;
 
-    let os = target_os.unwrap_or_else(|| install::detect_os());
+    let os = target_os.unwrap_or_else(install::detect_os);
 
     // Auto-discover packages if none are configured
     if config.packages.common.is_empty() {
@@ -1053,10 +1053,10 @@ async fn cmd_remote(config_path: PathBuf, subcmd: RemoteCommands) -> Result<()> 
             remote::show(&config)?;
         }
         RemoteCommands::Push { dry_run } => {
-            remote::push(&config, dry_run)?;
+            remote::push(&config, dry_run).await?;
         }
         RemoteCommands::Pull => {
-            remote::pull(&config)?;
+            remote::pull(&config).await?;
         }
     }
 

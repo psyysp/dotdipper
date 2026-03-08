@@ -23,6 +23,12 @@ pub struct Manifest {
     pub files: HashMap<PathBuf, FileHash>,
 }
 
+impl Default for Manifest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Manifest {
     pub fn new() -> Self {
         Manifest {
