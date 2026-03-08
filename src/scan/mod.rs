@@ -114,8 +114,8 @@ fn build_excluder(patterns: &[String], home: &Path) -> Result<Gitignore> {
 }
 
 fn expand_tilde(path: &str, home: &Path) -> String {
-    if path.starts_with("~/") {
-        home.join(&path[2..]).to_string_lossy().to_string()
+    if let Some(stripped) = path.strip_prefix("~/") {
+        home.join(stripped).to_string_lossy().to_string()
     } else {
         path.to_string()
     }

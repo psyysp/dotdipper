@@ -81,7 +81,7 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
 
     // Add all files
     let output = Command::new("git")
-        .args(&["add", "-A"])
+        .args(["add", "-A"])
         .current_dir(&repo_path)
         .output()
         .context("Failed to add files to git")?;
@@ -95,7 +95,7 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
 
     // Check if there are changes to commit
     let status_output = Command::new("git")
-        .args(&["status", "--porcelain"])
+        .args(["status", "--porcelain"])
         .current_dir(&repo_path)
         .output()
         .context("Failed to check git status")?;
@@ -112,7 +112,7 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
         });
 
         let output = Command::new("git")
-            .args(&["commit", "-m", &commit_message])
+            .args(["commit", "-m", commit_message.as_str()])
             .current_dir(&repo_path)
             .output()
             .context("Failed to commit changes")?;
@@ -129,7 +129,7 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
 
     // Check if remote exists
     let remote_output = Command::new("git")
-        .args(&["remote", "get-url", "origin"])
+        .args(["remote", "get-url", "origin"])
         .current_dir(&repo_path)
         .output();
 
@@ -159,7 +159,7 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
         if stderr.contains("failed to push") || stderr.contains("rejected") {
             // Try to set upstream branch
             let output = Command::new("git")
-                .args(&["push", "--set-upstream", "origin", "main"])
+                .args(["push", "--set-upstream", "origin", "main"])
                 .current_dir(&repo_path)
                 .output()
                 .context("Failed to set upstream branch")?;
@@ -197,7 +197,7 @@ pub fn pull(config: &Config) -> Result<()> {
     } else {
         // Pull changes
         let output = Command::new("git")
-            .args(&["pull", "origin", "main"])
+            .args(["pull", "origin", "main"])
             .current_dir(&repo_path)
             .output()
             .context("Failed to pull from GitHub")?;
@@ -207,7 +207,7 @@ pub fn pull(config: &Config) -> Result<()> {
             if stderr.contains("no tracking information") {
                 // Set tracking branch
                 let output = Command::new("git")
-                    .args(&["branch", "--set-upstream-to=origin/main", "main"])
+                    .args(["branch", "--set-upstream-to=origin/main", "main"])
                     .current_dir(&repo_path)
                     .output()
                     .context("Failed to set tracking branch")?;
@@ -215,7 +215,7 @@ pub fn pull(config: &Config) -> Result<()> {
                 if output.status.success() {
                     // Try pull again
                     let output = Command::new("git")
-                        .args(&["pull", "origin", "main"])
+                        .args(["pull", "origin", "main"])
                         .current_dir(&repo_path)
                         .output()
                         .context("Failed to pull from GitHub")?;
@@ -268,14 +268,14 @@ fn create_github_repo(config: &Config, repo_path: &Path) -> Result<()> {
 
     // Check if repo already exists
     let check_output = Command::new("gh")
-        .args(&["repo", "view", &format!("{}/{}", username, repo_name)])
+        .args(["repo", "view", &format!("{}/{}", username, repo_name)])
         .output();
 
     if check_output.is_ok() && check_output.unwrap().status.success() {
         ui::info("Repository already exists on GitHub");
 
         // Add as remote
-        add_remote(&username, repo_name, repo_path)?;
+        add_remote(username, repo_name, repo_path)?;
     } else {
         // Prompt to create repo
         if ui::prompt_confirm(
@@ -322,7 +322,7 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
     let remote_url = format!("git@github.com:{}/{}.git", username, repo_name);
 
     let output = Command::new("git")
-        .args(&["remote", "add", "origin", &remote_url])
+        .args(["remote", "add", "origin", remote_url.as_str()])
         .current_dir(repo_path)
         .output()
         .context("Failed to add remote")?;
@@ -332,7 +332,7 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
         if stderr.contains("already exists") {
             // Update existing remote
             let output = Command::new("git")
-                .args(&["remote", "set-url", "origin", &remote_url])
+                .args(["remote", "set-url", "origin", remote_url.as_str()])
                 .current_dir(repo_path)
                 .output()
                 .context("Failed to update remote")?;
@@ -362,7 +362,7 @@ fn clone_repo(username: &str, repo_name: &str, dest_path: &Path) -> Result<()> {
     }
 
     let output = Command::new("git")
-        .args(&["clone", &repo_url, dest_path.to_str().unwrap()])
+        .args(["clone", repo_url.as_str(), dest_path.to_str().unwrap()])
         .output()
         .context("Failed to clone repository")?;
 
@@ -379,7 +379,7 @@ fn clone_repo(username: &str, repo_name: &str, dest_path: &Path) -> Result<()> {
 
 fn get_github_username() -> Result<String> {
     let output = Command::new("gh")
-        .args(&["api", "user", "--jq", ".login"])
+        .args(["api", "user", "--jq", ".login"])
         .output()
         .context("Failed to get GitHub username")?;
 

@@ -1,6 +1,7 @@
+use anyhow::{bail, Context, Result};
 /// WebDAV remote backend (feature-gated)
 /// Supports standard WebDAV servers (Nextcloud, ownCloud, etc.)
-use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use reqwest::blocking::Client;
 use reqwest::header::CONTENT_TYPE;
 use std::path::Path;
@@ -111,18 +112,13 @@ impl WebDavRemote {
     }
 }
 
+#[async_trait]
 impl Remote for WebDavRemote {
     fn name(&self) -> &str {
         "WebDAV"
     }
 
-    fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
-        let filename = bundle_path
-            .file_name()
-            .context("Invalid bundle path")?
-            .to_str()
-            .context("Invalid filename")?;
-
+    async fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
         // Generate timestamped filename
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let remote_filename = format!("bundle_{}.tar.zst", timestamp);
@@ -191,7 +187,7 @@ impl Remote for WebDavRemote {
         })
     }
 
-    fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
+    async fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
         crate::ui::info(&format!("Listing bundles from WebDAV: {}", self.endpoint));
 
         // Try to download "latest.tar.zst" first
@@ -275,8 +271,6 @@ impl Remote for WebDavRemote {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_url_generation() {
         let endpoint = "https://cloud.example.com/remote.php/webdav";

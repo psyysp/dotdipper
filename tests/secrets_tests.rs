@@ -4,33 +4,24 @@ use dotdipper::secrets::SecretsProvider;
 
 #[test]
 fn test_secrets_provider_from_str_age() {
-    assert_eq!(SecretsProvider::from_str("age"), Some(SecretsProvider::Age));
-    assert_eq!(SecretsProvider::from_str("Age"), Some(SecretsProvider::Age));
-    assert_eq!(SecretsProvider::from_str("AGE"), Some(SecretsProvider::Age));
+    assert_eq!(SecretsProvider::parse("age"), Some(SecretsProvider::Age));
+    assert_eq!(SecretsProvider::parse("Age"), Some(SecretsProvider::Age));
+    assert_eq!(SecretsProvider::parse("AGE"), Some(SecretsProvider::Age));
 }
 
 #[test]
 fn test_secrets_provider_from_str_sops() {
-    assert_eq!(
-        SecretsProvider::from_str("sops"),
-        Some(SecretsProvider::Sops)
-    );
-    assert_eq!(
-        SecretsProvider::from_str("Sops"),
-        Some(SecretsProvider::Sops)
-    );
-    assert_eq!(
-        SecretsProvider::from_str("SOPS"),
-        Some(SecretsProvider::Sops)
-    );
+    assert_eq!(SecretsProvider::parse("sops"), Some(SecretsProvider::Sops));
+    assert_eq!(SecretsProvider::parse("Sops"), Some(SecretsProvider::Sops));
+    assert_eq!(SecretsProvider::parse("SOPS"), Some(SecretsProvider::Sops));
 }
 
 #[test]
 fn test_secrets_provider_from_str_invalid() {
-    assert_eq!(SecretsProvider::from_str("invalid"), None);
-    assert_eq!(SecretsProvider::from_str(""), None);
-    assert_eq!(SecretsProvider::from_str("gpg"), None);
-    assert_eq!(SecretsProvider::from_str("vault"), None);
+    assert_eq!(SecretsProvider::parse("invalid"), None);
+    assert_eq!(SecretsProvider::parse(""), None);
+    assert_eq!(SecretsProvider::parse("gpg"), None);
+    assert_eq!(SecretsProvider::parse("vault"), None);
 }
 
 #[test]
@@ -134,11 +125,13 @@ mod secrets_config_tests {
 
     #[test]
     fn test_secrets_config_with_values() {
-        let mut config = Config::default();
-        config.secrets = Some(SecretsConfig {
-            provider: Some("age".to_string()),
-            key_path: Some("~/.config/age/keys.txt".to_string()),
-        });
+        let config = Config {
+            secrets: Some(SecretsConfig {
+                provider: Some("age".to_string()),
+                key_path: Some("~/.config/age/keys.txt".to_string()),
+            }),
+            ..Config::default()
+        };
 
         let secrets = config.secrets.as_ref().unwrap();
         assert_eq!(secrets.provider, Some("age".to_string()));

@@ -15,7 +15,7 @@ pub enum SecretsProvider {
 }
 
 impl SecretsProvider {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "age" => Some(SecretsProvider::Age),
             "sops" => Some(SecretsProvider::Sops),
@@ -32,7 +32,7 @@ pub fn init(config: &Config) -> Result<()> {
         .and_then(|s| s.provider.as_deref())
         .unwrap_or("age");
 
-    match SecretsProvider::from_str(provider) {
+    match SecretsProvider::parse(provider) {
         Some(SecretsProvider::Age) => init_age(config),
         Some(SecretsProvider::Sops) => init_sops(config),
         None => bail!("Unknown secrets provider: {}", provider),
@@ -125,7 +125,7 @@ pub fn encrypt(config: &Config, input_path: &Path, output_path: Option<&Path>) -
         .and_then(|s| s.provider.as_deref())
         .unwrap_or("age");
 
-    match SecretsProvider::from_str(provider) {
+    match SecretsProvider::parse(provider) {
         Some(SecretsProvider::Age) => encrypt_age(config, input_path, output_path),
         Some(SecretsProvider::Sops) => encrypt_sops(config, input_path, output_path),
         None => bail!("Unknown secrets provider: {}", provider),
@@ -217,7 +217,7 @@ pub fn decrypt(config: &Config, input_path: &Path, output_path: Option<&Path>) -
         .and_then(|s| s.provider.as_deref())
         .unwrap_or("age");
 
-    match SecretsProvider::from_str(provider) {
+    match SecretsProvider::parse(provider) {
         Some(SecretsProvider::Age) => decrypt_age(config, input_path, output_path),
         Some(SecretsProvider::Sops) => decrypt_sops(config, input_path, output_path),
         None => bail!("Unknown secrets provider: {}", provider),
@@ -315,7 +315,7 @@ pub fn edit(config: &Config, encrypted_path: &Path) -> Result<()> {
         .and_then(|s| s.provider.as_deref())
         .unwrap_or("age");
 
-    match SecretsProvider::from_str(provider) {
+    match SecretsProvider::parse(provider) {
         Some(SecretsProvider::Age) => edit_age(config, encrypted_path),
         Some(SecretsProvider::Sops) => edit_sops(config, encrypted_path),
         None => bail!("Unknown secrets provider: {}", provider),
@@ -378,7 +378,7 @@ pub fn decrypt_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u
         .and_then(|s| s.provider.as_deref())
         .unwrap_or("age");
 
-    match SecretsProvider::from_str(provider) {
+    match SecretsProvider::parse(provider) {
         Some(SecretsProvider::Age) => decrypt_age_to_memory(config, encrypted_path),
         Some(SecretsProvider::Sops) => decrypt_sops_to_memory(config, encrypted_path),
         None => bail!("Unknown secrets provider: {}", provider),
@@ -437,13 +437,10 @@ mod tests {
 
     #[test]
     fn test_provider_from_str() {
-        assert_eq!(SecretsProvider::from_str("age"), Some(SecretsProvider::Age));
-        assert_eq!(SecretsProvider::from_str("Age"), Some(SecretsProvider::Age));
-        assert_eq!(SecretsProvider::from_str("AGE"), Some(SecretsProvider::Age));
-        assert_eq!(
-            SecretsProvider::from_str("sops"),
-            Some(SecretsProvider::Sops)
-        );
-        assert_eq!(SecretsProvider::from_str("invalid"), None);
+        assert_eq!(SecretsProvider::parse("age"), Some(SecretsProvider::Age));
+        assert_eq!(SecretsProvider::parse("Age"), Some(SecretsProvider::Age));
+        assert_eq!(SecretsProvider::parse("AGE"), Some(SecretsProvider::Age));
+        assert_eq!(SecretsProvider::parse("sops"), Some(SecretsProvider::Sops));
+        assert_eq!(SecretsProvider::parse("invalid"), None);
     }
 }

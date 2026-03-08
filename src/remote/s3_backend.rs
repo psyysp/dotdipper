@@ -1,6 +1,7 @@
+use anyhow::{bail, Context, Result};
 /// S3 remote backend (feature-gated)
 /// Supports AWS S3 and S3-compatible storage (MinIO, DigitalOcean Spaces, etc.)
-use anyhow::{bail, Context, Result};
+use async_trait::async_trait;
 use s3::creds::Credentials;
 use s3::Bucket;
 use s3::Region;
@@ -9,15 +10,11 @@ use std::path::Path;
 use super::{Remote, RemoteObject};
 
 pub struct S3Remote {
-    bucket: Bucket,
+    bucket: Box<Bucket>,
     prefix: String,
 }
 
 impl S3Remote {
-    pub fn new(bucket_name: &str, region_str: &str) -> Result<Self> {
-        Self::new_with_prefix(bucket_name, region_str, None)
-    }
-
     pub fn new_with_prefix(
         bucket_name: &str,
         region_str: &str,
@@ -29,7 +26,7 @@ impl S3Remote {
         )?;
 
         // Parse region
-        let region = if let Some(endpoint) = std::env::var("AWS_ENDPOINT_URL").ok() {
+        let region = if let Ok(endpoint) = std::env::var("AWS_ENDPOINT_URL") {
             // Custom S3-compatible endpoint
             Region::Custom {
                 region: region_str.to_string(),
@@ -59,11 +56,12 @@ impl S3Remote {
         }
     }
 
-    fn list_bundles(&self) -> Result<Vec<(String, u64, String)>> {
+    async fn list_bundles(&self) -> Result<Vec<(String, u64, String)>> {
         // List objects with our prefix
         let results = self
             .bucket
             .list(self.prefix.clone(), None)
+            .await
             .context("Failed to list S3 objects")?;
 
         let mut bundles = Vec::new();
@@ -88,18 +86,13 @@ impl S3Remote {
     }
 }
 
+#[async_trait]
 impl Remote for S3Remote {
     fn name(&self) -> &str {
         "S3"
     }
 
-    fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
-        let filename = bundle_path
-            .file_name()
-            .context("Invalid bundle path")?
-            .to_str()
-            .context("Invalid filename")?;
-
+    async fn push_bundle(&self, bundle_path: &Path) -> Result<RemoteObject> {
         // Generate timestamped key
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
         let key = self.bundle_key(&format!("bundle_{}.tar.zst", timestamp));
@@ -118,19 +111,19 @@ impl Remote for S3Remote {
         let response = self
             .bucket
             .put_object(&key, &data)
+            .await
             .context("Failed to upload bundle to S3")?;
 
         // Get ETag from response
         let etag = response
             .headers()
             .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
 
         // Also update "latest" pointer
         let latest_key = self.bundle_key("latest.tar.zst");
-        self.bucket.put_object(&latest_key, &data).ok(); // Don't fail if latest update fails
+        self.bucket.put_object(&latest_key, &data).await.ok(); // Don't fail if latest update fails
 
         Ok(RemoteObject {
             etag_or_rev: etag,
@@ -138,7 +131,7 @@ impl Remote for S3Remote {
         })
     }
 
-    fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
+    async fn pull_latest(&self, dest_bundle: &Path) -> Result<RemoteObject> {
         crate::ui::info(&format!(
             "Listing bundles from S3: s3://{}/{}",
             self.bucket.name(),
@@ -146,7 +139,7 @@ impl Remote for S3Remote {
         ));
 
         // List all bundles and get the latest
-        let bundles = self.list_bundles()?;
+        let bundles = self.list_bundles().await?;
 
         if bundles.is_empty() {
             bail!("No bundles found in S3 bucket at prefix: {}", self.prefix);
@@ -160,6 +153,7 @@ impl Remote for S3Remote {
         let response = self
             .bucket
             .get_object(latest_key)
+            .await
             .context("Failed to download bundle from S3")?;
 
         // Write to destination
@@ -170,9 +164,8 @@ impl Remote for S3Remote {
         let etag = response
             .headers()
             .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
 
         Ok(RemoteObject {
             etag_or_rev: etag,
@@ -183,8 +176,6 @@ impl Remote for S3Remote {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_bundle_key_generation() {
         // This test doesn't require actual S3 credentials

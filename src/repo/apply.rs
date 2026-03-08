@@ -53,7 +53,7 @@ pub fn apply(
 
     let pb = ui::progress_bar(manifest.files.len() as u64, "Applying dotfiles");
 
-    for (rel_path, _file_hash) in &manifest.files {
+    for rel_path in manifest.files.keys() {
         let mut source_path = compiled_root.join(rel_path);
         let mut target_path = home_dir.join(rel_path);
 
@@ -127,7 +127,7 @@ pub fn apply(
         let file_override = cfg.files.get(&path_str);
 
         // Check if excluded
-        if file_override.map_or(false, |o| o.exclude) {
+        if file_override.is_some_and(|o| o.exclude) {
             pb.inc(1);
             actions.push(AppliedAction {
                 mode: AppliedMode::Skipped,
