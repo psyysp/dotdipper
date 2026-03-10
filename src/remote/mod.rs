@@ -317,8 +317,7 @@ fn create_remote(remote_cfg: &crate::cfg::RemoteConfig) -> Result<Box<dyn Remote
 }
 
 fn get_dotdipper_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Failed to find home directory")?;
-    Ok(home.join(".dotdipper"))
+    crate::paths::base_dir()
 }
 
 #[cfg(test)]

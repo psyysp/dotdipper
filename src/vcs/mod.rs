@@ -5,6 +5,21 @@ use std::process::Command;
 use crate::cfg::Config;
 use crate::ui;
 
+const BASE_GITIGNORE: &str = r#"# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+"#;
+
 pub fn check_git() -> Result<()> {
     let output = Command::new("git")
         .arg("--version")
@@ -37,7 +52,7 @@ pub fn init_repo(repo_path: &Path) -> Result<()> {
     }
 
     let output = Command::new("git")
-        .arg("init")
+        .args(["init", "-b", "main"])
         .current_dir(repo_path)
         .output()
         .context("Failed to initialize git repository")?;
@@ -49,35 +64,24 @@ pub fn init_repo(repo_path: &Path) -> Result<()> {
         );
     }
 
-    // Create .gitignore
-    let gitignore = r#"# Temporary files
-*.tmp
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Backup files
-*.bak
-*.backup
-"#;
-
-    std::fs::write(repo_path.join(".gitignore"), gitignore)?;
+    std::fs::write(repo_path.join(".gitignore"), BASE_GITIGNORE)?;
 
     Ok(())
 }
 
-pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()> {
-    let repo_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
+pub fn push(
+    config: &Config,
+    message: Option<String>,
+    force: bool,
+    repo_override: Option<&str>,
+) -> Result<String> {
+    let repo_path = crate::paths::compiled_dir()?;
+    let repo_name = resolve_repo_name(config, repo_override);
+    let username = resolve_github_username(config)?;
 
     // Ensure git is initialized
     init_repo(&repo_path)?;
+    write_push_gitignore(&repo_path, config)?;
 
     // Add all files
     let output = Command::new("git")
@@ -127,19 +131,33 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
         ui::success("Changes committed");
     }
 
-    // Check if remote exists
-    let remote_output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
+    // Ensure the branch is named 'main'
+    let branch_output = Command::new("git")
+        .args(["branch", "--show-current"])
         .current_dir(&repo_path)
-        .output();
+        .output()
+        .context("Failed to get current branch name")?;
 
-    if remote_output.is_err() || !remote_output.unwrap().status.success() {
-        // No remote, try to create GitHub repo
-        if let Err(e) = create_github_repo(config, &repo_path) {
-            ui::warn(&format!("Could not create GitHub repo: {}", e));
-            ui::hint("Create a GitHub repository manually and add it as a remote");
-            return Ok(());
+    let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+    if !current_branch.is_empty() && current_branch != "main" {
+        let rename_output = Command::new("git")
+            .args(["branch", "-M", "main"])
+            .current_dir(&repo_path)
+            .output()
+            .context("Failed to rename branch to main")?;
+
+        if !rename_output.status.success() {
+            anyhow::bail!(
+                "Failed to rename branch to main: {}",
+                String::from_utf8_lossy(&rename_output.stderr)
+            );
         }
+    }
+
+    if let Err(e) = ensure_github_repo(config, &repo_path, &username, &repo_name) {
+        ui::warn(&format!("Could not create GitHub repo: {}", e));
+        ui::hint("Create a GitHub repository manually and add it as a remote");
+        return Ok(repo_name);
     }
 
     // Push to remote
@@ -175,26 +193,21 @@ pub fn push(config: &Config, message: Option<String>, force: bool) -> Result<()>
         }
     }
 
-    Ok(())
+    Ok(repo_name)
 }
 
-pub fn pull(config: &Config) -> Result<()> {
-    let repo_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
+pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
+    let repo_path = crate::paths::compiled_dir()?;
+    let repo_name = resolve_repo_name(config, repo_override);
+    let username = resolve_github_username(config)?;
 
     // If repo doesn't exist, clone it
     if !repo_path.join(".git").exists() {
-        if let Some(ref username) = config.github.username {
-            let repo_name = config.github.repo_name.as_deref().unwrap_or("dotfiles");
-            clone_repo(username, repo_name, &repo_path)?;
-        } else {
-            anyhow::bail!(
-                "No GitHub username configured. Run 'dotdipper config --edit' to set it."
-            );
-        }
+        clone_repo(&username, &repo_name, &repo_path)?;
     } else {
+        // Ensure current origin points at the selected repo
+        add_remote(&username, &repo_name, &repo_path)?;
+
         // Pull changes
         let output = Command::new("git")
             .args(["pull", "origin", "main"])
@@ -238,28 +251,11 @@ pub fn pull(config: &Config) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(repo_name)
 }
 
-fn create_github_repo(config: &Config, repo_path: &Path) -> Result<()> {
+fn ensure_github_repo(config: &Config, repo_path: &Path, username: &str, repo_name: &str) -> Result<()> {
     check_gh()?;
-
-    let username_string;
-    let username = if let Some(u) = config.github.username.as_deref() {
-        u
-    } else if let Ok(u) = get_github_username() {
-        username_string = u;
-        username_string.as_str()
-    } else {
-        username_string = ui::prompt_text("Enter your GitHub username:", None);
-        username_string.as_str()
-    };
-
-    if username.is_empty() {
-        anyhow::bail!("GitHub username is required");
-    }
-
-    let repo_name = config.github.repo_name.as_deref().unwrap_or("dotfiles");
 
     ui::info(&format!(
         "Creating GitHub repository: {}/{}",
@@ -274,8 +270,6 @@ fn create_github_repo(config: &Config, repo_path: &Path) -> Result<()> {
     if check_output.is_ok() && check_output.unwrap().status.success() {
         ui::info("Repository already exists on GitHub");
 
-        // Add as remote
-        add_remote(username, repo_name, repo_path)?;
     } else {
         // Prompt to create repo
         if ui::prompt_confirm(
@@ -314,6 +308,9 @@ fn create_github_repo(config: &Config, repo_path: &Path) -> Result<()> {
             anyhow::bail!("Repository creation cancelled");
         }
     }
+
+    // Always ensure remote URL matches selected repo
+    add_remote(username, repo_name, repo_path)?;
 
     Ok(())
 }
@@ -388,4 +385,52 @@ fn get_github_username() -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn resolve_repo_name(config: &Config, repo_override: Option<&str>) -> String {
+    repo_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| config.github.repo_name.clone())
+        .unwrap_or_else(|| "dotfiles".to_string())
+}
+
+fn resolve_github_username(config: &Config) -> Result<String> {
+    if let Some(username) = config.github.username.as_deref() {
+        if !username.trim().is_empty() {
+            return Ok(username.trim().to_string());
+        }
+    }
+
+    if let Ok(username) = get_github_username() {
+        if !username.trim().is_empty() {
+            return Ok(username.trim().to_string());
+        }
+    }
+
+    let username = ui::prompt_text("Enter your GitHub username:", None);
+    if username.trim().is_empty() {
+        anyhow::bail!("GitHub username is required");
+    }
+
+    Ok(username.trim().to_string())
+}
+
+fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
+    let mut content = BASE_GITIGNORE.trim_end().to_string();
+    let ignored = crate::cfg::resolve_push_ignored_paths(config)?;
+
+    if !ignored.is_empty() {
+        content.push_str("\n\n# Dotdipper push-ignore\n");
+        for pattern in ignored {
+            content.push_str(&pattern);
+            content.push('\n');
+        }
+    } else {
+        content.push('\n');
+    }
+
+    std::fs::write(repo_path.join(".gitignore"), content).context("Failed to update .gitignore")?;
+    Ok(())
 }

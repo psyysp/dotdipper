@@ -26,7 +26,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     verbose: bool,
 
-    /// Path to config file (defaults to ~/.dotdipper/config.toml)
+    /// Path to config file (defaults to ~/.config/dotdipper/config.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
@@ -132,6 +132,10 @@ enum Commands {
         /// Force push
         #[arg(short, long)]
         force: bool,
+
+        /// Override the GitHub repository name (e.g. 'dotfiles-dotdipper')
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Pull dotfiles from GitHub
@@ -147,6 +151,10 @@ enum Commands {
         /// Allow operations outside $HOME (unsafe)
         #[arg(long)]
         unsafe_allow_outside_home: bool,
+
+        /// Override the GitHub repository name
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Generate and run installation scripts
@@ -180,7 +188,15 @@ enum Commands {
         /// Show current configuration
         #[arg(long)]
         show: bool,
+
+        /// Set a config value (format: key=value, e.g. github.repo_name=dotfiles-dotdipper)
+        #[arg(long, value_name = "KEY=VALUE")]
+        set: Option<String>,
     },
+
+    /// Manage push-ignore patterns
+    #[command(subcommand)]
+    Ignore(IgnoreCommands),
 }
 
 #[derive(Subcommand)]
@@ -355,6 +371,24 @@ enum DaemonCommands {
     Disable,
 }
 
+#[derive(Subcommand)]
+enum IgnoreCommands {
+    /// Add a pattern to push-ignore
+    Add {
+        /// Pattern to ignore on git push (e.g. ~/.config/karabiner/**)
+        pattern: String,
+    },
+
+    /// Remove a pattern from push-ignore
+    Remove {
+        /// Pattern to remove
+        pattern: String,
+    },
+
+    /// List all effective push-ignore patterns
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -369,10 +403,7 @@ async fn main() -> Result<()> {
 
     // Get or create config
     let config_path = cli.config.unwrap_or_else(|| {
-        dirs::home_dir()
-            .expect("Could not find home directory")
-            .join(".dotdipper")
-            .join("config.toml")
+        dotdipper::paths::config_file().expect("Could not determine dotdipper config path")
     });
 
     let result = match cli.command {
@@ -418,19 +449,25 @@ async fn main() -> Result<()> {
         Commands::Profile(subcmd) => cmd_profile(config_path, subcmd).await,
         Commands::Remote(subcmd) => cmd_remote(config_path, subcmd).await,
         Commands::Daemon(subcmd) => cmd_daemon(config_path, subcmd).await,
-        Commands::Push { message, force } => cmd_push(config_path, message, force).await,
+        Commands::Push {
+            message,
+            force,
+            repo,
+        } => cmd_push(config_path, message, force, repo).await,
         Commands::Pull {
             apply,
             force,
             unsafe_allow_outside_home,
-        } => cmd_pull(config_path, apply, force, unsafe_allow_outside_home).await,
+            repo,
+        } => cmd_pull(config_path, apply, force, unsafe_allow_outside_home, repo).await,
         Commands::Install {
             dry_run,
             target_os,
             unsafe_allow_outside_home,
         } => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
-        Commands::Config { edit, show } => cmd_config(config_path, edit, show).await,
+        Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
+        Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
     };
 
     if let Err(e) = result {
@@ -642,7 +679,12 @@ async fn cmd_status(config_path: PathBuf, detailed: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_push(config_path: PathBuf, message: Option<String>, force: bool) -> Result<()> {
+async fn cmd_push(
+    config_path: PathBuf,
+    message: Option<String>,
+    force: bool,
+    repo: Option<String>,
+) -> Result<()> {
     ui::info("Pushing to GitHub...");
     let config = cfg::load(&config_path)?;
 
@@ -650,7 +692,16 @@ async fn cmd_push(config_path: PathBuf, message: Option<String>, force: bool) ->
     repo::snapshot(&config, false)?;
 
     // Push to GitHub
-    vcs::push(&config, message, force)?;
+    let effective_repo = vcs::push(&config, message, force, repo.as_deref())?;
+
+    if repo.is_some() && config.github.repo_name.is_none() {
+        cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
+        ui::info(&format!(
+            "Saved '{}' as default GitHub repository in config",
+            effective_repo
+        ));
+    }
+
     ui::success("Successfully pushed to GitHub!");
     Ok(())
 }
@@ -660,23 +711,27 @@ async fn cmd_pull(
     apply: bool,
     force: bool,
     allow_outside_home: bool,
+    repo: Option<String>,
 ) -> Result<()> {
     ui::info("Pulling from GitHub...");
     let config = cfg::load(&config_path)?;
 
-    vcs::pull(&config)?;
+    let effective_repo = vcs::pull(&config, repo.as_deref())?;
+
+    if repo.is_some() && config.github.repo_name.is_none() {
+        cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
+        ui::info(&format!(
+            "Saved '{}' as default GitHub repository in config",
+            effective_repo
+        ));
+    }
+
     ui::success("Successfully pulled from GitHub!");
 
     if apply {
         ui::info("Applying changes to system...");
-        let compiled_path = dirs::home_dir()
-            .context("Failed to find home directory")?
-            .join(".dotdipper")
-            .join("compiled");
-        let manifest_path = dirs::home_dir()
-            .context("Failed to find home directory")?
-            .join(".dotdipper")
-            .join("manifest.lock");
+        let compiled_path = dotdipper::paths::compiled_dir()?;
+        let manifest_path = dotdipper::paths::manifest_file()?;
 
         if manifest_path.exists() {
             let manifest = crate::hash::Manifest::load(&manifest_path)?;
@@ -691,6 +746,34 @@ async fn cmd_pull(
         }
     } else {
         ui::hint("Use --apply to apply the pulled changes to your system");
+    }
+
+    Ok(())
+}
+
+async fn cmd_ignore(config_path: PathBuf, subcmd: IgnoreCommands) -> Result<()> {
+    match subcmd {
+        IgnoreCommands::Add { pattern } => {
+            cfg::add_push_ignore(&config_path, &pattern)?;
+            ui::success(&format!("Added push-ignore pattern: {}", pattern));
+        }
+        IgnoreCommands::Remove { pattern } => {
+            cfg::remove_push_ignore(&config_path, &pattern)?;
+            ui::success(&format!("Removed push-ignore pattern: {}", pattern));
+        }
+        IgnoreCommands::List => {
+            let config = cfg::load(&config_path)?;
+            let patterns = cfg::resolve_push_ignored_paths(&config)?;
+
+            if patterns.is_empty() {
+                ui::info("No push-ignore patterns configured");
+            } else {
+                ui::section("Effective push-ignore patterns:");
+                for pattern in patterns {
+                    println!("  {}", pattern);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -764,14 +847,8 @@ async fn cmd_install(
 
         // Apply dotfiles after installation
         ui::info("Applying dotfiles...");
-        let compiled_path = dirs::home_dir()
-            .context("Failed to find home directory")?
-            .join(".dotdipper")
-            .join("compiled");
-        let manifest_path = dirs::home_dir()
-            .context("Failed to find home directory")?
-            .join(".dotdipper")
-            .join("manifest.lock");
+        let compiled_path = dotdipper::paths::compiled_dir()?;
+        let manifest_path = dotdipper::paths::manifest_file()?;
 
         if compiled_path.exists() && manifest_path.exists() {
             let manifest = crate::hash::Manifest::load(&manifest_path)?;
@@ -831,14 +908,8 @@ async fn cmd_diff(config_path: PathBuf, detailed: bool) -> Result<()> {
     ui::info("Computing diff...");
     let config = cfg::load(&config_path)?;
 
-    let compiled_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
-    let manifest_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("manifest.lock");
+    let compiled_path = dotdipper::paths::compiled_dir()?;
+    let manifest_path = dotdipper::paths::manifest_file()?;
 
     if !manifest_path.exists() {
         ui::warn("No manifest found. Run 'dotdipper pull' or 'dotdipper snapshot' first.");
@@ -861,14 +932,8 @@ async fn cmd_apply(
     ui::info("Applying dotfiles...");
     let config = cfg::load(&config_path)?;
 
-    let compiled_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
-    let manifest_path = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("manifest.lock");
+    let compiled_path = dotdipper::paths::compiled_dir()?;
+    let manifest_path = dotdipper::paths::manifest_file()?;
 
     if !manifest_path.exists() {
         ui::warn("No manifest found. Run 'dotdipper pull' first.");
@@ -1088,15 +1153,26 @@ async fn cmd_daemon(config_path: PathBuf, subcmd: DaemonCommands) -> Result<()> 
     Ok(())
 }
 
-async fn cmd_config(config_path: PathBuf, edit: bool, show: bool) -> Result<()> {
-    if edit {
+async fn cmd_config(
+    config_path: PathBuf,
+    edit: bool,
+    show: bool,
+    set: Option<String>,
+) -> Result<()> {
+    if let Some(kv) = set {
+        let (key, value) = kv
+            .split_once('=')
+            .context("Invalid format. Use key=value (e.g. github.repo_name=dotfiles-dotdipper)")?;
+        cfg::set_config_value(&config_path, key.trim(), value.trim())?;
+        ui::success(&format!("Set {} = {}", key.trim(), value.trim()));
+    } else if edit {
         cfg::edit(&config_path)?;
         ui::success("Configuration edited");
     } else if show {
         let config = cfg::load(&config_path)?;
         println!("{}", toml::to_string_pretty(&config)?);
     } else {
-        ui::hint("Use --edit to modify or --show to view the configuration");
+        ui::hint("Use --edit to modify, --show to view, or --set key=value to set a value");
     }
 
     Ok(())

@@ -5,7 +5,7 @@
 /// - Switching between profiles
 /// - Profile-specific configurations with base + overlay merging
 /// - Per-profile manifest and compiled directories
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -250,8 +250,7 @@ pub fn profile_paths(name: &str) -> Result<ProfilePaths> {
 }
 
 fn get_dotdipper_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Failed to find home directory")?;
-    Ok(home.join(".dotdipper"))
+    crate::paths::base_dir()
 }
 
 fn ensure_default_profile() -> Result<()> {

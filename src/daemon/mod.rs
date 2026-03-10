@@ -404,8 +404,7 @@ fn is_process_running(pid: i32) -> bool {
 }
 
 fn get_dotdipper_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Failed to find home directory")?;
-    Ok(home.join(".dotdipper"))
+    crate::paths::base_dir()
 }
 
 #[cfg(test)]

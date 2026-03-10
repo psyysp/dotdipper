@@ -25,6 +25,9 @@ pub struct Config {
     #[serde(default)]
     pub files: BTreeMap<String, FileOverride>,
 
+    #[serde(default)]
+    pub push_ignore: Vec<String>,
+
     // Secrets configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SecretsConfig>,
@@ -79,6 +82,9 @@ pub struct FileOverride {
 
     #[serde(default)]
     pub exclude: bool,
+
+    #[serde(default)]
+    pub local_only: bool,
 }
 
 // Legacy config for migration
@@ -204,6 +210,7 @@ impl Default for Config {
             exclude_patterns: default_exclude_patterns(),
             include_patterns: default_include_patterns(),
             files: BTreeMap::new(),
+            push_ignore: Vec::new(),
             secrets: None,
             hooks: None,
             daemon: None,
@@ -264,10 +271,7 @@ impl Default for PackagesConfig {
 }
 
 fn default_repo_path() -> PathBuf {
-    dirs::home_dir()
-        .expect("Could not find home directory")
-        .join(".dotdipper")
-        .join("compiled")
+    crate::paths::compiled_dir().expect("Could not determine dotdipper compiled directory")
 }
 
 fn default_symlink() -> bool {
@@ -356,9 +360,7 @@ pub fn init(config_path: PathBuf, force: bool) -> Result<()> {
     fs::write(&config_path, toml_string).context("Failed to write config file")?;
 
     // Create required directories
-    let base_dir = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper");
+    let base_dir = crate::paths::base_dir()?;
 
     fs::create_dir_all(base_dir.join("compiled")).context("Failed to create compiled directory")?;
     fs::create_dir_all(base_dir.join("install")).context("Failed to create install directory")?;
@@ -433,4 +435,102 @@ pub fn check_exists(config_path: &Path) -> Result<()> {
     } else {
         anyhow::bail!("Config file not found")
     }
+}
+
+/// Returns relative paths (relative to $HOME) that should be excluded from git push.
+/// Combines top-level `push_ignore` patterns and per-file `local_only` entries.
+pub fn resolve_push_ignored_paths(config: &Config) -> Result<Vec<String>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let mut ignored = Vec::new();
+
+    for pattern in &config.push_ignore {
+        let expanded = if let Some(rest) = pattern.strip_prefix("~/") {
+            rest.to_string()
+        } else {
+            pattern.clone()
+        };
+        ignored.push(expanded);
+    }
+
+    for (file_path, file_override) in &config.files {
+        if file_override.local_only {
+            let expanded = if let Some(rest) = file_path.strip_prefix("~/") {
+                rest.to_string()
+            } else if let Ok(stripped) = PathBuf::from(file_path).strip_prefix(&home) {
+                stripped.to_string_lossy().to_string()
+            } else {
+                file_path.clone()
+            };
+            ignored.push(expanded);
+        }
+    }
+
+    ignored.sort();
+    ignored.dedup();
+    Ok(ignored)
+}
+
+pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
+    let mut config = load(config_path)?;
+    let pattern = pattern.trim();
+
+    if pattern.is_empty() {
+        anyhow::bail!("Ignore pattern cannot be empty");
+    }
+
+    if !config.push_ignore.iter().any(|existing| existing == pattern) {
+        config.push_ignore.push(pattern.to_string());
+        config.push_ignore.sort();
+    }
+
+    save(config_path, &config)?;
+    Ok(())
+}
+
+pub fn remove_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
+    let mut config = load(config_path)?;
+    let pattern = pattern.trim();
+
+    if pattern.is_empty() {
+        anyhow::bail!("Ignore pattern cannot be empty");
+    }
+
+    config.push_ignore.retain(|existing| existing != pattern);
+    save(config_path, &config)?;
+    Ok(())
+}
+
+pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()> {
+    let mut config = load(config_path)?;
+
+    match key {
+        "github.username" => config.github.username = Some(value.to_string()),
+        "github.repo_name" => config.github.repo_name = Some(value.to_string()),
+        "github.private" => {
+            config.github.private = value
+                .parse()
+                .context("Invalid boolean value. Use 'true' or 'false'")?
+        }
+        "general.default_mode" => {
+            config.general.default_mode = match value {
+                "symlink" => RestoreMode::Symlink,
+                "copy" => RestoreMode::Copy,
+                _ => anyhow::bail!("Invalid mode '{}'. Use 'symlink' or 'copy'", value),
+            }
+        }
+        "general.backup" => {
+            config.general.backup = value
+                .parse()
+                .context("Invalid boolean value. Use 'true' or 'false'")?
+        }
+        _ => anyhow::bail!(
+            "Unknown config key '{}'. Supported keys:\n  \
+             github.username, github.repo_name, github.private,\n  \
+             general.default_mode, general.backup",
+            key
+        ),
+    }
+
+    save(config_path, &config)?;
+    Ok(())
 }

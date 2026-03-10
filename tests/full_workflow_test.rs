@@ -14,7 +14,7 @@ use tempfile::TempDir;
 fn test_full_workflow_without_github() {
     let temp_dir = TempDir::new().unwrap();
     let home_dir = temp_dir.path();
-    let dotdipper_dir = home_dir.join(".dotdipper");
+    let dotdipper_dir = home_dir.join(".config").join("dotdipper");
 
     // Create dotdipper directory structure
     fs::create_dir_all(&dotdipper_dir).unwrap();
@@ -150,7 +150,7 @@ exclude_patterns = ["~/.ssh/**"]
 #[test]
 fn test_doctor_checks() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
 
     let config_path = dotdipper_dir.join("config.toml");
@@ -283,7 +283,7 @@ mod advanced_integration {
     #[test]
     fn test_snapshot_with_hooks() {
         let temp_dir = TempDir::new().unwrap();
-        let dotdipper_dir = temp_dir.path().join(".dotdipper");
+        let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
         fs::create_dir_all(&dotdipper_dir).unwrap();
 
         let config_path = dotdipper_dir.join("config.toml");
@@ -327,7 +327,7 @@ post_snapshot = ["echo 'post' >> {}"]
     #[test]
     fn test_diff_detailed_flag() {
         let temp_dir = TempDir::new().unwrap();
-        let dotdipper_dir = temp_dir.path().join(".dotdipper");
+        let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
         fs::create_dir_all(&dotdipper_dir).unwrap();
 
         let config_path = dotdipper_dir.join("config.toml");

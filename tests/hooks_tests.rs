@@ -39,7 +39,7 @@ post_snapshot = []
 #[test]
 fn test_snapshot_with_hooks() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
 
     let config_path = dotdipper_dir.join("config.toml");
@@ -72,7 +72,7 @@ post_snapshot = ["echo 'Snapshot complete'"]
 #[test]
 fn test_failing_hook_stops_execution() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
 
     let config_path = dotdipper_dir.join("config.toml");

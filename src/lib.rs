@@ -13,6 +13,7 @@ pub mod daemon;
 pub mod diff;
 pub mod hash;
 pub mod install;
+pub mod paths;
 pub mod profiles;
 pub mod remote;
 pub mod repo;

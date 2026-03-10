@@ -3,7 +3,7 @@
 //! This module provides functionality to create, list, rollback, and delete
 //! versioned snapshots of dotfiles.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -40,14 +40,8 @@ pub struct PruneOpts {
     pub dry_run: bool,
 }
 
-/// Get the snapshots directory path
 fn get_snapshots_dir() -> Result<PathBuf> {
-    let base_dir = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("snapshots");
-
-    Ok(base_dir)
+    crate::paths::snapshots_dir()
 }
 
 /// Create a new snapshot
@@ -63,11 +57,7 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
     let snapshot_dir = snapshots_dir.join(&id);
     fs::create_dir_all(&snapshot_dir)?;
 
-    // Copy compiled files to snapshot
-    let compiled_dir = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
+    let compiled_dir = crate::paths::compiled_dir()?;
 
     let mut file_count = 0;
     let mut size_bytes = 0u64;
@@ -189,11 +179,7 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
         }
     }
 
-    // Get compiled directory
-    let compiled_dir = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("compiled");
+    let compiled_dir = crate::paths::compiled_dir()?;
 
     // Clear current compiled directory
     if compiled_dir.exists() {

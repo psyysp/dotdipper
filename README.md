@@ -468,7 +468,7 @@ post_snapshot = ["git add -A && git commit -m 'Snapshot' || true"]
 
 ## ⚙️ Configuration
 
-Configuration is stored in `~/.dotdipper/config.toml`:
+Configuration is stored in `~/.config/dotdipper/config.toml` (or `$XDG_CONFIG_HOME/dotdipper/config.toml`). You can override the base directory by setting the `DOTDIPPER_HOME` environment variable.
 
 ```toml
 [general]

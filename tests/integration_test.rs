@@ -106,7 +106,7 @@ fn test_init_force_overwrites() {
 #[test]
 fn test_init_creates_directories() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     let config_path = dotdipper_dir.join("config.toml");
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
@@ -143,7 +143,7 @@ fn test_discover_without_init() {
 #[test]
 fn test_discover_dry_run() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -179,7 +179,7 @@ include_patterns = ["~/.config/**"]
 #[test]
 fn test_status_no_manifest() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -204,7 +204,7 @@ tracked_files = []
 #[test]
 fn test_status_detailed() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -258,7 +258,7 @@ fn test_doctor_command() {
 #[test]
 fn test_doctor_with_fix() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -288,7 +288,7 @@ tracked_files = []
 #[test]
 fn test_config_show() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -320,7 +320,7 @@ default_mode = "symlink"
 #[test]
 fn test_profile_list_empty() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -346,7 +346,7 @@ tracked_files = []
 #[test]
 fn test_profile_create_and_list() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -389,7 +389,7 @@ tracked_files = []
 #[test]
 fn test_diff_no_manifest() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -418,7 +418,7 @@ tracked_files = []
 #[test]
 fn test_apply_no_manifest() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
@@ -453,7 +453,7 @@ tracked_files = []
 #[serial_test::serial]
 fn test_full_workflow_init_discover_snapshot() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     let config_path = dotdipper_dir.join("config.toml");
 
     // Create a test dotfile
@@ -495,7 +495,7 @@ tracked_files = ["{}"]
 #[test]
 fn test_verbose_flag() {
     let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".dotdipper");
+    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 

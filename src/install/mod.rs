@@ -51,10 +51,7 @@ pub fn generate_scripts(config: &Config, target_os: &str) -> Result<Vec<InstallS
     scripts.push(dotfiles_script);
 
     // Save scripts to disk
-    let script_dir = dirs::home_dir()
-        .context("Failed to find home directory")?
-        .join(".dotdipper")
-        .join("install");
+    let script_dir = crate::paths::install_dir()?;
 
     fs::create_dir_all(&script_dir)?;
 
@@ -114,7 +111,7 @@ fi
 log_info "Starting Dotdipper installation for $target_os"
 
 # Set up directories
-DOTDIPPER_DIR="$HOME/.dotdipper"
+DOTDIPPER_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}"
 COMPILED_DIR="$DOTDIPPER_DIR/compiled"
 INSTALL_DIR="$DOTDIPPER_DIR/install"
 
@@ -294,7 +291,7 @@ log_warn() {{
     echo -e "${{YELLOW}}[WARN]${{NC}} $1"
 }}
 
-COMPILED_DIR="$HOME/.dotdipper/compiled"
+COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
 HOME_DIR="$HOME"
 
 # Check if compiled directory exists
