@@ -157,7 +157,7 @@ dotdipper secrets init
 dotdipper discover --write
 
 # 4. Create initial snapshot
-dotdipper snapshot -m "Initial snapshot"
+dotdipper snapshot create -m "Initial snapshot"
 
 # 5. Push to GitHub (configure GitHub section in config first)
 dotdipper push -m "Initial commit"
@@ -530,7 +530,7 @@ linux = ["neovim", "fzf", "bat"]
 dotdipper init                    # Initialize dotdipper
 dotdipper discover [--write]      # Find dotfiles
 dotdipper discover --packages     # Discover required packages from dotfiles
-dotdipper snapshot [-m "msg"]     # Create snapshot (legacy)
+dotdipper snapshot create [-m "msg"]  # Create snapshot
 dotdipper status [--detailed]     # Check status
 dotdipper config --show | --edit  # View/edit config
 dotdipper doctor [--fix]          # Health check
@@ -770,7 +770,7 @@ post_apply = ["command || true"]
 
 - **macOS:** Full support ✅
 - **Linux:** Full support (Ubuntu, Arch, Fedora) ✅
-- **Windows:** Future milestone 🚧
+- **Windows:** Not currently supported (potential future milestone)
 
 ---
 
@@ -825,9 +825,9 @@ MIT License - See LICENSE file for details
 
 ---
 
-**Version:** 0.3.0 (All Milestones Complete)  
+**Version:** 0.5.1  
 **Status:** Production-ready  
-**Last Updated:** January 20, 2026  
+**Last Updated:** March 10, 2026  
 **Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
 
 **Happy dotfile management! 🚀**
