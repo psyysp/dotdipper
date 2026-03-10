@@ -122,53 +122,9 @@ jobs:
             ${{ matrix.artifact_name }}.tar.gz
             ${{ matrix.artifact_name }}.tar.gz.sha256
 
-  build-windows:
-    name: Build Windows (${{ matrix.target }})
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-pc-windows-msvc
-            artifact_name: dotdipper-x86_64-pc-windows-msvc
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Create zip archive
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path release
-          Copy-Item "target/${{ matrix.target }}/release/dotdipper.exe" -Destination release/
-          Compress-Archive -Path release/dotdipper.exe -DestinationPath "${{ matrix.artifact_name }}.zip"
-          $hash = (Get-FileHash "${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -FilePath "${{ matrix.artifact_name }}.zip.sha256" -Encoding ascii
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            ${{ matrix.artifact_name }}.zip
-            ${{ matrix.artifact_name }}.zip.sha256
-
   create-release:
     name: Create GitHub Release
-    needs: [build-macos, build-linux, build-windows]
+    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
 
     steps:
@@ -214,12 +170,6 @@ jobs:
           cargo install dotdipper
           \`\`\`
 
-          #### Windows (Scoop)
-          \`\`\`powershell
-          scoop bucket add dotdipper https://github.com/psyysp/scoop-dotdipper
-          scoop install dotdipper
-          \`\`\`
-
           #### Manual Download
           | Platform | Architecture | Download |
           |----------|--------------|----------|
@@ -227,7 +177,6 @@ jobs:
           | macOS | Intel | [dotdipper-x86_64-apple-darwin.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-apple-darwin.tar.gz) |
           | Linux | x86_64 | [dotdipper-x86_64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-unknown-linux-gnu.tar.gz) |
           | Linux | ARM64 | [dotdipper-aarch64-unknown-linux-gnu.tar.gz](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-aarch64-unknown-linux-gnu.tar.gz) |
-          | Windows | x86_64 | [dotdipper-x86_64-pc-windows-msvc.zip](https://github.com/psyysp/dotdipper/releases/download/$VERSION/dotdipper-x86_64-pc-windows-msvc.zip) |
 
           ### Checksums
           SHA256 checksums are provided for all binaries.
