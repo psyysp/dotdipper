@@ -531,7 +531,11 @@ pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
         anyhow::bail!("Ignore pattern cannot be empty");
     }
 
-    if !config.push_ignore.iter().any(|existing| existing == pattern) {
+    if !config
+        .push_ignore
+        .iter()
+        .any(|existing| existing == pattern)
+    {
         config.push_ignore.push(pattern.to_string());
         config.push_ignore.sort();
     }

@@ -138,7 +138,9 @@ pub fn push(
         .output()
         .context("Failed to get current branch name")?;
 
-    let current_branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+    let current_branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
     if !current_branch.is_empty() && current_branch != "main" {
         let rename_output = Command::new("git")
             .args(["branch", "-M", "main"])
@@ -254,7 +256,12 @@ pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
     Ok(repo_name)
 }
 
-fn ensure_github_repo(config: &Config, repo_path: &Path, username: &str, repo_name: &str) -> Result<()> {
+fn ensure_github_repo(
+    config: &Config,
+    repo_path: &Path,
+    username: &str,
+    repo_name: &str,
+) -> Result<()> {
     check_gh()?;
 
     ui::info(&format!(
@@ -269,7 +276,6 @@ fn ensure_github_repo(config: &Config, repo_path: &Path, username: &str, repo_na
 
     if check_output.is_ok() && check_output.unwrap().status.success() {
         ui::info("Repository already exists on GitHub");
-
     } else {
         // Prompt to create repo
         if ui::prompt_confirm(
