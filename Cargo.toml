@@ -1,6 +1,6 @@
 [package]
 name = "dotdipper"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 authors = ["Your Name <your.email@example.com>"]
 description = "A safe, deterministic, and feature-rich dotfiles manager built in Rust with encryption, selective apply, snapshots, profiles, and cloud sync"
