@@ -10,23 +10,21 @@ pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
     let mut discovered = Vec::new();
 
-    // Build gitignore-style matcher from exclude patterns
     let excluder = build_excluder(&config.exclude_patterns, &home)?;
 
-    // Process include patterns
     for pattern in &config.include_patterns {
         let expanded = expand_tilde(pattern, &home);
-        discover_pattern(&expanded, &excluder, &mut discovered, show_all)?;
+        let is_glob = pattern.contains('*');
+        discover_pattern(&expanded, &excluder, &mut discovered, show_all, is_glob)?;
     }
 
-    // Add already tracked files (they should always be included)
+    // Re-add already tracked files (they were explicitly chosen)
     for file in &config.general.tracked_files {
         if file.exists() && !discovered.contains(file) {
             discovered.push(file.clone());
         }
     }
 
-    // Sort for deterministic output
     discovered.sort();
     discovered.dedup();
 
@@ -38,16 +36,14 @@ fn discover_pattern(
     excluder: &Gitignore,
     discovered: &mut Vec<PathBuf>,
     show_all: bool,
+    is_glob: bool,
 ) -> Result<()> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
 
-    // Check if it's a glob pattern or a direct path
     if pattern.contains('*') {
-        // It's a glob pattern
         let glob_pattern =
             Pattern::new(pattern).with_context(|| format!("Invalid glob pattern: {}", pattern))?;
 
-        // Determine the base directory for walking
         let base_dir = get_base_dir_from_pattern(pattern, &home);
 
         for entry in WalkDir::new(&base_dir)
@@ -57,22 +53,23 @@ fn discover_pattern(
         {
             let path = entry.path();
 
-            // Skip if excluded
-            if !show_all && excluder.matched(path, path.is_dir()).is_ignore() {
+            // Only track files, not bare directories
+            if path.is_dir() {
                 continue;
             }
 
-            // Check if it matches the pattern
+            if !show_all && excluder.matched(path, false).is_ignore() {
+                continue;
+            }
+
             if glob_pattern.matches_path(path) {
                 discovered.push(path.to_path_buf());
             }
         }
     } else {
-        // It's a direct path
         let path = PathBuf::from(pattern);
         if path.exists() {
             if path.is_dir() {
-                // Recursively add all files in directory
                 for entry in WalkDir::new(&path)
                     .follow_links(false)
                     .into_iter()
@@ -81,7 +78,6 @@ fn discover_pattern(
                     let entry_path = entry.path();
 
                     if entry_path.is_file() {
-                        // Skip if excluded
                         if !show_all && excluder.matched(entry_path, false).is_ignore() {
                             continue;
                         }
@@ -89,8 +85,10 @@ fn discover_pattern(
                     }
                 }
             } else if path.is_file() {
-                // Skip if excluded
-                if show_all || !excluder.matched(&path, false).is_ignore() {
+                // Direct file include patterns bypass exclusions — the user
+                // explicitly asked for this file (e.g. ~/.ssh/config despite
+                // ~/.ssh/** being excluded).
+                if !is_glob || show_all || !excluder.matched(&path, false).is_ignore() {
                     discovered.push(path);
                 }
             }
@@ -104,9 +102,17 @@ fn build_excluder(patterns: &[String], home: &Path) -> Result<Gitignore> {
     let mut builder = GitignoreBuilder::new(home);
 
     for pattern in patterns {
-        let expanded = expand_tilde(pattern, home);
+        // For tilde patterns, make them root-relative for the gitignore builder
+        // (whose root is $HOME). E.g. "~/.config/foo" → "/.config/foo".
+        // Expanding to an absolute path like "/Users/x/.config/foo" breaks
+        // gitignore semantics where a leading '/' means "anchored to root".
+        let gitignore_pat = if let Some(stripped) = pattern.strip_prefix("~/") {
+            format!("/{}", stripped)
+        } else {
+            pattern.clone()
+        };
         builder
-            .add_line(None, &expanded)
+            .add_line(None, &gitignore_pat)
             .with_context(|| format!("Invalid exclude pattern: {}", pattern))?;
     }
 
@@ -122,7 +128,6 @@ fn expand_tilde(path: &str, home: &Path) -> String {
 }
 
 fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
-    // Find the first non-glob component and use that as base
     let expanded = expand_tilde(pattern, home);
     let parts: Vec<&str> = expanded.split('/').collect();
 
