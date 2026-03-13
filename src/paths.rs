@@ -29,6 +29,10 @@ pub fn config_file() -> Result<PathBuf> {
     Ok(base_dir()?.join("config.toml"))
 }
 
+pub fn ignore_file() -> Result<PathBuf> {
+    Ok(base_dir()?.join(".dotdipperignore"))
+}
+
 pub fn compiled_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("compiled"))
 }

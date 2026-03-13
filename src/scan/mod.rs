@@ -10,7 +10,8 @@ pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
     let mut discovered = Vec::new();
 
-    let excluder = build_excluder(&config.exclude_patterns, &home)?;
+    let ignore_file = crate::paths::ignore_file()?;
+    let excluder = build_excluder(&config.exclude_patterns, &home, &ignore_file)?;
 
     for pattern in &config.include_patterns {
         let expanded = expand_tilde(pattern, &home);
@@ -98,14 +99,29 @@ fn discover_pattern(
     Ok(())
 }
 
-fn build_excluder(patterns: &[String], home: &Path) -> Result<Gitignore> {
+fn build_excluder(patterns: &[String], home: &Path, ignore_file: &Path) -> Result<Gitignore> {
     let mut builder = GitignoreBuilder::new(home);
 
+    if ignore_file.exists() {
+        let contents =
+            std::fs::read_to_string(ignore_file).context("Failed to read .dotdipperignore")?;
+        for line in contents.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let gitignore_pat = if let Some(stripped) = trimmed.strip_prefix("~/") {
+                format!("/{}", stripped)
+            } else {
+                trimmed.to_string()
+            };
+            builder
+                .add_line(None, &gitignore_pat)
+                .with_context(|| format!("Invalid pattern in .dotdipperignore: {}", trimmed))?;
+        }
+    }
+
     for pattern in patterns {
-        // For tilde patterns, make them root-relative for the gitignore builder
-        // (whose root is $HOME). E.g. "~/.config/foo" → "/.config/foo".
-        // Expanding to an absolute path like "/Users/x/.config/foo" breaks
-        // gitignore semantics where a leading '/' means "anchored to root".
         let gitignore_pat = if let Some(stripped) = pattern.strip_prefix("~/") {
             format!("/{}", stripped)
         } else {

@@ -291,77 +291,92 @@ fn default_backup() -> bool {
 }
 
 fn default_exclude_patterns() -> Vec<String> {
-    vec![
-        // --- Dotdipper internal (generated / runtime) ---
-        "~/.config/dotdipper/compiled/**".to_string(),
-        "~/.config/dotdipper/cache/**".to_string(),
-        "~/.config/dotdipper/install/**".to_string(),
-        "~/.config/dotdipper/manifest.lock".to_string(),
-        "~/.config/dotdipper/profiles/*/compiled/**".to_string(),
-        "~/.config/dotdipper/profiles/*/manifest.lock".to_string(),
-        "~/.config/dotdipper/bundle*.tar.zst".to_string(),
-        "~/.config/dotdipper/daemon.pid".to_string(),
-        "~/.config/dotdipper/snapshots/**".to_string(),
-        // --- Cryptographic keys & secrets ---
-        "~/.ssh/**".to_string(),
-        "~/.gnupg/**".to_string(),
-        "~/.config/age/keys.txt".to_string(),
-        "**/*.key".to_string(),
-        "**/*.pem".to_string(),
-        "**/*.pfx".to_string(),
-        "**/*.p12".to_string(),
-        "**/*.keystore".to_string(),
-        // --- Credentials & tokens ---
-        "**/credentials.db".to_string(),
-        "**/access_tokens.db".to_string(),
-        "**/tokens.json".to_string(),
-        "**/legacy_credentials/**".to_string(),
-        "~/.config/gh/hosts.yml".to_string(),
-        "~/.config/gcloud/**".to_string(),
-        // --- Environment & secret files ---
-        "**/.env".to_string(),
-        "**/.env.local".to_string(),
-        "**/.env.production".to_string(),
-        "**/.env.*.local".to_string(),
-        "**/secrets/**".to_string(),
-        "**/.secret*".to_string(),
-        "**/*.secret".to_string(),
-        // --- Build & dependency artifacts ---
-        "**/node_modules/**".to_string(),
-        "**/.git/**".to_string(),
-        "**/target/**".to_string(),
-        "**/dist/**".to_string(),
-        "**/build/**".to_string(),
-        "**/__pycache__/**".to_string(),
-        "**/.venv/**".to_string(),
-        // --- OS & editor junk ---
-        "**/.DS_Store".to_string(),
-        "**/Thumbs.db".to_string(),
-        "**/*.swp".to_string(),
-        "**/*.swo".to_string(),
-        "**/*~".to_string(),
-        // --- Caches, logs & temp ---
-        "**/cache/**".to_string(),
-        "**/Cache/**".to_string(),
-        "**/tmp/**".to_string(),
-        "**/temp/**".to_string(),
-        "**/logs/**".to_string(),
-        "**/*.log".to_string(),
-        // --- Backup files (auto-generated) ---
-        "**/*.bak".to_string(),
-        "**/*.backup".to_string(),
-        "**/automatic_backups/**".to_string(),
-        // --- Application state (machine-specific) ---
-        "~/.config/configstore/**".to_string(),
-        "**/sockets/**".to_string(),
-        "**/*.db".to_string(),
-        "**/*.sqlite".to_string(),
-        "**/*.sqlite3".to_string(),
-        // --- Trash ---
-        "~/.local/share/Trash/**".to_string(),
-        "~/.Trash/**".to_string(),
-    ]
+    vec![]
 }
+
+pub const DEFAULT_IGNORE_CONTENTS: &str = "\
+# .dotdipperignore — gitignore-style patterns for dotdipper discover
+# Lines starting with # are comments.  Blank lines are ignored.
+# Patterns prefixed with ~/ are anchored to $HOME.
+
+# --- Dotdipper internal (generated / runtime) ---
+~/.config/dotdipper/compiled/**
+~/.config/dotdipper/cache/**
+~/.config/dotdipper/install/**
+~/.config/dotdipper/manifest.lock
+~/.config/dotdipper/snapshots/**
+~/.config/dotdipper/profiles/*/compiled/**
+~/.config/dotdipper/profiles/*/manifest.lock
+~/.config/dotdipper/bundle*.tar.zst
+~/.config/dotdipper/daemon.pid
+
+# --- Cryptographic keys & secrets ---
+~/.ssh/**
+~/.gnupg/**
+~/.config/age/keys.txt
+**/*.key
+**/*.pem
+**/*.pfx
+**/*.p12
+**/*.keystore
+
+# --- Credentials & tokens ---
+**/credentials.db
+**/access_tokens.db
+**/tokens.json
+**/legacy_credentials/**
+~/.config/gh/hosts.yml
+~/.config/gcloud/**
+
+# --- Environment & secret files ---
+**/.env
+**/.env.local
+**/.env.production
+**/.env.*.local
+**/secrets/**
+**/.secret*
+**/*.secret
+
+# --- Build & dependency artifacts ---
+**/node_modules/**
+**/.git/**
+**/target/**
+**/dist/**
+**/build/**
+**/__pycache__/**
+**/.venv/**
+
+# --- OS & editor junk ---
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo
+**/*~
+
+# --- Caches, logs & temp ---
+**/cache/**
+**/Cache/**
+**/tmp/**
+**/temp/**
+**/logs/**
+**/*.log
+
+# --- Backup files (auto-generated) ---
+**/*.bak
+**/*.backup
+**/automatic_backups/**
+
+# --- Application state (machine-specific) ---
+~/.config/configstore/**
+**/sockets/**
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+
+# --- Trash ---
+~/.local/share/Trash/**
+~/.Trash/**
+";
 
 fn default_include_patterns() -> Vec<String> {
     vec![
@@ -417,6 +432,13 @@ pub fn init(config_path: PathBuf, force: bool) -> Result<()> {
         .parent()
         .expect("Config path should have parent");
     fs::create_dir_all(manifest_dir).context("Failed to create manifest directory")?;
+
+    // Write default .dotdipperignore
+    let ignore_path = crate::paths::ignore_file()?;
+    if !ignore_path.exists() || force {
+        fs::write(&ignore_path, DEFAULT_IGNORE_CONTENTS)
+            .context("Failed to write .dotdipperignore")?;
+    }
 
     Ok(())
 }
