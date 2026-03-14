@@ -833,9 +833,9 @@ MIT License - See LICENSE file for details
 
 ---
 
-**Version:** 0.5.1  
+**Version:** 0.7.0  
 **Status:** Production-ready  
-**Last Updated:** March 10, 2026  
+**Last Updated:** March 12, 2026  
 **Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
 
 **Happy dotfile management! 🚀**
