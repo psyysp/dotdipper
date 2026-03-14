@@ -363,7 +363,11 @@ pub const DEFAULT_IGNORE_CONTENTS: &str = "\
 
 # --- Backup files (auto-generated) ---
 **/*.bak
+**/*.bak.*
 **/*.backup
+**/backup-*
+**/old-*
+**/temp-*
 **/automatic_backups/**
 
 # --- Application state (machine-specific) ---
@@ -471,16 +475,10 @@ pub fn save(config_path: &Path, config: &Config) -> Result<()> {
 
 pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
     let mut config = load(config_path)?;
-
-    // Add new files that aren't already tracked
-    for file in files {
-        if !config.general.tracked_files.contains(file) {
-            config.general.tracked_files.push(file.clone());
-        }
-    }
-
-    // Sort for deterministic output
-    config.general.tracked_files.sort();
+    let mut tracked_files = files.to_vec();
+    tracked_files.sort();
+    tracked_files.dedup();
+    config.general.tracked_files = tracked_files;
 
     save(config_path, &config)?;
     Ok(())

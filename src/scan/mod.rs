@@ -21,7 +21,10 @@ pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
 
     // Re-add already tracked files (they were explicitly chosen)
     for file in &config.general.tracked_files {
-        if file.exists() && !discovered.contains(file) {
+        if file.exists()
+            && !discovered.contains(file)
+            && should_readd_tracked_file(file, &config.include_patterns, &excluder, &home, show_all)
+        {
             discovered.push(file.clone());
         }
     }
@@ -30,6 +33,26 @@ pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
     discovered.dedup();
 
     Ok(discovered)
+}
+
+fn should_readd_tracked_file(
+    path: &Path,
+    include_patterns: &[String],
+    excluder: &Gitignore,
+    home: &Path,
+    show_all: bool,
+) -> bool {
+    if show_all || is_explicit_file_include(path, include_patterns, home) {
+        return true;
+    }
+
+    !excluder.matched(path, false).is_ignore()
+}
+
+fn is_explicit_file_include(path: &Path, include_patterns: &[String], home: &Path) -> bool {
+    include_patterns.iter().any(|pattern| {
+        !contains_glob_chars(pattern) && PathBuf::from(expand_tilde(pattern, home)) == path
+    })
 }
 
 fn discover_pattern(
@@ -143,6 +166,10 @@ fn expand_tilde(path: &str, home: &Path) -> String {
     }
 }
 
+fn contains_glob_chars(path: &str) -> bool {
+    path.contains('*') || path.contains('?') || path.contains('[')
+}
+
 fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
     let expanded = expand_tilde(pattern, home);
     let parts: Vec<&str> = expanded.split('/').collect();
@@ -159,5 +186,50 @@ fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
         home.to_path_buf()
     } else {
         PathBuf::from(base_parts.join("/"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn explicit_file_include_overrides_broad_ignore() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path();
+        let ignore_file = temp_dir.path().join(".dotdipperignore");
+        fs::write(&ignore_file, "~/.ssh/**\n").unwrap();
+
+        let excluder = build_excluder(&[], home, &ignore_file).unwrap();
+        let ssh_config = home.join(".ssh/config");
+
+        assert!(should_readd_tracked_file(
+            &ssh_config,
+            &["~/.ssh/config".to_string()],
+            &excluder,
+            home,
+            false,
+        ));
+    }
+
+    #[test]
+    fn ignored_tracked_file_is_not_readded() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path();
+        let ignore_file = temp_dir.path().join(".dotdipperignore");
+        fs::write(&ignore_file, "~/.config/gcloud/**\n").unwrap();
+
+        let excluder = build_excluder(&[], home, &ignore_file).unwrap();
+        let gcloud_file = home.join(".config/gcloud/credentials.db");
+
+        assert!(!should_readd_tracked_file(
+            &gcloud_file,
+            &["~/.config/**".to_string()],
+            &excluder,
+            home,
+            false,
+        ));
     }
 }
