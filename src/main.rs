@@ -157,6 +157,17 @@ enum Commands {
         repo: Option<String>,
     },
 
+    /// Undo the last pushed commit by creating a revert commit
+    Undo {
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+
+        /// Override the GitHub repository name
+        #[arg(long)]
+        repo: Option<String>,
+    },
+
     /// Generate and run installation scripts
     Install {
         /// Only generate scripts without running
@@ -460,6 +471,7 @@ async fn main() -> Result<()> {
             unsafe_allow_outside_home,
             repo,
         } => cmd_pull(config_path, apply, force, unsafe_allow_outside_home, repo).await,
+        Commands::Undo { force, repo } => cmd_undo(config_path, force, repo).await,
         Commands::Install {
             dry_run,
             target_os,
@@ -748,6 +760,24 @@ async fn cmd_pull(
         ui::hint("Use --apply to apply the pulled changes to your system");
     }
 
+    Ok(())
+}
+
+async fn cmd_undo(config_path: PathBuf, force: bool, repo: Option<String>) -> Result<()> {
+    ui::info("Undoing the last pushed commit...");
+    let config = cfg::load(&config_path)?;
+
+    let effective_repo = vcs::undo_last_push(&config, force, repo.as_deref())?;
+
+    if repo.is_some() && config.github.repo_name.is_none() {
+        cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
+        ui::info(&format!(
+            "Saved '{}' as default GitHub repository in config",
+            effective_repo
+        ));
+    }
+
+    ui::success("Successfully reverted the last pushed commit!");
     Ok(())
 }
 

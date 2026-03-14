@@ -29,13 +29,24 @@ fn test_version_command() {
 fn test_all_subcommands_have_help() {
     let subcommands = [
         "init", "discover", "status", "diff", "apply", "secrets", "snapshot", "profile", "remote",
-        "daemon", "push", "pull", "install", "doctor", "config",
+        "daemon", "push", "pull", "undo", "install", "doctor", "config",
     ];
 
     for subcmd in subcommands {
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.arg(subcmd).arg("--help").assert().success();
     }
+}
+
+#[test]
+fn test_undo_help_describes_revert_behavior() {
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.arg("undo")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("revert"))
+        .stdout(predicate::str::contains("--force"));
 }
 
 // ============================================

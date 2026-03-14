@@ -161,6 +161,9 @@ dotdipper snapshot create -m "Initial snapshot"
 
 # 5. Push to GitHub (configure GitHub section in config first)
 dotdipper push -m "Initial commit"
+
+# 6. Undo the last pushed commit if needed
+dotdipper undo
 ```
 
 ### New Machine Setup
@@ -372,6 +375,7 @@ Dotdipper provides two ways to sync your dotfiles to the cloud:
 ```bash
 # GitHub workflow
 dotdipper push -m "Update vim config"
+dotdipper undo                      # Revert the last pushed commit
 dotdipper pull --apply
 ```
 
@@ -616,6 +620,7 @@ dotdipper daemon stop               # Stop daemon
 ```bash
 dotdipper push [-m "msg"]           # Push to GitHub
 dotdipper pull [--apply]            # Pull from GitHub
+dotdipper undo [--force]            # Revert the last pushed commit
 ```
 
 ### Package Management
@@ -647,6 +652,9 @@ dotdipper snapshot create -m "Updated aliases"
 
 # Push to GitHub
 dotdipper push -m "Update zsh config"
+
+# If the last push was a mistake
+dotdipper undo
 ```
 
 ### Managing Secrets
