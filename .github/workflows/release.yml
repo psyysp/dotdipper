@@ -200,21 +200,30 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
     steps:
+      - name: Skip notice when tap token is missing
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
+
       - name: Checkout tap repository
+        if: env.HOMEBREW_TAP_TOKEN != ''
         uses: actions/checkout@v4
         with:
           repository: psyysp/homebrew-dotdipper
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
       - name: Download macOS artifacts
+        if: env.HOMEBREW_TAP_TOKEN != ''
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
       - name: Update formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
@@ -277,6 +286,7 @@ jobs:
           cat homebrew-tap/Formula/dotdipper.rb
 
       - name: Commit and push
+        if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           cd homebrew-tap
           git config user.name "github-actions[bot]"

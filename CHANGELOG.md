@@ -2,6 +2,13 @@
 
 All notable changes to dotdipper are documented here.
 
+## [0.7.3] - 2026-03-14
+
+### Fixed
+
+- **CI:** Formatted `src/vcs/mod.rs` so the formatting check passes in GitHub Actions.
+- **Release workflow:** The Homebrew tap update job now only runs when `HOMEBREW_TAP_TOKEN` is configured, so releases no longer fail just because that secret is missing.
+
 ## [0.7.2] - 2026-03-14
 
 ### Changed

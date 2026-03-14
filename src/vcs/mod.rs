@@ -334,7 +334,10 @@ pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>)
     revert_head_commit(&repo_path)?;
     push_main(&repo_path)?;
 
-    ui::success(&format!("Created and pushed a revert for {}", commit_summary));
+    ui::success(&format!(
+        "Created and pushed a revert for {}",
+        commit_summary
+    ));
     Ok(repo_name)
 }
 
@@ -902,7 +905,10 @@ mod tests {
         fs::write(temp_dir.path().join("main.txt"), "main\n").unwrap();
         git_ok(temp_dir.path(), &["add", "-A"]);
         git_ok(temp_dir.path(), &["commit", "-m", "Main"]);
-        git_ok(temp_dir.path(), &["merge", "--no-ff", "feature", "-m", "Merge feature"]);
+        git_ok(
+            temp_dir.path(),
+            &["merge", "--no-ff", "feature", "-m", "Merge feature"],
+        );
 
         let err = ensure_head_is_not_merge_commit(temp_dir.path()).unwrap_err();
         assert!(err.to_string().contains("merge commit"));
