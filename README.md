@@ -160,6 +160,7 @@ dotdipper discover --write
 dotdipper snapshot create -m "Initial snapshot"
 
 # 5. Push to GitHub (configure GitHub section in config first)
+#    If the repo already exists with a README etc., push will fetch, rebase, and push for you
 dotdipper push -m "Initial commit"
 
 # 6. Undo the last pushed commit if needed
@@ -378,6 +379,8 @@ dotdipper push -m "Update vim config"
 dotdipper undo                      # Revert the last pushed commit
 dotdipper pull --apply
 ```
+
+**Git repo location:** Push/pull use a git repository inside your dotdipper directory (e.g. `~/.config/dotdipper/compiled/`). Don’t run `git pull` or `git push` from `~/.config`; use `dotdipper pull` and `dotdipper push` from any directory. If the remote already has commits (e.g. a new repo with a README), `dotdipper push` will fetch, rebase your changes on top, and push automatically.
 
 **Use Remote Backends when you want:**
 
@@ -833,7 +836,7 @@ MIT License - See LICENSE file for details
 
 ---
 
-**Version:** 0.7.1  
+**Version:** 0.7.2  
 **Status:** Production-ready  
 **Last Updated:** March 14, 2026  
 **Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`

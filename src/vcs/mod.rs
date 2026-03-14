@@ -176,8 +176,50 @@ pub fn push(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("failed to push") || stderr.contains("rejected") {
-            // Try to set upstream branch
+        let need_fetch = stderr.contains("fetch first")
+            || stderr.contains("Updates were rejected")
+            || stderr.contains("integrate the remote changes");
+
+        if need_fetch {
+            // Remote has commits we don't have (e.g. repo created with README). Fetch, rebase, retry.
+            ui::info("Remote has commits you don't have locally. Syncing and retrying push...");
+            let fetch_out = Command::new("git")
+                .args(["fetch", "origin", "main"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to fetch from origin")?;
+            if !fetch_out.status.success() {
+                anyhow::bail!(
+                    "Failed to fetch: {}. Run 'dotdipper pull' first, then 'dotdipper push' again.",
+                    String::from_utf8_lossy(&fetch_out.stderr)
+                );
+            }
+            let rebase_out = Command::new("git")
+                .args(["rebase", "origin/main"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to rebase onto origin/main")?;
+            if !rebase_out.status.success() {
+                anyhow::bail!(
+                    "Rebase failed (remote and local both have changes): {}\n\
+                     Resolve conflicts in {:?} (e.g. git rebase --abort or fix and git rebase --continue), then run 'dotdipper push' again.",
+                    String::from_utf8_lossy(&rebase_out.stderr),
+                    repo_path
+                );
+            }
+            let retry_out = Command::new("git")
+                .args(&push_args)
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to push after rebase")?;
+            if !retry_out.status.success() {
+                anyhow::bail!(
+                    "Failed to push: {}",
+                    String::from_utf8_lossy(&retry_out.stderr)
+                );
+            }
+        } else if stderr.contains("failed to push") || stderr.contains("rejected") {
+            // No upstream set; try set-upstream and push again
             let output = Command::new("git")
                 .args(["push", "--set-upstream", "origin", "main"])
                 .current_dir(&repo_path)
