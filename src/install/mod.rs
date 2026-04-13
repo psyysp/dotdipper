@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::cfg::{Config, PackagesConfig};
+use crate::cfg::{Config, PackagesConfig, RestoreMode};
 use crate::ui;
 
 // Re-export commonly used types
@@ -22,6 +22,12 @@ pub struct InstallScript {
     pub name: String,
     pub content: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DotfileInstallAction {
+    rel_path: PathBuf,
+    mode: RestoreMode,
 }
 
 pub fn detect_os() -> String {
@@ -258,17 +264,13 @@ log_info "Package installation complete"
 }
 
 fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let use_symlinks = config
-        .dotfiles
-        .as_ref()
-        .map(|d| d.use_symlinks)
-        .unwrap_or(false);
+    let actions = build_dotfiles_install_actions(config)?;
 
     let content = format!(
         r#"#!/usr/bin/env bash
 #
 # Dotfiles Setup Script
-# Method: {}
+# Entries: {}
 #
 
 set -euo pipefail
@@ -321,16 +323,88 @@ ensure_parent_dir() {{
     fi
 }}
 
+remove_target() {{
+    local path="$1"
+    if [[ -d "$path" ]] && [[ ! -L "$path" ]]; then
+        rm -rf "$path"
+    else
+        rm -f "$path"
+    fi
+}}
+
+apply_symlink() {{
+    local rel_path="$1"
+    local source_file="$COMPILED_DIR/$rel_path"
+    local target_file="$HOME_DIR/$rel_path"
+
+    if [[ ! -e "$source_file" ]]; then
+        log_warn "Skipping $rel_path (source not found in compiled dir)"
+        return 0
+    fi
+
+    if [[ -L "$target_file" ]] && [[ "$(readlink "$target_file")" == "$source_file" ]]; then
+        log_info "Already linked $rel_path"
+        return 0
+    fi
+
+    ensure_parent_dir "$target_file"
+
+    if [[ -e "$target_file" ]] || [[ -L "$target_file" ]]; then
+        backup_file "$target_file"
+        remove_target "$target_file"
+    fi
+
+    ln -s "$source_file" "$target_file"
+    log_info "Linked $rel_path"
+}}
+
+apply_copy() {{
+    local rel_path="$1"
+    local source_file="$COMPILED_DIR/$rel_path"
+    local target_file="$HOME_DIR/$rel_path"
+
+    if [[ ! -e "$source_file" ]]; then
+        log_warn "Skipping $rel_path (source not found in compiled dir)"
+        return 0
+    fi
+
+    if [[ -f "$source_file" ]] && [[ -f "$target_file" ]] && cmp -s "$source_file" "$target_file"; then
+        log_info "Already copied $rel_path"
+        return 0
+    fi
+
+    ensure_parent_dir "$target_file"
+
+    if [[ -e "$target_file" ]] || [[ -L "$target_file" ]]; then
+        backup_file "$target_file"
+        remove_target "$target_file"
+    fi
+
+    if [[ -d "$source_file" ]]; then
+        cp -Rp "$source_file" "$target_file"
+    else
+        cp -p "$source_file" "$target_file"
+    fi
+
+    log_info "Copied $rel_path"
+}}
+
+DOTFILE_COUNT={}
+
+if [[ "$DOTFILE_COUNT" -eq 0 ]]; then
+    log_warn "No portable dotfiles are configured for installation"
+    exit 0
+fi
+
+log_info "Installing $DOTFILE_COUNT tracked dotfiles"
+
 {}
 
 log_info "Dotfiles setup complete"
 "#,
-        if use_symlinks { "symlinks" } else { "copies" },
-        if use_symlinks {
-            generate_symlink_setup()
-        } else {
-            generate_copy_setup()
-        }
+        describe_install_actions(&actions),
+        actions.len(),
+        generate_dotfile_setup(&actions)
     );
 
     Ok(InstallScript {
@@ -340,65 +414,79 @@ log_info "Dotfiles setup complete"
     })
 }
 
-fn generate_symlink_setup() -> String {
-    r#"# Find all files in compiled directory and create symlinks
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
-        continue
-    fi
-    
-    # Target file in home
-    target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
-    ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
-    if [[ -e "$target_file" ]] && [[ ! -L "$target_file" ]]; then
-        backup_file "$target_file"
-    fi
-    
-    # Remove existing symlink if it exists
-    if [[ -L "$target_file" ]]; then
-        rm "$target_file"
-    fi
-    
-    # Create symlink
-    ln -s "$source_file" "$target_file"
-    log_info "Linked $rel_path"
-done"#
-        .to_string()
+fn build_dotfiles_install_actions(config: &Config) -> Result<Vec<DotfileInstallAction>> {
+    let home_dir = dirs::home_dir().context("Failed to find home directory")?;
+    let mut actions = Vec::new();
+
+    for tracked_file in &config.general.tracked_files {
+        let normalized = expand_home_path(tracked_file, &home_dir);
+        let rel_path = match normalized.strip_prefix(&home_dir) {
+            Ok(path) => path.to_path_buf(),
+            Err(_) => continue,
+        };
+
+        let override_key = format!("~/{}", rel_path.display());
+        let file_override = config.files.get(&override_key);
+
+        if file_override.is_some_and(|entry| entry.exclude || entry.local_only) {
+            continue;
+        }
+
+        let mode = file_override
+            .and_then(|entry| entry.mode)
+            .unwrap_or(config.general.default_mode);
+
+        actions.push(DotfileInstallAction { rel_path, mode });
+    }
+
+    actions.sort_by(|left, right| left.rel_path.cmp(&right.rel_path));
+    actions.dedup_by(|left, right| left.rel_path == right.rel_path);
+
+    Ok(actions)
 }
 
-fn generate_copy_setup() -> String {
-    r#"# Find all files in compiled directory and copy them
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
-        continue
-    fi
-    
-    # Target file in home
-    target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
-    ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
-    backup_file "$target_file"
-    
-    # Copy file with permissions
-    cp -p "$source_file" "$target_file"
-    log_info "Copied $rel_path"
-done"#
-        .to_string()
+fn expand_home_path(path: &std::path::Path, home_dir: &std::path::Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return home_dir.to_path_buf();
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home_dir.join(rest);
+    }
+    path.to_path_buf()
+}
+
+fn describe_install_actions(actions: &[DotfileInstallAction]) -> String {
+    let symlink_count = actions
+        .iter()
+        .filter(|action| action.mode == RestoreMode::Symlink)
+        .count();
+    let copy_count = actions.len().saturating_sub(symlink_count);
+
+    match (symlink_count, copy_count) {
+        (0, 0) => "none".to_string(),
+        (symlinks, 0) => format!("{symlinks} symlink entries"),
+        (0, copies) => format!("{copies} copy entries"),
+        (symlinks, copies) => format!("{symlinks} symlink entries, {copies} copy entries"),
+    }
+}
+
+fn generate_dotfile_setup(actions: &[DotfileInstallAction]) -> String {
+    actions
+        .iter()
+        .map(|action| {
+            let rel_path = shell_quote(&action.rel_path.to_string_lossy());
+            match action.mode {
+                RestoreMode::Symlink => format!("apply_symlink {}", rel_path),
+                RestoreMode::Copy => format!("apply_copy {}", rel_path),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
 }
 
 pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
@@ -419,4 +507,76 @@ pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::FileOverride;
+
+    #[test]
+    fn build_dotfiles_install_actions_respects_modes_and_filters() {
+        let home_dir = dirs::home_dir().expect("home dir should be available");
+        let mut config = Config::default();
+        config.general.tracked_files = vec![
+            home_dir.join(".zshrc"),
+            PathBuf::from("~/.gitconfig"),
+            home_dir.join(".ssh/config"),
+            home_dir.join(".config/dotdipper-local"),
+        ];
+        config.files.insert(
+            "~/.gitconfig".to_string(),
+            FileOverride {
+                mode: Some(RestoreMode::Copy),
+                exclude: false,
+                local_only: false,
+            },
+        );
+        config.files.insert(
+            "~/.ssh/config".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: true,
+                local_only: false,
+            },
+        );
+        config.files.insert(
+            "~/.config/dotdipper-local".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: false,
+                local_only: true,
+            },
+        );
+
+        let actions = build_dotfiles_install_actions(&config).expect("actions should build");
+
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].rel_path, PathBuf::from(".gitconfig"));
+        assert_eq!(actions[0].mode, RestoreMode::Copy);
+        assert_eq!(actions[1].rel_path, PathBuf::from(".zshrc"));
+        assert_eq!(actions[1].mode, RestoreMode::Symlink);
+    }
+
+    #[test]
+    fn generate_dotfiles_script_emits_explicit_install_steps() {
+        let home_dir = dirs::home_dir().expect("home dir should be available");
+        let mut config = Config::default();
+        config.general.tracked_files = vec![home_dir.join(".zshrc"), home_dir.join(".gitconfig")];
+        config.files.insert(
+            "~/.gitconfig".to_string(),
+            FileOverride {
+                mode: Some(RestoreMode::Copy),
+                exclude: false,
+                local_only: false,
+            },
+        );
+
+        let script = generate_dotfiles_script(&config).expect("script should generate");
+
+        assert!(script.content.contains("DOTFILE_COUNT=2"));
+        assert!(script.content.contains("apply_symlink '.zshrc'"));
+        assert!(script.content.contains("apply_copy '.gitconfig'"));
+        assert!(!script.content.contains("find \"$COMPILED_DIR\" -type f"));
+    }
 }

@@ -68,7 +68,7 @@ pub struct GeneralConfig {
     pub active_profile: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RestoreMode {
     Symlink,

@@ -183,9 +183,12 @@ dotdipper diff --detailed
 # 5. Apply selectively
 dotdipper apply --interactive
 
-# 6. Install packages
+# 6. Install packages and replay tracked dotfiles
 dotdipper install
 ```
+
+`dotdipper install` generates `setup_dotfiles.sh` from your tracked dotfile list, so the install
+step replays the same per-file copy/symlink decisions captured in your config.
 
 ---
 
@@ -635,8 +638,8 @@ dotdipper discover --packages --validate          # Check which are already inst
 dotdipper discover --packages --write             # Add discovered packages to config
 dotdipper discover --packages --include-low-confidence  # Include uncertain matches
 
-# Install packages
-dotdipper install [--dry-run]       # Install packages
+# Install packages and generate a dotfile install script from tracked files
+dotdipper install [--dry-run]         # Preview generated package + dotfile install scripts
 dotdipper install --target-os ubuntu  # Target specific OS
 ```
 
