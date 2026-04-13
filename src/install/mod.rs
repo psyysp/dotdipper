@@ -5,11 +5,14 @@ pub mod validators;
 
 use anyhow::{Context, Result};
 use os_info::Type as OsType;
+use shell_escape::escape;
+use std::borrow::Cow;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use walkdir::WalkDir;
 
-use crate::cfg::{Config, PackagesConfig};
+use crate::cfg::{Config, PackagesConfig, RestoreMode};
 use crate::ui;
 
 // Re-export commonly used types
@@ -258,17 +261,14 @@ log_info "Package installation complete"
 }
 
 fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let use_symlinks = config
-        .dotfiles
-        .as_ref()
-        .map(|d| d.use_symlinks)
-        .unwrap_or(false);
+    let tracked_body = generate_dotfiles_tracked_body(config)?;
+    let summary = tracked_setup_summary(config);
 
     let content = format!(
         r#"#!/usr/bin/env bash
 #
 # Dotfiles Setup Script
-# Method: {}
+# {}
 #
 
 set -euo pipefail
@@ -293,6 +293,7 @@ log_warn() {{
 
 COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
 HOME_DIR="$HOME"
+BACKUP_ENABLED={}
 
 # Check if compiled directory exists
 if [[ ! -d "$COMPILED_DIR" ]]; then
@@ -301,9 +302,12 @@ if [[ ! -d "$COMPILED_DIR" ]]; then
     exit 1
 fi
 
-# Function to create backup
+# Function to create backup (matches dotdipper apply when backup is enabled)
 backup_file() {{
     local file="$1"
+    if [[ "$BACKUP_ENABLED" != "1" ]]; then
+        return 0
+    fi
     if [[ -e "$file" ]] && [[ ! -L "$file" ]]; then
         local backup="${{file}}.backup.$(date +%Y%m%d_%H%M%S)"
         mv "$file" "$backup"
@@ -314,7 +318,8 @@ backup_file() {{
 # Function to ensure parent directory exists
 ensure_parent_dir() {{
     local file="$1"
-    local parent=$(dirname "$file")
+    local parent
+    parent=$(dirname "$file")
     if [[ ! -d "$parent" ]]; then
         mkdir -p "$parent"
         log_info "Created directory $parent"
@@ -325,12 +330,9 @@ ensure_parent_dir() {{
 
 log_info "Dotfiles setup complete"
 "#,
-        if use_symlinks { "symlinks" } else { "copies" },
-        if use_symlinks {
-            generate_symlink_setup()
-        } else {
-            generate_copy_setup()
-        }
+        summary,
+        if config.general.backup { "1" } else { "0" },
+        tracked_body
     );
 
     Ok(InstallScript {
@@ -340,65 +342,178 @@ log_info "Dotfiles setup complete"
     })
 }
 
-fn generate_symlink_setup() -> String {
-    r#"# Find all files in compiled directory and create symlinks
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
-        continue
-    fi
-    
-    # Target file in home
-    target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
-    ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
-    if [[ -e "$target_file" ]] && [[ ! -L "$target_file" ]]; then
-        backup_file "$target_file"
-    fi
-    
-    # Remove existing symlink if it exists
-    if [[ -L "$target_file" ]]; then
-        rm "$target_file"
-    fi
-    
-    # Create symlink
-    ln -s "$source_file" "$target_file"
-    log_info "Linked $rel_path"
-done"#
-        .to_string()
+/// Expand `general.tracked_files` into concrete file paths (directories become their files).
+fn expand_tracked_file_paths(config: &Config) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+
+    for tracked in &config.general.tracked_files {
+        if !tracked.exists() {
+            continue;
+        }
+        if tracked.is_dir() {
+            for entry in WalkDir::new(tracked)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let p = entry.path();
+                if p.is_file() {
+                    out.push(p.to_path_buf());
+                }
+            }
+        } else if tracked.is_file() {
+            out.push(tracked.clone());
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
-fn generate_copy_setup() -> String {
-    r#"# Find all files in compiled directory and copy them
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
-        continue
-    fi
-    
-    # Target file in home
-    target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
-    ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
-    backup_file "$target_file"
-    
-    # Copy file with permissions
-    cp -p "$source_file" "$target_file"
-    log_info "Copied $rel_path"
-done"#
-        .to_string()
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
+fn tracked_setup_summary(config: &Config) -> String {
+    let Ok(paths) = expand_tracked_file_paths(config) else {
+        return "Per tracked file from config".to_string();
+    };
+
+    if paths.is_empty() {
+        return "No tracked files in config (nothing to install)".to_string();
+    }
+
+    let symlink_count = paths
+        .iter()
+        .filter(|p| {
+            let Some(rel) = rel_path_under_home(p) else {
+                return false;
+            };
+            let key = format!("~/{}", rel.display());
+            if config.files.get(&key).is_some_and(|o| o.exclude) {
+                return false;
+            }
+            let mode = config
+                .files
+                .get(&key)
+                .and_then(|o| o.mode)
+                .unwrap_or(config.general.default_mode);
+            mode == RestoreMode::Symlink
+        })
+        .count();
+
+    let total = paths.len();
+
+    format!(
+        "Per tracked file from config ({} paths: {} symlink, {} copy)",
+        total,
+        symlink_count,
+        total.saturating_sub(symlink_count)
+    )
+}
+
+fn rel_path_under_home(path: &Path) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    path.strip_prefix(&home).ok().map(|p| p.to_path_buf())
+}
+
+fn target_rel_for_compiled(rel: &Path) -> PathBuf {
+    if rel.extension().and_then(|e| e.to_str()) == Some("age") {
+        rel.with_extension("")
+    } else {
+        rel.to_path_buf()
+    }
+}
+
+fn generate_dotfiles_tracked_body(config: &Config) -> Result<String> {
+    let paths = expand_tracked_file_paths(config)?;
+
+    if paths.is_empty() {
+        return Ok(
+            r#"log_warn "No tracked dotfiles in config — add paths with 'dotdipper discover --write' or edit config.toml""#
+                .to_string(),
+        );
+    }
+
+    let mut lines = Vec::new();
+
+    for abs in paths {
+        let Some(rel) = rel_path_under_home(&abs) else {
+            lines.push(format!(
+                r#"log_warn "Skipping {} (outside $HOME)""#,
+                sh_single_quote(&abs.display().to_string())
+            ));
+            continue;
+        };
+
+        let path_key = format!("~/{}", rel.display());
+        if config
+            .files
+            .get(&path_key)
+            .is_some_and(|o| o.exclude)
+        {
+            continue;
+        }
+
+        let mode = config
+            .files
+            .get(&path_key)
+            .and_then(|o| o.mode)
+            .unwrap_or(config.general.default_mode);
+
+        let compiled_rel = rel;
+        let target_rel = target_rel_for_compiled(&compiled_rel);
+
+        let compiled_q = sh_single_quote(&compiled_rel.display().to_string());
+        let target_q = sh_single_quote(&target_rel.display().to_string());
+
+        let source_var = format!(
+            "$COMPILED_DIR/{}",
+            escape(Cow::Borrowed(&compiled_rel.display().to_string()))
+        );
+        let target_var = format!(
+            "$HOME_DIR/{}",
+            escape(Cow::Borrowed(&target_rel.display().to_string()))
+        );
+
+        match mode {
+            RestoreMode::Symlink => {
+                lines.push(format!(
+                    r#"if [[ -f {source} ]]; then
+  ensure_parent_dir {target}
+  if [[ -e {target} || -L {target} ]]; then rm -f {target}; fi
+  ln -s {source} {target}
+  log_info "Linked {tr}"
+else
+  log_warn "Missing in compiled tree: {cr} (run dotdipper snapshot or pull)"
+fi"#,
+                    source = source_var,
+                    target = target_var,
+                    tr = target_q,
+                    cr = compiled_q,
+                ));
+            }
+            RestoreMode::Copy => {
+                lines.push(format!(
+                    r#"if [[ -f {source} ]]; then
+  ensure_parent_dir {target}
+  if [[ -e {target} || -L {target} ]]; then backup_file {target}; rm -f {target}; fi
+  cp -p {source} {target}
+  log_info "Copied {tr}"
+else
+  log_warn "Missing in compiled tree: {cr} (run dotdipper snapshot or pull)"
+fi"#,
+                    source = source_var,
+                    target = target_var,
+                    tr = target_q,
+                    cr = compiled_q,
+                ));
+            }
+        }
+    }
+
+    Ok(lines.join("\n\n"))
 }
 
 pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
@@ -419,4 +534,96 @@ pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::{Config, FileOverride};
+    use serial_test::serial;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn dotfiles_setup_script_reflects_tracked_files_and_modes() {
+        let tmp = TempDir::new().unwrap();
+        let fake_home = tmp.path();
+        fs::write(fake_home.join(".vimrc"), b"v").unwrap();
+        fs::create_dir_all(fake_home.join(".config/foo")).unwrap();
+        fs::write(fake_home.join(".config/foo/bar.toml"), b"{}").unwrap();
+        fs::write(fake_home.join(".config/secret.age"), b"ENC").unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", fake_home.as_os_str());
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![
+            fake_home.join(".vimrc"),
+            fake_home.join(".config/foo"),
+            fake_home.join(".config/secret.age"),
+        ];
+        config.general.default_mode = RestoreMode::Copy;
+        config.files.insert(
+            "~/.vimrc".to_string(),
+            FileOverride {
+                mode: Some(RestoreMode::Symlink),
+                exclude: false,
+                local_only: false,
+            },
+        );
+
+        let script = generate_dotfiles_script(&config).unwrap();
+
+        assert!(
+            script.content.contains("ln -s"),
+            "expected symlink for ~/.vimrc override"
+        );
+        assert!(
+            script.content.contains("cp -p"),
+            "expected copy for default_mode files"
+        );
+        assert!(script.content.contains(".vimrc"));
+        assert!(script.content.contains("foo/bar.toml"));
+        assert!(
+            script.content.contains("$HOME_DIR/.config/secret"),
+            "encrypted .age should map target without .age suffix"
+        );
+        assert!(!script.content.contains("$HOME_DIR/.config/secret.age"));
+
+        match old_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn excluded_tracked_file_omitted_from_script() {
+        let tmp = TempDir::new().unwrap();
+        let fake_home = tmp.path();
+        fs::write(fake_home.join(".ssh_config_local"), b"x").unwrap();
+
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", fake_home.as_os_str());
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![fake_home.join(".ssh_config_local")];
+        config.files.insert(
+            "~/.ssh_config_local".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: true,
+                local_only: false,
+            },
+        );
+
+        let script = generate_dotfiles_script(&config).unwrap();
+        assert!(!script.content.contains("ssh_config_local"));
+
+        match old_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+    }
 }

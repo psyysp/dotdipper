@@ -44,7 +44,8 @@ thiserror = "1.0"
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
-time = { version = "0.3", features = ["formatting", "parsing"] }
+# Pin: time 0.3.47+ pulls edition2024-only deps incompatible with older Cargo.
+time = { version = "=0.3.36", features = ["formatting", "parsing"] }
 
 # OS detection
 os_info = "3.8"
@@ -72,7 +73,8 @@ tokio = { version = "1.37", features = ["full"] }
 notify = "6.1"
 
 # Templating (for future milestone)
-tera = "1.20.1"
+# Pin for rustc 1.83 CI/agents: tera 1.20+ requires Rust 1.85.
+tera = "=1.19.1"
 
 # Process execution
 which = "6.0"
