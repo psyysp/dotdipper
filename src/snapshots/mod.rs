@@ -45,7 +45,15 @@ fn get_snapshots_dir() -> Result<PathBuf> {
 }
 
 /// Create a new snapshot
-pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
+pub fn create(config: &Config, message: Option<String>) -> Result<Snapshot> {
+    create_inner(config, message, true)
+}
+
+fn create_inner(
+    config: &Config,
+    message: Option<String>,
+    run_auto_prune: bool,
+) -> Result<Snapshot> {
     let snapshots_dir = get_snapshots_dir()?;
     fs::create_dir_all(&snapshots_dir)?;
 
@@ -69,6 +77,10 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
         {
             if entry.file_type().is_file() {
                 let rel_path = entry.path().strip_prefix(&compiled_dir)?;
+                // Skip git objects — they are huge and restored separately by preserving .git
+                if is_git_path(rel_path) {
+                    continue;
+                }
                 let target_path = snapshot_dir.join(rel_path);
 
                 if let Some(parent) = target_path.parent() {
@@ -97,12 +109,14 @@ pub fn create(_config: &Config, message: Option<String>) -> Result<Snapshot> {
 
     ui::success(&format!("Created snapshot: {} ({} files)", id, file_count));
 
-    // Auto-prune if configured
-    if let Some(opts) = build_prune_opts_from_config(_config) {
-        ui::info("Auto-pruning old snapshots...");
-        if let Err(e) = prune(_config, &opts) {
-            ui::warn(&format!("Auto-pruning failed: {}", e));
-            // Don't fail snapshot creation if pruning fails
+    // Auto-prune if configured (skipped for safety snapshots taken during rollback)
+    if run_auto_prune {
+        if let Some(opts) = build_prune_opts_from_config(config) {
+            ui::info("Auto-pruning old snapshots...");
+            if let Err(e) = prune(config, &opts) {
+                ui::warn(&format!("Auto-pruning failed: {}", e));
+                // Don't fail snapshot creation if pruning fails
+            }
         }
     }
 
@@ -134,7 +148,7 @@ pub fn list(config: &Config) -> Result<Vec<Snapshot>> {
     }
 
     // Sort by creation time, newest first
-    snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    snapshots.sort_by_key(|b| std::cmp::Reverse(b.created_at));
 
     // Display snapshots
     if snapshots.is_empty() {
@@ -156,7 +170,6 @@ pub fn list(config: &Config) -> Result<Vec<Snapshot>> {
 
 /// Rollback to a specific snapshot
 pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
-    let _ = config;
     let snapshots_dir = get_snapshots_dir()?;
     let snapshot_dir = snapshots_dir.join(id);
 
@@ -168,7 +181,7 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
     if !force {
         let confirm = ui::prompt_confirm(
             &format!(
-                "Rollback to snapshot {}? This will overwrite current compiled files.",
+                "Rollback to snapshot {}? This will overwrite current compiled files (your git history in compiled/.git is preserved).",
                 id
             ),
             false,
@@ -179,12 +192,37 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
         }
     }
 
+    // Always create a safety snapshot of the current store before destructive rollback
+    // (skip auto-prune so we cannot accidentally delete the rollback target)
+    ui::info("Creating safety snapshot of current state before rollback...");
+    match create_inner(
+        config,
+        Some(format!("pre-rollback safety snapshot (before {})", id)),
+        false,
+    ) {
+        Ok(safety) => ui::success(&format!("Safety snapshot created: {}", safety.id)),
+        Err(e) => {
+            ui::warn(&format!("Could not create safety snapshot: {}", e));
+            if !force && !ui::prompt_confirm("Continue rollback without a safety snapshot?", false)
+            {
+                ui::info("Rollback cancelled");
+                return Ok(());
+            }
+        }
+    }
+
+    // Ensure the target still exists after the safety snapshot
+    if !snapshot_dir.exists() {
+        anyhow::bail!(
+            "Snapshot {} disappeared unexpectedly; aborting rollback",
+            id
+        );
+    }
+
     let compiled_dir = crate::paths::compiled_dir()?;
 
-    // Clear current compiled directory
-    if compiled_dir.exists() {
-        fs::remove_dir_all(&compiled_dir)?;
-    }
+    // Clear compiled contents but preserve .git so push/pull history survives
+    clear_compiled_preserving_git(&compiled_dir)?;
     fs::create_dir_all(&compiled_dir)?;
 
     // Copy snapshot files to compiled directory
@@ -200,6 +238,9 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
             }
 
             let rel_path = entry.path().strip_prefix(&snapshot_dir)?;
+            if is_git_path(rel_path) {
+                continue;
+            }
             let target_path = compiled_dir.join(rel_path);
 
             if let Some(parent) = target_path.parent() {
@@ -211,11 +252,49 @@ pub fn rollback(config: &Config, id: &str, force: bool) -> Result<()> {
         }
     }
 
+    // Keep base manifest.lock aligned with whatever the snapshot restored
+    if let Err(e) = crate::repo::sync_manifest_from_compiled() {
+        ui::warn(&format!(
+            "Restored files but could not sync manifest.lock: {}",
+            e
+        ));
+    }
+
     ui::success(&format!(
         "Rolled back to snapshot {} ({} files restored)",
         id, file_count
     ));
     ui::hint("Run 'dotdipper apply' to apply the restored files to your system");
+    ui::hint("Your previous compiled state was saved as a safety snapshot (see 'dotdipper snapshot list')");
+
+    Ok(())
+}
+
+fn is_git_path(rel_path: &std::path::Path) -> bool {
+    rel_path
+        .components()
+        .next()
+        .map(|c| c.as_os_str() == ".git")
+        .unwrap_or(false)
+}
+
+fn clear_compiled_preserving_git(compiled_dir: &std::path::Path) -> Result<()> {
+    if !compiled_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(compiled_dir)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            fs::remove_dir_all(&path)?;
+        } else {
+            fs::remove_file(&path)?;
+        }
+    }
 
     Ok(())
 }
@@ -248,7 +327,8 @@ pub fn delete(config: &Config, id: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Prune old snapshots based on criteria
+/// Prune old snapshots based on criteria.
+/// A snapshot is kept if ANY configured keep criterion says to keep it.
 pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
     let snapshots = list(config)?;
 
@@ -257,29 +337,31 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
         return Ok(());
     }
 
-    let mut to_delete: Vec<&Snapshot> = Vec::new();
-    let mut to_keep: Vec<&Snapshot> = Vec::new();
-
-    // Apply keep_count filter
-    if let Some(keep_count) = opts.keep_count {
-        for (i, snap) in snapshots.iter().enumerate() {
-            if i < keep_count {
-                to_keep.push(snap);
-            } else {
-                to_delete.push(snap);
-            }
-        }
-    } else {
-        // If no specific criteria, keep all
-        to_keep.extend(snapshots.iter());
+    if opts.keep_count.is_none() && opts.keep_age.is_none() && opts.keep_size.is_none() {
+        ui::info("No prune criteria specified; keeping all snapshots");
+        return Ok(());
     }
 
-    // Apply keep_age filter
+    let mut protected_ids = std::collections::HashSet::new();
+
+    // Keep N most recent
+    if let Some(keep_count) = opts.keep_count {
+        for snap in snapshots.iter().take(keep_count) {
+            protected_ids.insert(snap.id.clone());
+        }
+    }
+
+    // Keep anything newer than the age cutoff
     if let Some(age_str) = &opts.keep_age {
         if let Some(duration) = parse_duration(age_str) {
             let cutoff = Utc::now() - duration;
-            to_delete.retain(|snap| snap.created_at < cutoff);
-            to_keep.retain(|snap| snap.created_at >= cutoff);
+            for snap in &snapshots {
+                if snap.created_at >= cutoff {
+                    protected_ids.insert(snap.id.clone());
+                }
+            }
+        } else {
+            ui::warn(&format!("Invalid keep_age value: {}", age_str));
         }
     }
 
@@ -288,6 +370,11 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
         // TODO: Implement size-based pruning
         ui::warn("Size-based pruning not yet implemented");
     }
+
+    let to_delete: Vec<&Snapshot> = snapshots
+        .iter()
+        .filter(|snap| !protected_ids.contains(&snap.id))
+        .collect();
 
     if to_delete.is_empty() {
         ui::info("No snapshots to prune based on criteria");
@@ -364,6 +451,7 @@ fn parse_duration(s: &str) -> Option<chrono::Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_parse_duration() {
@@ -372,5 +460,67 @@ mod tests {
         assert_eq!(parse_duration("30d"), Some(chrono::Duration::days(30)));
         assert_eq!(parse_duration("1m"), Some(chrono::Duration::days(30)));
         assert_eq!(parse_duration("invalid"), None);
+    }
+
+    #[test]
+    fn clear_compiled_preserves_git_directory() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let compiled = temp.path().join("compiled");
+        fs::create_dir_all(compiled.join(".git").join("objects")).unwrap();
+        fs::write(compiled.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(compiled.join(".zshrc"), "old\n").unwrap();
+        fs::create_dir_all(compiled.join("nested")).unwrap();
+        fs::write(compiled.join("nested").join("a"), "x\n").unwrap();
+
+        clear_compiled_preserving_git(&compiled).unwrap();
+
+        assert!(compiled.join(".git").join("HEAD").exists());
+        assert!(!compiled.join(".zshrc").exists());
+        assert!(!compiled.join("nested").exists());
+    }
+
+    #[test]
+    fn is_git_path_detects_git_prefix() {
+        assert!(is_git_path(Path::new(".git/config")));
+        assert!(is_git_path(Path::new(".git")));
+        assert!(!is_git_path(Path::new(".gitignore")));
+        assert!(!is_git_path(Path::new("foo/.git/config")));
+    }
+
+    #[test]
+    fn prune_keep_age_alone_marks_old_snapshots() {
+        let old = Snapshot {
+            id: "old".into(),
+            message: None,
+            created_at: Utc::now() - chrono::Duration::days(40),
+            file_count: 1,
+            size_bytes: 10,
+        };
+        let recent = Snapshot {
+            id: "recent".into(),
+            message: None,
+            created_at: Utc::now() - chrono::Duration::days(2),
+            file_count: 1,
+            size_bytes: 10,
+        };
+        let snapshots = vec![recent.clone(), old.clone()]; // newest first
+
+        let mut protected_ids = std::collections::HashSet::new();
+        let duration = parse_duration("30d").unwrap();
+        let cutoff = Utc::now() - duration;
+        for snap in &snapshots {
+            if snap.created_at >= cutoff {
+                protected_ids.insert(snap.id.clone());
+            }
+        }
+
+        let to_delete: Vec<_> = snapshots
+            .iter()
+            .filter(|s| !protected_ids.contains(&s.id))
+            .map(|s| s.id.as_str())
+            .collect();
+
+        assert_eq!(to_delete, vec!["old"]);
+        assert!(protected_ids.contains("recent"));
     }
 }

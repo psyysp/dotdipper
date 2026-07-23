@@ -140,11 +140,11 @@ enum Commands {
 
     /// Pull dotfiles from GitHub
     Pull {
-        /// Apply pulled changes to system
+        /// Apply pulled changes to system (creates backups when general.backup = true)
         #[arg(long)]
         apply: bool,
 
-        /// Force overwrite local changes
+        /// Discard uncommitted changes in the local compiled/ git store (HOME is untouched unless --apply)
         #[arg(short, long)]
         force: bool,
 
@@ -728,7 +728,7 @@ async fn cmd_pull(
     ui::info("Pulling from GitHub...");
     let config = cfg::load(&config_path)?;
 
-    let effective_repo = vcs::pull(&config, repo.as_deref())?;
+    let effective_repo = vcs::pull(&config, force, repo.as_deref())?;
 
     if repo.is_some() && config.github.repo_name.is_none() {
         cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
@@ -738,26 +738,46 @@ async fn cmd_pull(
         ));
     }
 
+    // Ensure tracked_files match what we pulled so install/status work on new machines
+    if let Ok(manifest) = repo::load_manifest() {
+        let _ = repo::sync_tracked_files_from_manifest(&config_path, &manifest);
+    }
+
     ui::success("Successfully pulled from GitHub!");
 
     if apply {
+        let config = cfg::load(&config_path)?;
+        if !config.general.backup {
+            ui::warn(
+                "general.backup is false — existing $HOME files may be overwritten without .bak copies",
+            );
+            if !force && !ui::prompt_confirm("Continue applying without backups?", false) {
+                ui::info("Apply cancelled; pulled files remain in the compiled store");
+                return Ok(());
+            }
+        }
+
         ui::info("Applying changes to system...");
         let compiled_path = dotdipper::paths::compiled_dir()?;
-        let manifest_path = dotdipper::paths::manifest_file()?;
 
-        if manifest_path.exists() {
-            let manifest = crate::hash::Manifest::load(&manifest_path)?;
-            let opts = repo::apply::ApplyOpts {
-                force,
-                allow_outside_home,
-            };
-            repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
-            ui::success("Changes applied successfully!");
-        } else {
-            ui::warn("No manifest found. Run 'dotdipper snapshot' first.");
-        }
+        let manifest = match repo::load_manifest() {
+            Ok(m) => m,
+            Err(e) => {
+                ui::warn(&format!("Could not load manifest: {}", e));
+                ui::hint("Pulled files are in the compiled store. Fix the manifest, then run 'dotdipper apply'.");
+                return Ok(());
+            }
+        };
+
+        let opts = repo::apply::ApplyOpts {
+            force,
+            allow_outside_home,
+        };
+        repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
+        ui::success("Changes applied successfully!");
     } else {
         ui::hint("Use --apply to apply the pulled changes to your system");
+        ui::hint("Tip: run 'dotdipper diff' first to preview what would change in $HOME");
     }
 
     Ok(())
@@ -820,6 +840,14 @@ async fn cmd_install(
 
     let os = target_os.unwrap_or_else(install::detect_os);
 
+    // If tracked_files are empty but compiled has content (fresh pull), sync from manifest
+    if config.general.tracked_files.is_empty() {
+        if let Ok(manifest) = repo::load_manifest() {
+            let _ = repo::sync_tracked_files_from_manifest(&config_path, &manifest);
+            config = cfg::load(&config_path)?;
+        }
+    }
+
     // Auto-discover packages if none are configured
     if config.packages.common.is_empty() {
         ui::info("No packages configured, discovering from dotfiles...");
@@ -872,24 +900,50 @@ async fn cmd_install(
     }
 
     if !dry_run {
-        ui::info("Running installation scripts...");
-        install::run_scripts(&scripts)?;
+        // Only run the OS package installer here. Dotfile placement is done by the
+        // Rust apply path below so excludes/backups/manifest rules are honored
+        // (running setup_dotfiles.sh would otherwise link every file under compiled/).
+        let package_scripts: Vec<_> = scripts
+            .iter()
+            .filter(|s| s.name.starts_with("install_") && s.name != "install.sh")
+            .cloned()
+            .collect();
 
-        // Apply dotfiles after installation
+        if package_scripts.is_empty() {
+            ui::warn("No OS package install script was generated");
+        } else {
+            ui::info("Installing packages...");
+            install::run_scripts(&package_scripts)?;
+        }
+
+        // Apply dotfiles after installation using the safe Rust path
         ui::info("Applying dotfiles...");
         let compiled_path = dotdipper::paths::compiled_dir()?;
-        let manifest_path = dotdipper::paths::manifest_file()?;
 
-        if compiled_path.exists() && manifest_path.exists() {
-            let manifest = crate::hash::Manifest::load(&manifest_path)?;
-            let opts = repo::apply::ApplyOpts {
-                force: false,
-                allow_outside_home,
-            };
-            repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
+        match repo::load_manifest() {
+            Ok(manifest) => {
+                if !config.general.backup {
+                    ui::warn(
+                        "general.backup is false — existing $HOME files may be overwritten without .bak copies",
+                    );
+                }
+                let opts = repo::apply::ApplyOpts {
+                    force: false,
+                    allow_outside_home,
+                };
+                repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
+            }
+            Err(e) => {
+                ui::warn(&format!(
+                    "Skipping dotfile apply (manifest unavailable): {}",
+                    e
+                ));
+                ui::hint("Run 'dotdipper pull' first, then 'dotdipper apply'");
+            }
         }
 
         ui::success("Installation completed successfully!");
+        ui::hint("Standalone scripts (including setup_dotfiles.sh) remain in the install/ directory for manual use");
     } else {
         ui::hint("Remove --dry-run to execute the installation scripts");
     }
@@ -939,14 +993,14 @@ async fn cmd_diff(config_path: PathBuf, detailed: bool) -> Result<()> {
     let config = cfg::load(&config_path)?;
 
     let compiled_path = dotdipper::paths::compiled_dir()?;
-    let manifest_path = dotdipper::paths::manifest_file()?;
 
-    if !manifest_path.exists() {
-        ui::warn("No manifest found. Run 'dotdipper pull' or 'dotdipper snapshot' first.");
-        return Ok(());
-    }
-
-    let manifest = crate::hash::Manifest::load(&manifest_path)?;
+    let manifest = match repo::load_manifest() {
+        Ok(m) => m,
+        Err(e) => {
+            ui::warn(&format!("{}", e));
+            return Ok(());
+        }
+    };
     let _entries = diff::diff(&compiled_path, &manifest, &config, detailed)?;
 
     Ok(())
@@ -963,14 +1017,24 @@ async fn cmd_apply(
     let config = cfg::load(&config_path)?;
 
     let compiled_path = dotdipper::paths::compiled_dir()?;
-    let manifest_path = dotdipper::paths::manifest_file()?;
 
-    if !manifest_path.exists() {
-        ui::warn("No manifest found. Run 'dotdipper pull' first.");
-        return Ok(());
+    let manifest = match repo::load_manifest() {
+        Ok(m) => m,
+        Err(e) => {
+            ui::warn(&format!("{}", e));
+            return Ok(());
+        }
+    };
+
+    if !config.general.backup {
+        ui::warn(
+            "general.backup is false — existing $HOME files may be overwritten without .bak copies",
+        );
+        if !force && !ui::prompt_confirm("Continue applying without backups?", false) {
+            ui::info("Apply cancelled");
+            return Ok(());
+        }
     }
-
-    let manifest = crate::hash::Manifest::load(&manifest_path)?;
 
     // Get diff entries
     let mut entries = diff::diff(&compiled_path, &manifest, &config, false)?;

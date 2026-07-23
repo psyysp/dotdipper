@@ -240,7 +240,7 @@ pub fn push(
     Ok(repo_name)
 }
 
-pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
+pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
     let repo_name = resolve_repo_name(config, repo_override);
     let username = resolve_github_username(config)?;
@@ -252,50 +252,152 @@ pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
         // Ensure current origin points at the selected repo
         add_remote(&username, &repo_name, &repo_path)?;
 
-        // Pull changes
-        let output = Command::new("git")
-            .args(["pull", "origin", "main"])
+        let dirty = has_uncommitted_changes(&repo_path)?;
+        if dirty && !force {
+            anyhow::bail!(
+                "Local compiled store has uncommitted changes. \
+                 Run 'dotdipper push' to save them, or re-run with --force to discard local compiled changes \
+                 (a git stash is created first). Your live $HOME files are not modified until you pass --apply."
+            );
+        }
+
+        if dirty && force {
+            ui::warn("Local compiled changes detected; stashing before forced pull...");
+            stash_local_changes(&repo_path)?;
+        }
+
+        // Fetch first so force reset / pull both see latest remote
+        let fetch_output = Command::new("git")
+            .args(["fetch", "origin", "main"])
             .current_dir(&repo_path)
             .output()
-            .context("Failed to pull from GitHub")?;
+            .context("Failed to fetch from GitHub")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("no tracking information") {
-                // Set tracking branch
-                let output = Command::new("git")
-                    .args(["branch", "--set-upstream-to=origin/main", "main"])
-                    .current_dir(&repo_path)
-                    .output()
-                    .context("Failed to set tracking branch")?;
+        if !fetch_output.status.success() {
+            anyhow::bail!(
+                "Failed to fetch: {}",
+                String::from_utf8_lossy(&fetch_output.stderr)
+            );
+        }
 
-                if output.status.success() {
-                    // Try pull again
+        if force {
+            // Overwrite local compiled git state with remote (HOME untouched)
+            let reset_output = Command::new("git")
+                .args(["reset", "--hard", "origin/main"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to reset to origin/main")?;
+
+            if !reset_output.status.success() {
+                anyhow::bail!(
+                    "Failed to force-sync compiled store: {}",
+                    String::from_utf8_lossy(&reset_output.stderr)
+                );
+            }
+
+            let clean_output = Command::new("git")
+                .args(["clean", "-fd"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to clean untracked files after force pull")?;
+
+            if !clean_output.status.success() {
+                ui::warn(&format!(
+                    "git clean reported issues: {}",
+                    String::from_utf8_lossy(&clean_output.stderr)
+                ));
+            }
+        } else {
+            // Pull changes
+            let output = Command::new("git")
+                .args(["pull", "origin", "main"])
+                .current_dir(&repo_path)
+                .output()
+                .context("Failed to pull from GitHub")?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("no tracking information") {
+                    // Set tracking branch
                     let output = Command::new("git")
-                        .args(["pull", "origin", "main"])
+                        .args(["branch", "--set-upstream-to=origin/main", "main"])
                         .current_dir(&repo_path)
                         .output()
-                        .context("Failed to pull from GitHub")?;
+                        .context("Failed to set tracking branch")?;
 
-                    if !output.status.success() {
+                    if output.status.success() {
+                        // Try pull again
+                        let output = Command::new("git")
+                            .args(["pull", "origin", "main"])
+                            .current_dir(&repo_path)
+                            .output()
+                            .context("Failed to pull from GitHub")?;
+
+                        if !output.status.success() {
+                            anyhow::bail!(
+                                "Failed to pull: {}",
+                                String::from_utf8_lossy(&output.stderr)
+                            );
+                        }
+                    } else {
                         anyhow::bail!(
-                            "Failed to pull: {}",
+                            "Failed to set tracking branch: {}",
                             String::from_utf8_lossy(&output.stderr)
                         );
                     }
                 } else {
-                    anyhow::bail!(
-                        "Failed to set tracking branch: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
+                    anyhow::bail!("Failed to pull: {}", stderr);
                 }
-            } else {
-                anyhow::bail!("Failed to pull: {}", stderr);
             }
         }
     }
 
+    // Make sure apply/install can find the manifest after pull
+    if let Err(e) = crate::repo::sync_manifest_from_compiled() {
+        ui::warn(&format!("Could not sync manifest after pull: {}", e));
+        ui::hint("You can rebuild it with the files under compiled/ once they exist.");
+    }
+
     Ok(repo_name)
+}
+
+fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to check git status")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to check git status: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(!output.stdout.is_empty())
+}
+
+fn stash_local_changes(repo_path: &Path) -> Result<()> {
+    let message = format!(
+        "dotdipper pre-pull stash {}",
+        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
+    );
+    let output = Command::new("git")
+        .args(["stash", "push", "-u", "-m", message.as_str()])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to stash local compiled changes")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to stash local changes before force pull: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    ui::info("Stashed local compiled changes (recover with: git -C ~/.config/dotdipper/compiled stash pop)");
+    Ok(())
 }
 
 pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {

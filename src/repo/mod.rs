@@ -6,8 +6,18 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cfg::Config;
-use crate::hash::{hash_files, Manifest};
+use crate::hash::{hash_file, hash_files, Manifest};
 use crate::ui;
+
+/// Files that live in `compiled/` but are not user dotfiles.
+fn is_store_metadata(rel_path: &Path) -> bool {
+    let s = rel_path.to_string_lossy();
+    s == "manifest.lock"
+        || s == ".gitignore"
+        || s.starts_with(".git/")
+        || s == ".git"
+        || s.starts_with(".dotdipper/")
+}
 
 pub struct Snapshot {
     pub file_count: usize,
@@ -124,14 +134,130 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
     pb.finish_with_message("Snapshot created");
 
-    // Save manifest
+    // Save manifest outside and inside the git store so pull/apply work on new machines
     manifest.save(&manifest_path)?;
+    save_manifest_into_compiled(&manifest)?;
 
     write_push_gitignore(&repo_path, config)?;
 
     Ok(Snapshot {
         file_count: manifest.files.len(),
     })
+}
+
+/// Load the active manifest, preferring the synced copy inside `compiled/` when present.
+pub fn load_manifest() -> Result<Manifest> {
+    let base = get_manifest_path()?;
+    let compiled_manifest = get_compiled_path()?.join("manifest.lock");
+
+    if compiled_manifest.exists() {
+        let manifest = Manifest::load(&compiled_manifest)?;
+        // Keep the base path in sync for tools that still read it directly
+        if let Some(parent) = base.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        manifest.save(&base)?;
+        return Ok(manifest);
+    }
+
+    if base.exists() {
+        let manifest = Manifest::load(&base)?;
+        // Backfill into compiled/ so future pushes include it
+        let _ = save_manifest_into_compiled(&manifest);
+        return Ok(manifest);
+    }
+
+    anyhow::bail!("Manifest not found. Run 'dotdipper pull' or 'dotdipper snapshot' first.")
+}
+
+/// After a git pull/clone, ensure `manifest.lock` is available for apply/install.
+/// Rebuilds from compiled files when the remote predates manifest syncing.
+pub fn sync_manifest_from_compiled() -> Result<Manifest> {
+    let compiled = get_compiled_path()?;
+    let compiled_manifest = compiled.join("manifest.lock");
+    let base = get_manifest_path()?;
+
+    if compiled_manifest.exists() {
+        let manifest = Manifest::load(&compiled_manifest)?;
+        if let Some(parent) = base.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        manifest.save(&base)?;
+        ui::info("Synced manifest.lock from pulled repository");
+        return Ok(manifest);
+    }
+
+    if !compiled.exists() {
+        anyhow::bail!("Compiled directory not found at {}", compiled.display());
+    }
+
+    ui::info("No manifest.lock in repository; rebuilding from compiled files...");
+    let manifest = rebuild_manifest_from_compiled()?;
+    ui::success(&format!(
+        "Rebuilt manifest with {} files",
+        manifest.files.len()
+    ));
+    Ok(manifest)
+}
+
+/// Hash every real dotfile under `compiled/` (skipping git/metadata) and write the manifest.
+pub fn rebuild_manifest_from_compiled() -> Result<Manifest> {
+    let compiled = get_compiled_path()?;
+    let mut manifest = Manifest::new();
+
+    if compiled.exists() {
+        for entry in walkdir::WalkDir::new(&compiled)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(rel_path) = entry.path().strip_prefix(&compiled) else {
+                continue;
+            };
+            if is_store_metadata(rel_path) {
+                continue;
+            }
+
+            let mut file_hash = hash_file(entry.path())?;
+            file_hash.path = rel_path.to_path_buf();
+            manifest.add_file(file_hash);
+        }
+    }
+
+    let base = get_manifest_path()?;
+    if let Some(parent) = base.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    manifest.save(&base)?;
+    save_manifest_into_compiled(&manifest)?;
+    Ok(manifest)
+}
+
+fn save_manifest_into_compiled(manifest: &Manifest) -> Result<()> {
+    let compiled = get_compiled_path()?;
+    fs::create_dir_all(&compiled)?;
+    manifest.save(&compiled.join("manifest.lock"))
+}
+
+/// Update config `tracked_files` from a pulled/rebuilt manifest so install/discover work.
+pub fn sync_tracked_files_from_manifest(
+    config_path: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let files: Vec<PathBuf> = manifest.files.keys().map(|rel| home.join(rel)).collect();
+
+    if !files.is_empty() {
+        crate::cfg::update_discovered(config_path, &files)?;
+        ui::info(&format!(
+            "Updated tracked_files from manifest ({} paths)",
+            files.len()
+        ));
+    }
+
+    Ok(files)
 }
 
 pub fn status(config: &Config) -> Result<Status> {
@@ -275,4 +401,70 @@ fn copy_file_with_permissions(source: &Path, dest: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn rebuild_manifest_skips_git_and_metadata() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("compiled");
+        fs::create_dir_all(compiled.join(".git").join("objects")).unwrap();
+        fs::write(compiled.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(compiled.join(".gitignore"), "*.tmp\n").unwrap();
+        fs::write(compiled.join(".zshrc"), "export Z=1\n").unwrap();
+        fs::create_dir_all(compiled.join(".config")).unwrap();
+        fs::write(compiled.join(".config").join("app.conf"), "a=1\n").unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let manifest = rebuild_manifest_from_compiled().unwrap();
+        assert!(manifest.has_file(Path::new(".zshrc")));
+        assert!(manifest.has_file(Path::new(".config/app.conf")));
+        assert!(!manifest.has_file(Path::new("manifest.lock")));
+        assert!(!manifest.has_file(Path::new(".gitignore")));
+        assert!(!manifest.files.keys().any(|p| {
+            p.components()
+                .next()
+                .map(|c| c.as_os_str() == ".git")
+                .unwrap_or(false)
+        }));
+        assert!(base.join("manifest.lock").exists());
+        assert!(compiled.join("manifest.lock").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn sync_manifest_prefers_compiled_copy() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        fs::write(compiled.join(".a"), "a\n").unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let mut manifest = Manifest::new();
+        let mut fh = hash_file(&compiled.join(".a")).unwrap();
+        fh.path = PathBuf::from(".a");
+        manifest.add_file(fh);
+        manifest.save(&compiled.join("manifest.lock")).unwrap();
+
+        // Stale/missing base path should be repaired from compiled/
+        let loaded = sync_manifest_from_compiled().unwrap();
+        assert!(loaded.has_file(Path::new(".a")));
+        assert!(base.join("manifest.lock").exists());
+    }
 }

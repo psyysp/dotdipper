@@ -174,18 +174,20 @@ dotdipper undo
 # 2. Initialize
 dotdipper init
 
-# 3. Pull your dotfiles
+# 3. Pull your dotfiles (restores compiled/ + manifest.lock from git)
 dotdipper pull
 
-# 4. Review changes
+# 4. Preview what would change in $HOME
 dotdipper diff --detailed
 
-# 5. Apply selectively
+# 5. Apply selectively (creates .bak backups by default)
 dotdipper apply --interactive
 
-# 6. Install packages
+# 6. Install discovered packages, then place dotfiles safely
 dotdipper install
 ```
+
+`pull` only updates the local compiled store. Your live `$HOME` files are unchanged until you `apply` (or `pull --apply` / `install`). Keep `general.backup = true` so existing files are copied to `.bak.<timestamp>` before overwrite.
 
 ---
 
@@ -380,7 +382,7 @@ dotdipper undo                      # Revert the last pushed commit
 dotdipper pull --apply
 ```
 
-**Git repo location:** Push/pull use a git repository inside your dotdipper directory (e.g. `~/.config/dotdipper/compiled/`). Don’t run `git pull` or `git push` from `~/.config`; use `dotdipper pull` and `dotdipper push` from any directory. If the remote already has commits (e.g. a new repo with a README), `dotdipper push` will fetch, rebase your changes on top, and push automatically.
+**Git repo location:** Push/pull use a git repository inside your dotdipper directory (e.g. `~/.config/dotdipper/compiled/`). The `manifest.lock` is stored inside that repo so a fresh `pull` can apply files correctly. Don’t run `git pull` or `git push` from `~/.config`; use `dotdipper pull` and `dotdipper push` from any directory. If the remote already has commits (e.g. a new repo with a README), `dotdipper push` will fetch, rebase your changes on top, and push automatically. `pull --force` discards uncommitted changes in `compiled/` only (after stashing); it does not touch `$HOME` unless you also pass `--apply`.
 
 **Use Remote Backends when you want:**
 
@@ -734,10 +736,12 @@ dotdipper profile switch default
 Dotdipper is designed with safety as a core principle:
 
 - **HOME Boundary Enforcement** - Refuses operations outside `$HOME`
-- **Backup Creation** - Creates `.bak.<timestamp>` backups
-- **Confirmation Prompts** - Interactive confirmations
+- **Backup Creation** - Creates `.bak.<timestamp>` backups (warns if disabled)
+- **Confirmation Prompts** - Interactive confirmations unless `--force`
 - **Hash-Based Detection** - BLAKE3 hashing
-- **Deterministic Behavior** - Sorted manifests
+- **Deterministic Behavior** - Sorted manifests synced with the git store
+- **Safe Rollback** - Pre-rollback safety snapshot; preserves `compiled/.git`
+- **Safe Install** - Package install + Rust apply (respects excludes/manifest)
 - **No Plaintext Secrets** - In-memory decryption only
 
 ---
