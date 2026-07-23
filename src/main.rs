@@ -970,8 +970,9 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
                 has_issues = true;
                 ui::error(&format!("✗ {}: {}", check, e));
                 if fix {
-                    ui::info("  Attempting to fix...");
-                    // Implement fix logic here
+                    ui::hint(
+                        "  Automatic --fix is not implemented yet. Install missing tools manually.",
+                    );
                 }
             }
         }

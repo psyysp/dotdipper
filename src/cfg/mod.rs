@@ -464,7 +464,28 @@ pub fn load(config_path: &Path) -> Result<Config> {
         // Note: we keep the dotfiles section for backward compatibility but use general.tracked_files
     }
 
+    // Expand ~ in tracked file paths so example/hand-edited configs work
+    config.general.tracked_files = config
+        .general
+        .tracked_files
+        .into_iter()
+        .map(expand_user_path)
+        .collect();
+
+    if let Some(secrets) = config.secrets.as_mut() {
+        if let Some(key_path) = secrets.key_path.as_mut() {
+            *key_path = expand_user_path(PathBuf::from(key_path.clone()))
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+
     Ok(config)
+}
+
+fn expand_user_path(path: PathBuf) -> PathBuf {
+    let as_str = path.to_string_lossy();
+    PathBuf::from(shellexpand::tilde(&as_str).as_ref())
 }
 
 pub fn save(config_path: &Path, config: &Config) -> Result<()> {

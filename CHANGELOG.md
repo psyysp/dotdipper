@@ -10,8 +10,13 @@ All notable changes to dotdipper are documented here.
 - **Install no longer blindly links every file under `compiled/`:** `dotdipper install` runs the OS package script, then uses the Rust `apply` path (respects excludes, backups, and the manifest). The generated `setup_dotfiles.sh` is manifest-aware and skips `.git` / metadata.
 - **Snapshot rollback:** creates a safety snapshot first, preserves `compiled/.git` history, skips copying `.git` objects into snapshots, and re-syncs `manifest.lock`.
 - **Pull `--force`:** actually means discard uncommitted changes in the local compiled git store (stash first, then hard-reset). Live `$HOME` files are untouched unless you also pass `--apply`.
-- **Snapshot prune:** `keep_age` alone now correctly selects old snapshots (OR semantics with `keep_count`).
+- **Snapshot prune:** `keep_age` alone now correctly selects old snapshots (OR semantics with `keep_count`). `keep_size`-only prune no longer deletes everything (unimplemented criterion is ignored safely).
 - **Snapshot IDs:** include milliseconds (plus a uniqueness suffix) so rapid successive snapshots cannot overwrite each other.
+- **Apply path traversal:** reject `..` / absolute paths in manifests before writing under `$HOME`.
+- **Encrypted apply:** always copy decrypted content (never symlink to a temp file that gets deleted).
+- **Tracked file hashing:** fail loudly if a tracked path cannot be read instead of silently omitting it.
+- **Config `~` expansion:** expand `~` in `tracked_files` and secrets `key_path` on load.
+- **doctor --fix:** no longer pretends to auto-fix; points users at manual installs.
 
 ### Safety
 

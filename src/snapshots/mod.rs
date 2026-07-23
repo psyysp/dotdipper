@@ -358,9 +358,11 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
     }
 
     let mut protected_ids = std::collections::HashSet::new();
+    let mut has_implemented_criteria = false;
 
     // Keep N most recent
     if let Some(keep_count) = opts.keep_count {
+        has_implemented_criteria = true;
         for snap in snapshots.iter().take(keep_count) {
             protected_ids.insert(snap.id.clone());
         }
@@ -369,6 +371,7 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
     // Keep anything newer than the age cutoff
     if let Some(age_str) = &opts.keep_age {
         if let Some(duration) = parse_duration(age_str) {
+            has_implemented_criteria = true;
             let cutoff = Utc::now() - duration;
             for snap in &snapshots {
                 if snap.created_at >= cutoff {
@@ -380,10 +383,17 @@ pub fn prune(config: &Config, opts: &PruneOpts) -> Result<()> {
         }
     }
 
-    // Apply keep_size filter (simplified - would need proper implementation)
+    // Apply keep_size filter (not implemented — never treat as a criterion)
     if let Some(_size_str) = &opts.keep_size {
-        // TODO: Implement size-based pruning
-        ui::warn("Size-based pruning not yet implemented");
+        ui::warn("Size-based pruning not yet implemented; ignoring keep_size");
+    }
+
+    if !has_implemented_criteria {
+        ui::info(
+            "No implemented prune criteria available (refusing to delete snapshots). \
+             Set keep_count and/or a valid keep_age.",
+        );
+        return Ok(());
     }
 
     let to_delete: Vec<&Snapshot> = snapshots
