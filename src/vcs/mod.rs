@@ -625,6 +625,12 @@ fn ensure_github_repo(
     username: &str,
     repo_name: &str,
 ) -> Result<()> {
+    // Tests can point at a local bare repo via DOTDIPPER_TEST_REMOTE and skip gh.
+    if std::env::var_os("DOTDIPPER_TEST_REMOTE").is_some() {
+        add_remote(username, repo_name, repo_path)?;
+        return Ok(());
+    }
+
     check_gh()?;
 
     ui::info(&format!(
@@ -684,8 +690,18 @@ fn ensure_github_repo(
     Ok(())
 }
 
+fn resolve_remote_url(username: &str, repo_name: &str) -> String {
+    if let Ok(url) = std::env::var("DOTDIPPER_TEST_REMOTE") {
+        let url = url.trim();
+        if !url.is_empty() {
+            return url.to_string();
+        }
+    }
+    format!("git@github.com:{}/{}.git", username, repo_name)
+}
+
 fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
-    let remote_url = format!("git@github.com:{}/{}.git", username, repo_name);
+    let remote_url = resolve_remote_url(username, repo_name);
 
     let output = Command::new("git")
         .args(["remote", "add", "origin", remote_url.as_str()])
@@ -718,7 +734,7 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
 }
 
 fn clone_repo(username: &str, repo_name: &str, dest_path: &Path) -> Result<()> {
-    let repo_url = format!("git@github.com:{}/{}.git", username, repo_name);
+    let repo_url = resolve_remote_url(username, repo_name);
 
     ui::info(&format!("Cloning repository from {}", repo_url));
 

@@ -57,9 +57,24 @@ fn create_inner(
     let snapshots_dir = get_snapshots_dir()?;
     fs::create_dir_all(&snapshots_dir)?;
 
-    // Generate unique ID based on timestamp
+    // Generate unique ID based on timestamp (include millis to avoid same-second collisions)
     let now = Utc::now();
-    let id = now.format("%Y%m%d_%H%M%S").to_string();
+    let mut id = format!(
+        "{}_{:03}",
+        now.format("%Y%m%d_%H%M%S"),
+        now.timestamp_subsec_millis()
+    );
+    // Extremely unlikely, but guarantee uniqueness if the directory already exists
+    let mut suffix = 1u32;
+    while snapshots_dir.join(&id).exists() {
+        id = format!(
+            "{}_{:03}_{}",
+            now.format("%Y%m%d_%H%M%S"),
+            now.timestamp_subsec_millis(),
+            suffix
+        );
+        suffix += 1;
+    }
 
     // Create snapshot directory
     let snapshot_dir = snapshots_dir.join(&id);
