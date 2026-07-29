@@ -92,21 +92,51 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
             }
         }
         RemoteKind::S3 => {
-            if !opts.contains_key("bucket") {
+            #[cfg(not(feature = "s3"))]
+            {
                 bail!(
-                    "S3 remote requires --bucket.\n\
-                       Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1"
+                    "S3 remote support is not included in this build.\n\
+                     Official release binaries include S3 by default.\n\
+                     Rebuild from source with: cargo install --path . --features s3"
                 );
+            }
+            #[cfg(feature = "s3")]
+            {
+                if !opts.contains_key("bucket") {
+                    bail!(
+                        "S3 remote requires --bucket.\n\
+                           Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1"
+                    );
+                }
             }
         }
         RemoteKind::WebDAV => {
-            if endpoint.is_none() {
-                bail!("WebDAV remote requires --endpoint (URL).\n\
-                       Example: dotdipper remote set webdav --endpoint https://dav.example.com/dotfiles");
+            #[cfg(not(feature = "webdav"))]
+            {
+                bail!(
+                    "WebDAV remote support is not included in this build.\n\
+                     Official release binaries include WebDAV by default.\n\
+                     Rebuild from source with: cargo install --path . --features webdav"
+                );
+            }
+            #[cfg(feature = "webdav")]
+            {
+                if endpoint.is_none() {
+                    bail!(
+                        "WebDAV remote requires --endpoint (URL).\n\
+                           Example: dotdipper remote set webdav --endpoint https://dav.example.com/dotfiles"
+                    );
+                }
             }
         }
-        RemoteKind::GitHub | RemoteKind::GCS => {
-            // GitHub uses vcs module, GCS may have different requirements
+        RemoteKind::GitHub => {
+            bail!(
+                "Use 'dotdipper push' / 'dotdipper pull' for GitHub sync.\n\
+                 The 'remote' command is for LocalFS / S3 / WebDAV bundle backups."
+            );
+        }
+        RemoteKind::GCS => {
+            bail!("GCS remotes are not implemented yet. Use s3, webdav, or localfs instead.");
         }
     }
 
@@ -299,6 +329,15 @@ fn create_remote(remote_cfg: &crate::cfg::RemoteConfig) -> Result<Box<dyn Remote
                 bucket, region, prefix,
             )?))
         }
+        #[cfg(not(feature = "s3"))]
+        "s3" => {
+            bail!(
+                "S3 remote support is not included in this build.\n\
+                 Official release binaries include S3 by default.\n\
+                 If you built from source, rebuild with: cargo install --path . --features s3\n\
+                 (or use default features, which already enable s3 + webdav)."
+            );
+        }
         #[cfg(feature = "webdav")]
         "webdav" => {
             let endpoint = remote_cfg
@@ -307,10 +346,28 @@ fn create_remote(remote_cfg: &crate::cfg::RemoteConfig) -> Result<Box<dyn Remote
                 .context("WebDAV remote requires 'endpoint' URL")?;
             Ok(Box::new(webdav_backend::WebDavRemote::new(endpoint)?))
         }
-        _ => {
+        #[cfg(not(feature = "webdav"))]
+        "webdav" => {
             bail!(
-                "Remote kind '{}' not supported or feature not enabled",
-                remote_cfg.kind
+                "WebDAV remote support is not included in this build.\n\
+                 Official release binaries include WebDAV by default.\n\
+                 If you built from source, rebuild with: cargo install --path . --features webdav\n\
+                 (or use default features, which already enable s3 + webdav)."
+            );
+        }
+        "gcs" => {
+            bail!("GCS remotes are not implemented yet. Use s3, webdav, or localfs instead.");
+        }
+        "github" => {
+            bail!(
+                "Use 'dotdipper push' / 'dotdipper pull' for GitHub sync.\n\
+                 The 'remote' command is for LocalFS / S3 / WebDAV bundle backups."
+            );
+        }
+        other => {
+            bail!(
+                "Unknown remote kind '{}'. Supported: localfs, s3, webdav.",
+                other
             );
         }
     }

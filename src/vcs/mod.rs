@@ -65,6 +65,53 @@ pub fn init_repo(repo_path: &Path) -> Result<()> {
     }
 
     std::fs::write(repo_path.join(".gitignore"), BASE_GITIGNORE)?;
+    ensure_commit_identity(repo_path)?;
+
+    Ok(())
+}
+
+/// Ensure the compiled git repo can commit even when HOME has no global git identity.
+fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
+    let name_ok = Command::new("git")
+        .args(["config", "--get", "user.name"])
+        .current_dir(repo_path)
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false);
+    let email_ok = Command::new("git")
+        .args(["config", "--get", "user.email"])
+        .current_dir(repo_path)
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    if !name_ok {
+        let output = Command::new("git")
+            .args(["config", "user.name", "dotdipper"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to set local git user.name")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set git user.name: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    if !email_ok {
+        let output = Command::new("git")
+            .args(["config", "user.email", "dotdipper@localhost"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to set local git user.email")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set git user.email: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     Ok(())
 }
@@ -107,6 +154,8 @@ pub fn push(
     if status_output.stdout.is_empty() {
         ui::info("No changes to commit");
     } else {
+        ensure_commit_identity(&repo_path)?;
+
         // Commit changes
         let commit_message = message.unwrap_or_else(|| {
             format!(

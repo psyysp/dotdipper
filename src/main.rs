@@ -763,9 +763,11 @@ async fn cmd_pull(
         let manifest = match repo::load_manifest() {
             Ok(m) => m,
             Err(e) => {
-                ui::warn(&format!("Could not load manifest: {}", e));
-                ui::hint("Pulled files are in the compiled store. Fix the manifest, then run 'dotdipper apply'.");
-                return Ok(());
+                anyhow::bail!(
+                    "Could not load manifest after pull: {}. \
+                     Pulled files are in the compiled store; fix the manifest, then run 'dotdipper apply'.",
+                    e
+                );
             }
         };
 
@@ -934,11 +936,11 @@ async fn cmd_install(
                 repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
             }
             Err(e) => {
-                ui::warn(&format!(
-                    "Skipping dotfile apply (manifest unavailable): {}",
+                anyhow::bail!(
+                    "Package scripts ran, but dotfile apply failed (manifest unavailable): {}. \
+                     Run 'dotdipper pull' first, then 'dotdipper apply'.",
                     e
-                ));
-                ui::hint("Run 'dotdipper pull' first, then 'dotdipper apply'");
+                );
             }
         }
 
@@ -995,13 +997,8 @@ async fn cmd_diff(config_path: PathBuf, detailed: bool) -> Result<()> {
 
     let compiled_path = dotdipper::paths::compiled_dir()?;
 
-    let manifest = match repo::load_manifest() {
-        Ok(m) => m,
-        Err(e) => {
-            ui::warn(&format!("{}", e));
-            return Ok(());
-        }
-    };
+    let manifest = repo::load_manifest()
+        .context("No manifest found. Run 'dotdipper pull' or 'dotdipper snapshot create' first.")?;
     let _entries = diff::diff(&compiled_path, &manifest, &config, detailed)?;
 
     Ok(())
@@ -1019,13 +1016,8 @@ async fn cmd_apply(
 
     let compiled_path = dotdipper::paths::compiled_dir()?;
 
-    let manifest = match repo::load_manifest() {
-        Ok(m) => m,
-        Err(e) => {
-            ui::warn(&format!("{}", e));
-            return Ok(());
-        }
-    };
+    let manifest =
+        repo::load_manifest().context("No manifest found. Run 'dotdipper pull' first.")?;
 
     if !config.general.backup {
         ui::warn(

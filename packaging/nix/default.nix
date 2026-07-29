@@ -8,19 +8,20 @@
 
 rustPlatform.buildRustPackage rec {
   pname = "dotdipper";
-  version = "0.3.1";
+  version = "0.7.4";
 
   src = fetchFromGitHub {
     owner = "psyysp";
     repo = "dotdipper";
     rev = "v${version}";
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Update with: nix-prefetch-github psyysp dotdipper --rev v0.3.1
+    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Update with: nix-prefetch-github psyysp dotdipper --rev v0.7.4
   };
 
   cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # Update after first build attempt
 
   nativeBuildInputs = [ pkg-config ];
   buildInputs = [ openssl ];
+  buildFeatures = [ "s3" "webdav" ];
 
   # age is a runtime dependency for secrets encryption
   postInstall = ''

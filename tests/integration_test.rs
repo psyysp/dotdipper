@@ -439,7 +439,7 @@ tracked_files = []
         .arg(&config_path)
         .arg("diff")
         .assert()
-        .success();
+        .failure();
 }
 
 // ============================================
@@ -471,7 +471,7 @@ tracked_files = []
         .arg("apply")
         .arg("--force")
         .assert()
-        .success();
+        .failure();
 }
 
 // ============================================

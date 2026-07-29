@@ -22,7 +22,7 @@
 
         dotdipper = pkgs.rustPlatform.buildRustPackage {
           pname = "dotdipper";
-          version = "0.4.0";
+          version = "0.7.4";
 
           src = self;
 
@@ -32,6 +32,9 @@
 
           nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ];
           buildInputs = [ pkgs.openssl ];
+
+          # Include S3 + WebDAV remotes (crate default features)
+          buildFeatures = [ "s3" "webdav" ];
 
           # Skip tests that require system binaries not available in Nix sandbox
           doCheck = false;

@@ -2,32 +2,29 @@
 
 All notable changes to dotdipper are documented here.
 
-## [Unreleased]
+## [0.7.4] - 2026-07-29
 
 ### Fixed
 
-- **Critical — pull → apply on a new machine:** `manifest.lock` is now written into `compiled/` (the git store) on every snapshot/push, and restored after `pull`. Previously the manifest lived only outside the repo, so `pull --apply` / `install` could find your files in git but fail to place them.
-- **Install no longer blindly links every file under `compiled/`:** `dotdipper install` runs the OS package script, then uses the Rust `apply` path (respects excludes, backups, and the manifest). The generated `setup_dotfiles.sh` is manifest-aware and skips `.git` / metadata.
-- **Snapshot rollback:** creates a safety snapshot first, preserves `compiled/.git` history, skips copying `.git` objects into snapshots, and re-syncs `manifest.lock`.
-- **Pull `--force`:** actually means discard uncommitted changes in the local compiled git store (stash first, then hard-reset). Live `$HOME` files are untouched unless you also pass `--apply`.
-- **Snapshot prune:** `keep_age` alone now correctly selects old snapshots (OR semantics with `keep_count`). `keep_size`-only prune no longer deletes everything (unimplemented criterion is ignored safely).
-- **Snapshot IDs:** include milliseconds (plus a uniqueness suffix) so rapid successive snapshots cannot overwrite each other.
-- **Apply path traversal:** reject `..` / absolute paths in manifests before writing under `$HOME`.
-- **Encrypted apply:** always copy decrypted content (never symlink to a temp file that gets deleted).
-- **Tracked file hashing:** fail loudly if a tracked path cannot be read instead of silently omitting it.
-- **Config `~` expansion:** expand `~` in `tracked_files` and secrets `key_path` on load.
-- **doctor --fix:** no longer pretends to auto-fix; points users at manual installs.
+- **Critical — pull → apply on a new machine:** `manifest.lock` is now written into `compiled/` (the git store) on every snapshot/push, and restored after `pull`.
+- **Install** uses Rust `apply` (excludes/backups/manifest) instead of blindly linking every file under `compiled/`.
+- **Snapshot rollback:** safety snapshot first; preserves `compiled/.git`; unique snapshot IDs with milliseconds.
+- **Pull `--force`:** stashes then hard-resets the compiled store only (`$HOME` untouched unless `--apply`).
+- **Prune:** `keep_age` OR-semantics fixed; `keep_size`-only no longer deletes everything.
+- **Apply path traversal** rejected; encrypted apply always copies (never symlinks deleted temps).
+- **Tracked file hashing** fails loudly; config expands `~`.
+- **`apply` / `diff` / `pull --apply` / `install` apply** return non-zero when the manifest is missing (scripts can detect failure).
+- **doctor --fix** no longer pretends to auto-repair.
 
-### Safety
+### Changed
 
-- Warn (and confirm) before apply when `general.backup = false`.
-- After pull, refresh `tracked_files` from the manifest so package discovery / install work on fresh machines.
-- Prefer `dotdipper apply` from generated `install.sh` when the binary is on `PATH`.
+- **Default features** now include `s3` and `webdav` so release/Homebrew/AUR/Nix binaries ship remotes. Minimal builds: `--no-default-features`.
+- Clear errors when S3/WebDAV are unavailable, or when `github`/`gcs` remotes are requested.
+- Packaging metadata bumped to **0.7.4** (AUR, Nix, Scoop, root flake). Source/binary checksums for published artifacts still need updating when the GitHub release is cut.
 
 ### Tests
 
-- Added full end-to-end coverage in `tests/e2e_full_sync_test.rs` (push/pull/apply/install round-trip, legacy manifest rebuild, dirty/force pull, excludes, symlink mode, rollback+git preservation, undo, backups).
-- `DOTDIPPER_TEST_REMOTE` lets tests exercise real `push`/`pull` against a local bare git repo without GitHub SSH/`gh`.
+- Full e2e coverage in `tests/e2e_full_sync_test.rs` + `tests/safety_sync_test.rs`.
 
 ## [0.7.3] - 2026-03-14
 

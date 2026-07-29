@@ -314,7 +314,7 @@ Push/pull dotfiles to remote storage:
 # Configure LocalFS remote
 dotdipper remote set localfs --endpoint ~/dotfiles-backup
 
-# Configure S3 remote (requires --features s3)
+# Configure S3 remote (included in official release binaries / default cargo features)
 dotdipper remote set s3 --bucket my-dotfiles --region us-east-1
 # Set credentials via environment:
 export AWS_ACCESS_KEY_ID=your-key
@@ -322,7 +322,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret
 # Or use custom S3-compatible endpoint (MinIO, DigitalOcean Spaces):
 export AWS_ENDPOINT_URL=https://nyc3.digitaloceanspaces.com
 
-# Configure WebDAV remote (requires --features webdav)
+# Configure WebDAV remote (included in official release binaries / default cargo features)
 dotdipper remote set webdav --endpoint https://cloud.example.com/remote.php/webdav
 # Set credentials via environment:
 export WEBDAV_USERNAME=your-username
@@ -341,8 +341,10 @@ dotdipper remote pull
 **Supported Backends:**
 
 - ✅ LocalFS (fully implemented)
-- ✅ S3 (fully implemented, feature-gated)
-- ✅ WebDAV (fully implemented, feature-gated)
+- ✅ S3 (fully implemented; shipped in default/release builds)
+- ✅ WebDAV (fully implemented; shipped in default/release builds)
+
+Official packages and `cargo build --release` include S3 + WebDAV by default. For a minimal binary: `cargo build --release --no-default-features`. If you use a minimal build and run `remote set s3` / `webdav`, Dotdipper prints a clear rebuild message (`--features s3,webdav`).
 
 **Features:**
 

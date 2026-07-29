@@ -3,7 +3,7 @@
 # https://github.com/psyysp/dotdipper
 
 pkgname=dotdipper
-pkgver=0.3.1
+pkgver=0.7.4
 pkgrel=1
 pkgdesc="A safe, deterministic, and feature-rich dotfiles manager built in Rust"
 arch=('x86_64' 'aarch64')

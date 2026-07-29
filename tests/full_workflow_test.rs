@@ -50,7 +50,7 @@ fn test_full_workflow_without_github() {
         .success()
         .stdout(predicate::str::contains("general"));
 
-    // Step 3: Test diff with no manifest (succeeds gracefully)
+    // Step 3: Test diff with no manifest (non-zero exit)
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", home_dir)
         .env_remove("XDG_CONFIG_HOME")
@@ -59,9 +59,9 @@ fn test_full_workflow_without_github() {
         .arg(&config_path)
         .arg("diff");
 
-    cmd.assert().success();
+    cmd.assert().failure();
 
-    // Step 4: Test apply with no manifest (succeeds gracefully)
+    // Step 4: Test apply with no manifest (non-zero exit)
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", home_dir)
         .env_remove("XDG_CONFIG_HOME")
@@ -70,9 +70,9 @@ fn test_full_workflow_without_github() {
         .arg(&config_path)
         .arg("apply");
 
-    cmd.assert().success();
+    cmd.assert().failure();
 
-    // Step 5: Test apply with --only filter
+    // Step 5: Test apply with --only filter still fails without manifest
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", home_dir)
         .env_remove("XDG_CONFIG_HOME")
@@ -83,7 +83,7 @@ fn test_full_workflow_without_github() {
         .arg("--only")
         .arg("~/.zshrc");
 
-    cmd.assert().success();
+    cmd.assert().failure();
 }
 
 #[test]
@@ -192,6 +192,16 @@ tracked_files = []
 
 #[test]
 fn test_apply_force_and_interactive_flags() {
+    // Flag acceptance is validated via --help; missing-manifest apply must exit non-zero.
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.arg("apply")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--interactive"))
+        .stdout(predicate::str::contains("--only"));
+
     let temp_dir = TempDir::new().unwrap();
     let config_path = temp_dir.path().join("config.toml");
 
@@ -204,26 +214,13 @@ tracked_files = []
     )
     .unwrap();
 
-    // Test force flag
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.arg("--config")
         .arg(&config_path)
         .arg("apply")
         .arg("--force");
 
-    cmd.assert().success();
-
-    // Test that interactive and only are mutually compatible
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
-        .arg("apply")
-        .arg("--interactive")
-        .arg("--only")
-        .arg("~/.zshrc");
-
-    // Should accept both flags (interactive takes precedence)
-    cmd.assert().success();
+    cmd.assert().failure();
 }
 
 #[test]
@@ -347,16 +344,15 @@ tracked_files = []
         )
         .unwrap();
 
-        // Test diff without detailed
+        // Without a manifest, diff exits non-zero (even with --detailed)
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.env("HOME", temp_dir.path())
             .arg("--config")
             .arg(&config_path)
             .arg("diff");
 
-        cmd.assert().success();
+        cmd.assert().failure();
 
-        // Test diff with detailed
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.env("HOME", temp_dir.path())
             .arg("--config")
@@ -364,6 +360,6 @@ tracked_files = []
             .arg("diff")
             .arg("--detailed");
 
-        cmd.assert().success();
+        cmd.assert().failure();
     }
 }
