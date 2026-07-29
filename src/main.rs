@@ -857,7 +857,7 @@ async fn cmd_install_script(config_path: PathBuf, output: Option<PathBuf>) -> Re
         }
 
         ui::success(&format!(
-            "Wrote setup_dotfiles.sh to {}",
+            "Wrote install script to {}",
             output_path.display()
         ));
     } else {

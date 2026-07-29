@@ -647,7 +647,7 @@ dotdipper discover --packages --include-low-confidence  # Include uncertain matc
 dotdipper install [--dry-run]         # Preview generated package + dotfile install scripts
 dotdipper install --target-os ubuntu  # Target specific OS
 dotdipper install script              # Print setup_dotfiles.sh for the tracked dotfile list
-dotdipper install script -o setup.sh  # Export setup_dotfiles.sh to a file
+dotdipper install script -o setup.sh  # Export to a file (creates parent dirs; marks executable)
 ```
 
 ---

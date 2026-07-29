@@ -601,7 +601,9 @@ mode = "copy"
         .stdout(predicate::str::contains("#!/usr/bin/env bash"))
         .stdout(predicate::str::contains("DOTFILE_COUNT=2"))
         .stdout(predicate::str::contains("apply_symlink '.zshrc'"))
-        .stdout(predicate::str::contains("apply_copy '.gitconfig'"));
+        .stdout(predicate::str::contains("apply_copy '.gitconfig'"))
+        .stdout(predicate::str::contains("Wrote install script").not())
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
@@ -637,7 +639,9 @@ tracked_files = ["{}"]
         .arg(&output_path)
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote setup_dotfiles.sh"));
+        .stdout(predicate::str::contains("Wrote install script"))
+        .stdout(predicate::str::contains("#!/usr/bin/env bash").not())
+        .stdout(predicate::str::contains("apply_symlink").not());
 
     let content = fs::read_to_string(&output_path).unwrap();
     assert!(content.contains("#!/usr/bin/env bash"));
