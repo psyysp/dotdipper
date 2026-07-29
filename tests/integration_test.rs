@@ -560,3 +560,105 @@ fn test_invalid_command() {
         .assert()
         .failure();
 }
+
+#[test]
+fn test_install_script_prints_setup_dotfiles() {
+    let temp_dir = TempDir::new().unwrap();
+    let home = temp_dir.path();
+    let config_path = home.join("config.toml");
+    let zshrc = home.join(".zshrc");
+    let gitconfig = home.join(".gitconfig");
+
+    fs::write(&zshrc, "export EDITOR=nvim\n").unwrap();
+    fs::write(&gitconfig, "[user]\n\tname = Test\n").unwrap();
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[general]
+default_mode = "symlink"
+tracked_files = ["{}", "{}"]
+
+[files."~/.gitconfig"]
+mode = "copy"
+"#,
+            zshrc.display(),
+            gitconfig.display()
+        ),
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("install")
+        .arg("script")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#!/usr/bin/env bash"))
+        .stdout(predicate::str::contains("DOTFILE_COUNT=2"))
+        .stdout(predicate::str::contains("apply_symlink '.zshrc'"))
+        .stdout(predicate::str::contains("apply_copy '.gitconfig'"));
+}
+
+#[test]
+fn test_install_script_exports_to_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let home = temp_dir.path();
+    let config_path = home.join("config.toml");
+    let zshrc = home.join(".zshrc");
+    let output_path = home.join("exported").join("setup_dotfiles.sh");
+
+    fs::write(&zshrc, "alias ll='ls -la'\n").unwrap();
+    fs::write(
+        &config_path,
+        format!(
+            r#"
+[general]
+tracked_files = ["{}"]
+"#,
+            zshrc.display()
+        ),
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("install")
+        .arg("script")
+        .arg("--output")
+        .arg(&output_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote setup_dotfiles.sh"));
+
+    let content = fs::read_to_string(&output_path).unwrap();
+    assert!(content.contains("#!/usr/bin/env bash"));
+    assert!(content.contains("apply_symlink '.zshrc'"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&output_path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111);
+    }
+}
+
+#[test]
+fn test_install_script_help() {
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.arg("install")
+        .arg("script")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("setup_dotfiles.sh"))
+        .stdout(predicate::str::contains("--output"));
+}

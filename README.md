@@ -185,10 +185,15 @@ dotdipper apply --interactive
 
 # 6. Install packages and replay tracked dotfiles
 dotdipper install
+
+# Optional: inspect or share the generated setup script
+dotdipper install script
+dotdipper install script -o setup_dotfiles.sh
 ```
 
 `dotdipper install` generates `setup_dotfiles.sh` from your tracked dotfile list, so the install
-step replays the same per-file copy/symlink decisions captured in your config.
+step replays the same per-file copy/symlink decisions captured in your config. Use
+`dotdipper install script` to print or export that script without running the full install.
 
 ---
 
@@ -641,6 +646,8 @@ dotdipper discover --packages --include-low-confidence  # Include uncertain matc
 # Install packages and generate a dotfile install script from tracked files
 dotdipper install [--dry-run]         # Preview generated package + dotfile install scripts
 dotdipper install --target-os ubuntu  # Target specific OS
+dotdipper install script              # Print setup_dotfiles.sh for the tracked dotfile list
+dotdipper install script -o setup.sh  # Export setup_dotfiles.sh to a file
 ```
 
 ---

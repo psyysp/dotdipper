@@ -263,7 +263,8 @@ log_info "Package installation complete"
     })
 }
 
-fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
+/// Build the portable `setup_dotfiles.sh` content from the tracked dotfile list.
+pub fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
     let actions = build_dotfiles_install_actions(config)?;
 
     let content = format!(
