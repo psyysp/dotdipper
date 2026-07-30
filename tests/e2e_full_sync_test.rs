@@ -857,7 +857,11 @@ fn e2e_apply_symlink_mode_links_into_compiled() {
 
     let target = home.join(".aliases");
     assert!(target.is_symlink(), "symlink mode should create a symlink");
-    assert_eq!(fs::read_link(&target).unwrap(), compiled.join(".aliases"));
+    // Symlink target is the active profile store (compat `compiled/` may be a symlink itself)
+    assert_eq!(
+        fs::read_link(&target).unwrap().canonicalize().unwrap(),
+        compiled.join(".aliases").canonicalize().unwrap()
+    );
     assert_eq!(fs::read_to_string(&target).unwrap(), "alias g=git\n");
 }
 
