@@ -32,15 +32,32 @@ fn test_secrets_provider_equality() {
 }
 
 #[test]
-fn test_secrets_provider_copy() {
-    let provider = SecretsProvider::Age;
-    let copied = provider;
-    assert_eq!(provider, copied);
+fn test_encrypted_path_helpers() {
+    use std::path::Path;
+
+    assert!(dotdipper::secrets::is_encrypted_secret_path(Path::new(
+        "creds.age"
+    )));
+    assert!(dotdipper::secrets::is_encrypted_secret_path(Path::new(
+        "secrets.sops.yaml"
+    )));
+    assert!(!dotdipper::secrets::is_encrypted_secret_path(Path::new(
+        ".zshrc"
+    )));
+
+    assert_eq!(
+        dotdipper::secrets::plain_path_from_encrypted(Path::new("/tmp/a.sops.yaml"))
+            .file_name()
+            .unwrap(),
+        "a.yaml"
+    );
 }
 
 #[cfg(test)]
 mod age_encryption_tests {
-    use dotdipper::cfg::Config;
+    use dotdipper::cfg::{Config, SecretsConfig};
+    use serial_test::serial;
+    use std::fs;
     use tempfile::TempDir;
 
     // Note: These tests require 'age' to be installed on the system
@@ -48,6 +65,13 @@ mod age_encryption_tests {
 
     fn age_available() -> bool {
         std::process::Command::new("age")
+            .arg("--version")
+            .output()
+            .is_ok()
+    }
+
+    fn sops_available() -> bool {
+        std::process::Command::new("sops")
             .arg("--version")
             .output()
             .is_ok()
@@ -110,6 +134,102 @@ mod age_encryption_tests {
         let result = dotdipper::secrets::edit(&config, &nonexistent);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn age_encrypt_decrypt_roundtrip() {
+        if !age_available() {
+            println!("Skipping test: age not installed");
+            return;
+        }
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("keys.txt");
+        let plain = temp.path().join("secret.txt");
+        let enc = temp.path().join("secret.txt.age");
+        let out = temp.path().join("secret.out");
+
+        let gen = std::process::Command::new("age-keygen")
+            .arg("-o")
+            .arg(&key_path)
+            .output()
+            .unwrap();
+        assert!(gen.status.success());
+
+        fs::write(&plain, b"hello-secret\n").unwrap();
+
+        let config = Config {
+            secrets: Some(SecretsConfig {
+                provider: Some("age".to_string()),
+                key_path: Some(key_path.to_string_lossy().to_string()),
+            }),
+            ..Config::default()
+        };
+
+        let encrypted = dotdipper::secrets::encrypt(&config, &plain, Some(&enc)).unwrap();
+        assert!(encrypted.exists());
+        assert!(!fs::read(&encrypted)
+            .unwrap()
+            .windows(5)
+            .any(|w| w == b"hello"));
+
+        let decrypted = dotdipper::secrets::decrypt(&config, &encrypted, Some(&out)).unwrap();
+        assert_eq!(fs::read_to_string(decrypted).unwrap(), "hello-secret\n");
+
+        let mem = dotdipper::secrets::decrypt_to_memory(&config, &encrypted).unwrap();
+        assert_eq!(mem, b"hello-secret\n");
+    }
+
+    #[test]
+    #[serial]
+    fn sops_encrypt_decrypt_roundtrip() {
+        if !age_available() || !sops_available() {
+            println!("Skipping test: age/sops not installed");
+            return;
+        }
+
+        let result = dotdipper::secrets::check_sops();
+        assert!(result.is_ok());
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("keys.txt");
+        let plain = temp.path().join("secrets.yaml");
+        let enc = temp.path().join("secrets.sops.yaml");
+        let out = temp.path().join("secrets.out.yaml");
+
+        let gen = std::process::Command::new("age-keygen")
+            .arg("-o")
+            .arg(&key_path)
+            .output()
+            .unwrap();
+        assert!(gen.status.success());
+
+        fs::write(&plain, "password: hunter2\n").unwrap();
+
+        let config = Config {
+            secrets: Some(SecretsConfig {
+                provider: Some("sops".to_string()),
+                key_path: Some(key_path.to_string_lossy().to_string()),
+            }),
+            ..Config::default()
+        };
+
+        let encrypted = dotdipper::secrets::encrypt(&config, &plain, Some(&enc)).unwrap();
+        assert!(encrypted.exists());
+        let enc_text = fs::read_to_string(&encrypted).unwrap();
+        assert!(
+            enc_text.contains("sops") || enc_text.contains("ENC["),
+            "expected sops ciphertext, got: {enc_text}"
+        );
+
+        let decrypted = dotdipper::secrets::decrypt(&config, &encrypted, Some(&out)).unwrap();
+        assert!(fs::read_to_string(decrypted).unwrap().contains("hunter2"));
+
+        let mem =
+            String::from_utf8(dotdipper::secrets::decrypt_to_memory(&config, &encrypted).unwrap())
+                .unwrap();
+        assert!(mem.contains("hunter2"));
     }
 }
 

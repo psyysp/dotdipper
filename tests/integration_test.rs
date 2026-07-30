@@ -133,6 +133,11 @@ fn test_init_creates_directories() {
     // Check directories were created
     assert!(dotdipper_dir.exists());
     assert!(dotdipper_dir.join("compiled").exists());
+    assert!(dotdipper_dir
+        .join("profiles")
+        .join("default")
+        .join("compiled")
+        .exists());
 }
 
 // ============================================

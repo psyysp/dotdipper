@@ -195,28 +195,37 @@ dotdipper install
 
 ### 🔐 Secrets Management
 
-Securely manage sensitive dotfiles with age encryption:
+Securely manage sensitive dotfiles with **age** or **SOPS** (age backend):
 
 ```bash
-# Initialize encryption
+# Initialize encryption (reads [secrets].provider; default: age)
 dotdipper secrets init
 
 # Encrypt files
 dotdipper secrets encrypt ~/.aws/credentials
-# Creates: ~/.aws/credentials.age
+# age  → ~/.aws/credentials.age
+# sops → ~/.aws/credentials.sops (or secrets.sops.yaml for .yaml inputs)
 
 # Edit encrypted files seamlessly
 dotdipper secrets edit ~/.ssh/config.age
 
-# Auto-decrypts during apply (in-memory only)
+# Auto-decrypts during apply (in-memory only; .age and .sops.* names)
 dotdipper apply
 ```
 
+```toml
+[secrets]
+provider = "age"   # or "sops"
+key_path = "~/.config/age/keys.txt"
+```
+
+For SOPS, install the `sops` CLI and reuse the same age identity file. Dotdipper passes `--age <recipient>` on encrypt and sets `SOPS_AGE_KEY_FILE` for decrypt/edit.
+
 **Security Features:**
 
-- Age encryption with public/private keys
-- In-memory decryption (never writes plaintext to repo)
-- Seamless edit workflow (decrypt → edit → re-encrypt)
+- Age encryption with public/private keys (native age or SOPS+age)
+- In-memory decryption on apply (never writes plaintext into the git store)
+- Seamless edit workflow (decrypt → edit → re-encrypt; native `sops` edit for SOPS)
 - 0600 permissions on key files
 
 ### 🎯 Selective Apply & Diff
@@ -282,28 +291,43 @@ Any combination of criteria can be used. Snapshots are kept if they match ANY cr
 
 ### 👤 Multiple Profiles
 
-Manage different dotfile sets for different contexts:
+Manage different compiled stores for work / personal / CI contexts:
 
 ```bash
 # Create profiles
 dotdipper profile create work
 dotdipper profile create personal
 
-# Switch profiles
+# Switch profiles (updates config + compat links)
 dotdipper profile switch work
 
 # List profiles
 dotdipper profile list
 
+# One-off override without editing config
+DOTDIPPER_PROFILE=work dotdipper status
+
 # Remove profile
 dotdipper profile remove work
 ```
 
+**Layout:**
+
+```text
+~/.config/dotdipper/
+  config.toml                 # active_profile = "work"
+  profiles/default/compiled/  # default store (git push/pull target)
+  profiles/work/compiled/
+  compiled -> profiles/work/compiled   # compatibility symlink
+```
+
+Legacy top-level `compiled/` is migrated into `profiles/default/` on first use. Snapshot, apply, push, pull, status, diff, install, and remote bundles all use the **active** profile store.
+
 **Features:**
 
-- Base + overlay config merging
-- Per-profile manifests and compiled directories
-- Profile-specific configurations
+- Per-profile `compiled/`, `manifest.lock`, and `snapshots/`
+- `DOTDIPPER_PROFILE` env override
+- Compatibility symlinks so older scripts still see `~/.config/dotdipper/compiled`
 - Legacy migration support
 
 ### ☁️ Cloud Backups
@@ -498,7 +522,7 @@ repo_name = "dotfiles"
 private = true
 
 [secrets]
-provider = "age"
+provider = "age"  # or "sops" (requires sops CLI; uses age keys)
 key_path = "~/.config/age/keys.txt"
 
 [hooks]

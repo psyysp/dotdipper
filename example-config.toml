@@ -4,7 +4,7 @@
 [general]
 default_mode = "symlink"  # Default restoration mode: "symlink" or "copy"
 backup = true             # Create backups before overwriting files
-active_profile = "default"  # Active profile (Milestone 4)
+active_profile = "default"  # Active profile store under profiles/<name>/
 tracked_files = [
     "~/.zshrc",
     "~/.bashrc", 
@@ -45,9 +45,9 @@ exclude = true  # Don't restore SSH config (too sensitive)
 [files."~/.gitconfig"]
 mode = "copy"  # Copy git config to allow local modifications
 
-# Secrets encryption (Milestone 1)
+# Secrets encryption (age or SOPS+age)
 [secrets]
-provider = "age"  # "age" or "sops"
+provider = "age"  # "age" or "sops" (sops CLI required for sops)
 key_path = "~/.config/age/keys.txt"
 
 # Hooks (run scripts at specific points)

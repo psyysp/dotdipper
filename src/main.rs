@@ -220,7 +220,7 @@ enum SecretsCommands {
         /// Path to file to encrypt
         path: PathBuf,
 
-        /// Output path (defaults to <path>.age)
+        /// Output path (defaults to <path>.age or <path>.sops.<ext> for SOPS)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -230,7 +230,7 @@ enum SecretsCommands {
         /// Path to encrypted file
         path: PathBuf,
 
-        /// Output path (defaults to removing .age suffix)
+        /// Output path (defaults to stripping .age / .sops.* suffix)
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -956,13 +956,30 @@ async fn cmd_install(
 async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
     ui::info("Running diagnostics...");
 
-    let issues = vec![
+    let secrets_provider = if config_path.exists() {
+        cfg::load(&config_path)
+            .ok()
+            .and_then(|c| c.secrets)
+            .and_then(|s| s.provider)
+            .unwrap_or_else(|| "age".to_string())
+    } else {
+        "age".to_string()
+    };
+
+    let mut issues: Vec<(&str, Result<()>)> = vec![
         ("Git installed", vcs::check_git()),
         ("GitHub CLI installed", vcs::check_gh()),
         ("Age encryption tools installed", secrets::check_age()),
         ("Config file exists", cfg::check_exists(&config_path)),
         ("Manifest valid", repo::check_manifest(&config_path)),
     ];
+
+    if secrets_provider.eq_ignore_ascii_case("sops") {
+        issues.insert(
+            3,
+            ("SOPS installed (secrets provider)", secrets::check_sops()),
+        );
+    }
 
     let mut has_issues = false;
     for (check, result) in issues {
@@ -984,8 +1001,10 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
         ui::success("All checks passed!");
     } else {
         ui::hint("Install missing tools:");
-        ui::hint("  macOS: brew install age git gh");
-        ui::hint("  Linux: apt install age git gh (or equivalent)");
+        ui::hint("  macOS: brew install age sops git gh");
+        ui::hint(
+            "  Linux: apt install age git gh; install sops from https://github.com/getsops/sops",
+        );
     }
 
     Ok(())

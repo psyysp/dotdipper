@@ -73,12 +73,8 @@ pub fn apply(
         let mut source_path = compiled_root.join(rel_path);
         let mut target_path = target_path;
 
-        // Check if this is an encrypted file (.age suffix)
-        let is_encrypted = source_path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext == "age")
-            .unwrap_or(false);
+        // Check if this is an encrypted file (.age / .sops.*)
+        let is_encrypted = crate::secrets::is_encrypted_secret_path(&source_path);
 
         // For encrypted files, we need to decrypt before applying
         let temp_decrypted = if is_encrypted {
@@ -106,10 +102,9 @@ pub fn apply(
                         .context("Failed to persist temporary decrypted file")?;
                     drop(file);
 
-                    // Remove .age suffix from target path
-                    if let Some(stem) = target_path.file_stem().map(|s| s.to_owned()) {
-                        target_path.set_file_name(stem);
-                    }
+                    // Map encrypted name to plaintext home target
+                    let plain = crate::secrets::plain_path_from_encrypted(&target_path);
+                    target_path = plain;
 
                     source_path = temp_path.clone();
                     Some(temp_path)

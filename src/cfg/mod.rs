@@ -227,7 +227,7 @@ impl Default for GeneralConfig {
             default_mode: default_mode(),
             backup: default_backup(),
             tracked_files: Vec::new(),
-            active_profile: None,
+            active_profile: Some("default".to_string()),
         }
     }
 }
@@ -417,25 +417,21 @@ pub fn init(config_path: PathBuf, force: bool) -> Result<()> {
         fs::create_dir_all(parent).context("Failed to create config directory")?;
     }
 
-    // Create default config
+    // Create default config (active_profile = default)
     let config = Config::default();
 
     // Write config to file
     let toml_string = toml::to_string_pretty(&config).context("Failed to serialize config")?;
     fs::write(&config_path, toml_string).context("Failed to write config file")?;
 
-    // Create required directories
+    // Create required directories + default profile store
     let base_dir = crate::paths::base_dir()?;
 
-    fs::create_dir_all(base_dir.join("compiled")).context("Failed to create compiled directory")?;
     fs::create_dir_all(base_dir.join("install")).context("Failed to create install directory")?;
     fs::create_dir_all(base_dir.join("cache")).context("Failed to create cache directory")?;
-
-    // Create manifest directory
-    let manifest_dir = config_path
-        .parent()
-        .expect("Config path should have parent");
-    fs::create_dir_all(manifest_dir).context("Failed to create manifest directory")?;
+    crate::profiles::ensure_exists("default").context("Failed to create default profile store")?;
+    crate::profiles::refresh_compat_links("default")
+        .context("Failed to create profile compatibility links")?;
 
     // Write default .dotdipperignore
     let ignore_path = crate::paths::ignore_file()?;

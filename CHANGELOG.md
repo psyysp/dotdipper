@@ -2,6 +2,18 @@
 
 All notable changes to dotdipper are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **SOPS secrets provider:** encrypt / decrypt / edit via the `sops` CLI with an age backend; apply decrypts `.sops.*` (and common `.enc.*`) names in-memory like `.age`.
+- **Profile selection:** active profile drives `compiled/`, `manifest.lock`, and `snapshots/` under `profiles/<name>/`; `DOTDIPPER_PROFILE` overrides config; legacy top-level stores migrate into `profiles/default/`; compatibility symlinks keep `~/.config/dotdipper/compiled` working.
+
+### Changed
+
+- `dotdipper init` scaffolds `profiles/default` and sets `active_profile = "default"`.
+- `doctor` checks for `sops` when `[secrets].provider = "sops"`.
+
 ## [0.7.4] - 2026-07-29
 
 ### Fixed
