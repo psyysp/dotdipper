@@ -47,6 +47,56 @@ fn age_key_path(config: &Config) -> PathBuf {
         })
 }
 
+/// Resolve an age identity file for decrypt: config path, then env, then sops defaults.
+fn resolve_age_identity(config: &Config) -> Result<PathBuf> {
+    let configured = age_key_path(config);
+    if configured.exists() {
+        return Ok(configured);
+    }
+    if let Ok(env_path) = std::env::var("SOPS_AGE_KEY_FILE") {
+        let p = PathBuf::from(shellexpand::tilde(&env_path).to_string());
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let sops_default = home.join(".config/sops/age/keys.txt");
+        if sops_default.exists() {
+            return Ok(sops_default);
+        }
+    }
+    bail!(
+        "Age key not found at {}. Run 'dotdipper secrets init' first \
+         (or set SOPS_AGE_KEY_FILE / place keys at ~/.config/sops/age/keys.txt)",
+        configured.display()
+    )
+}
+
+fn sops_config_recipients(config: &Config) -> Vec<String> {
+    config
+        .secrets
+        .as_ref()
+        .map(|s| s.recipients.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| !r.trim().is_empty())
+        .collect()
+}
+
+fn find_sops_yaml(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.parent().map(|p| p.to_path_buf())?;
+    loop {
+        let candidate = dir.join(".sops.yaml");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 fn age_public_key(key_path: &Path) -> Result<String> {
     let key_content = fs::read_to_string(key_path).context("Failed to read age key file")?;
     key_content
@@ -133,14 +183,12 @@ fn init_sops(config: &Config) -> Result<()> {
     let public_key = age_public_key(&key_path)?;
 
     ui::success("SOPS is ready (age backend)");
-    ui::hint(&format!(
-        "Export for shell use:\n  export SOPS_AGE_KEY_FILE={}\n  export SOPS_AGE_RECIPIENTS={}",
-        key_path.display(),
-        public_key
-    ));
+    ui::info(&format!("Identity file: {}", key_path.display()));
+    ui::info(&format!("Local recipient: {}", public_key));
     ui::hint(
-        "Optional: add a .sops.yaml in your repo to pin creation rules. \
-         Dotdipper passes --age <recipient> for encrypt when no creation rules apply.",
+        "Multi-machine: set [secrets] recipients = [\"age1…\", …], export SOPS_AGE_RECIPIENTS, \
+         or add a .sops.yaml with creation_rules. Dotdipper only passes --age <local> when \
+         none of those are set.",
     );
     ui::hint("Set [secrets] provider = \"sops\" in config.toml if not already set.");
 
@@ -211,17 +259,15 @@ fn encrypt_sops(config: &Config, input_path: &Path, output_path: Option<&Path>) 
     }
 
     let key_path = age_key_path(config);
-    if !key_path.exists() {
-        bail!(
-            "Age key not found at {}. Run 'dotdipper secrets init' first (SOPS uses age keys)",
-            key_path.display()
-        );
-    }
-    let public_key = age_public_key(&key_path)?;
-
     let out_path = output_path
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| default_sops_output_path(input_path));
+
+    let config_recipients = sops_config_recipients(config);
+    let env_recipients = std::env::var("SOPS_AGE_RECIPIENTS")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let has_sops_yaml = find_sops_yaml(input_path).is_some();
 
     ui::info(&format!(
         "Encrypting with SOPS {} → {}",
@@ -230,13 +276,37 @@ fn encrypt_sops(config: &Config, input_path: &Path, output_path: Option<&Path>) 
     ));
 
     let mut cmd = Command::new("sops");
-    cmd.arg("--encrypt")
-        .arg("--age")
-        .arg(&public_key)
-        .arg("--output")
-        .arg(&out_path)
-        .arg(input_path);
-    cmd.env("SOPS_AGE_KEY_FILE", &key_path);
+    cmd.arg("--encrypt").arg("--output").arg(&out_path);
+
+    if !config_recipients.is_empty() {
+        for recipient in &config_recipients {
+            cmd.arg("--age").arg(recipient);
+        }
+        ui::hint(&format!(
+            "Using {} recipient(s) from [secrets].recipients",
+            config_recipients.len()
+        ));
+    } else if env_recipients.is_some() {
+        // sops reads SOPS_AGE_RECIPIENTS when no --age is passed
+        ui::hint("Using SOPS_AGE_RECIPIENTS from environment");
+    } else if has_sops_yaml {
+        ui::hint("Using .sops.yaml creation rules (no CLI --age override)");
+    } else {
+        // Single-machine fallback: local age public key
+        if !key_path.exists() {
+            bail!(
+                "Age key not found at {}. Run 'dotdipper secrets init' first (SOPS uses age keys)",
+                key_path.display()
+            );
+        }
+        let public_key = age_public_key(&key_path)?;
+        cmd.arg("--age").arg(&public_key);
+    }
+
+    cmd.arg(input_path);
+    if key_path.exists() {
+        cmd.env("SOPS_AGE_KEY_FILE", &key_path);
+    }
 
     let output = cmd
         .output()
@@ -327,13 +397,7 @@ fn decrypt_sops(config: &Config, input_path: &Path, output_path: Option<&Path>) 
         bail!("Input file does not exist: {}", input_path.display());
     }
 
-    let key_path = age_key_path(config);
-    if !key_path.exists() {
-        bail!(
-            "Age key not found at {}. Run 'dotdipper secrets init' first",
-            key_path.display()
-        );
-    }
+    let key_path = resolve_age_identity(config)?;
 
     let out_path = if let Some(p) = output_path {
         p.to_path_buf()
@@ -422,13 +486,7 @@ fn edit_age(config: &Config, encrypted_path: &Path) -> Result<()> {
 
 fn edit_sops(config: &Config, encrypted_path: &Path) -> Result<()> {
     check_sops()?;
-    let key_path = age_key_path(config);
-    if !key_path.exists() {
-        bail!(
-            "Age key not found at {}. Run 'dotdipper secrets init' first",
-            key_path.display()
-        );
-    }
+    let key_path = resolve_age_identity(config)?;
 
     ui::info(&format!("Editing with SOPS: {}", encrypted_path.display()));
 
@@ -449,14 +507,12 @@ fn edit_sops(config: &Config, encrypted_path: &Path) -> Result<()> {
 
 /// Decrypt file in-memory and return contents (for apply operation)
 pub fn decrypt_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u8>> {
-    // Prefer provider from config, but fall back by filename when needed
-    let provider = provider_from_config(config).unwrap_or(SecretsProvider::Age);
     let provider = if looks_like_sops_file(encrypted_path) {
         SecretsProvider::Sops
     } else if looks_like_age_file(encrypted_path) {
         SecretsProvider::Age
     } else {
-        provider
+        provider_from_config(config)?
     };
 
     match provider {
@@ -466,10 +522,7 @@ pub fn decrypt_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u
 }
 
 fn decrypt_age_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u8>> {
-    let key_path = age_key_path(config);
-    if !key_path.exists() {
-        bail!("Age key not found at {}", key_path.display());
-    }
+    let key_path = resolve_age_identity(config)?;
 
     let output = Command::new("age")
         .arg("--decrypt")
@@ -491,10 +544,7 @@ fn decrypt_age_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u
 
 fn decrypt_sops_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u8>> {
     check_sops()?;
-    let key_path = age_key_path(config);
-    if !key_path.exists() {
-        bail!("Age key not found at {}", key_path.display());
-    }
+    let key_path = resolve_age_identity(config)?;
 
     let output = Command::new("sops")
         .arg("--decrypt")

@@ -305,10 +305,17 @@ fn is_already_applied(source: &Path, target: &Path, mode: RestoreMode) -> Result
 
     match mode {
         RestoreMode::Symlink => {
-            // Check if target is a symlink pointing to source
+            // Check if target is a symlink pointing to source (canonicalize for
+            // profile compat links: compiled/ may be a symlink into profiles/).
             if target.is_symlink() {
                 let link_target = fs::read_link(target)?;
-                Ok(link_target == source)
+                if link_target == source {
+                    return Ok(true);
+                }
+                match (link_target.canonicalize(), source.canonicalize()) {
+                    (Ok(a), Ok(b)) => Ok(a == b),
+                    _ => Ok(false),
+                }
             } else {
                 Ok(false)
             }

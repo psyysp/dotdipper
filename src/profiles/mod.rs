@@ -58,10 +58,13 @@ pub fn resolve_active_profile_name() -> Result<String> {
     if let Ok(name) = std::env::var("DOTDIPPER_PROFILE") {
         let name = name.trim();
         if !name.is_empty() {
+            validate_profile_name(name)?;
             return Ok(name.to_string());
         }
     }
-    active_profile_name()
+    let name = active_profile_name()?;
+    validate_profile_name(&name)?;
+    Ok(name)
 }
 
 /// List all profiles
@@ -106,11 +109,42 @@ pub fn list(_config: &Config) -> Result<Vec<Profile>> {
     Ok(profiles)
 }
 
+/// Validate a profile name (reject path traversal / empty).
+pub fn validate_profile_name(name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('\0')
+        || name == "."
+        || name == ".."
+    {
+        bail!("Invalid profile name: {:?}", name);
+    }
+    if name.len() > 64 {
+        bail!("Profile name too long (max 64 characters)");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        bail!(
+            "Invalid profile name '{}': use only letters, numbers, '.', '-', '_'",
+            name
+        );
+    }
+    if name.starts_with('.') || name.ends_with('.') {
+        bail!(
+            "Invalid profile name '{}': cannot start or end with '.'",
+            name
+        );
+    }
+    Ok(())
+}
+
 /// Create a new profile
 pub fn create(_config: &Config, name: &str) -> Result<Profile> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name == "." || name == ".." {
-        bail!("Invalid profile name: {}", name);
-    }
+    validate_profile_name(name)?;
 
     let profile_dir = get_dotdipper_dir()?.join("profiles").join(name);
 
@@ -153,6 +187,7 @@ pub fn create(_config: &Config, name: &str) -> Result<Profile> {
 
 /// Switch to a different profile
 pub fn switch(_config: &Config, name: &str) -> Result<()> {
+    validate_profile_name(name)?;
     ensure_store_ready()?;
     let profile_dir = get_dotdipper_dir()?.join("profiles").join(name);
 
@@ -240,11 +275,21 @@ pub fn active_profile_name() -> Result<String> {
     Ok("default".to_string())
 }
 
-/// Ensure a profile exists, create if not
+/// Ensure a profile exists, create if not.
+/// Only auto-creates `default`; other names must be created explicitly
+/// (avoids `DOTDIPPER_PROFILE` typos silently creating empty stores).
 pub fn ensure_exists(name: &str) -> Result<()> {
+    validate_profile_name(name)?;
     let profile_dir = get_dotdipper_dir()?.join("profiles").join(name);
 
     if !profile_dir.exists() {
+        if name != "default" {
+            bail!(
+                "Profile '{}' does not exist. Create it first with 'dotdipper profile create {}'",
+                name,
+                name
+            );
+        }
         fs::create_dir_all(profile_dir.join("compiled"))?;
         fs::create_dir_all(profile_dir.join("snapshots"))?;
 
@@ -261,6 +306,7 @@ pub fn ensure_exists(name: &str) -> Result<()> {
 
 /// Get paths for a profile
 pub fn profile_paths(name: &str) -> Result<ProfilePaths> {
+    validate_profile_name(name)?;
     ensure_exists(name)?;
     let profile_dir = get_dotdipper_dir()?.join("profiles").join(name);
 
@@ -543,6 +589,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_path_traversal_profile_names() {
+        assert!(validate_profile_name("../etc").is_err());
+        assert!(validate_profile_name("..").is_err());
+        assert!(validate_profile_name("a/b").is_err());
+        assert!(validate_profile_name("").is_err());
+        assert!(validate_profile_name("good-name").is_ok());
+        assert!(validate_profile_name("default").is_ok());
+    }
+
+    #[test]
     #[serial]
     fn env_override_selects_profile_store() {
         let temp = TempDir::new().unwrap();
@@ -562,6 +618,31 @@ mod tests {
 
         let store = active_store_paths().unwrap();
         assert!(store.compiled.ends_with("profiles/work/compiled"));
+
+        std::env::remove_var("DOTDIPPER_PROFILE");
+    }
+
+    #[test]
+    #[serial]
+    fn phantom_env_profile_does_not_auto_create() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("dotdipper");
+        fs::create_dir_all(&base).unwrap();
+        fs::write(
+            base.join("config.toml"),
+            "[general]\nactive_profile = \"default\"\ntracked_files = []\n",
+        )
+        .unwrap();
+
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::set_var("DOTDIPPER_PROFILE", "typo-profile");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let err = active_store_paths().unwrap_err().to_string();
+        assert!(
+            err.contains("does not exist") || err.contains("Invalid"),
+            "unexpected error: {err}"
+        );
 
         std::env::remove_var("DOTDIPPER_PROFILE");
     }

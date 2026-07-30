@@ -135,6 +135,12 @@ pub struct SecretsConfig {
     /// Path to key file (e.g., "~/.config/age/keys.txt")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_path: Option<String>,
+
+    /// Extra age recipients for SOPS encrypt (multi-machine).
+    /// When set (or when `SOPS_AGE_RECIPIENTS` / `.sops.yaml` applies), encrypt does not
+    /// force a single local `--age` key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,8 +311,7 @@ pub const DEFAULT_IGNORE_CONTENTS: &str = "\
 ~/.config/dotdipper/install/**
 ~/.config/dotdipper/manifest.lock
 ~/.config/dotdipper/snapshots/**
-~/.config/dotdipper/profiles/*/compiled/**
-~/.config/dotdipper/profiles/*/manifest.lock
+~/.config/dotdipper/profiles/**
 ~/.config/dotdipper/bundle*.tar.zst
 ~/.config/dotdipper/daemon.pid
 

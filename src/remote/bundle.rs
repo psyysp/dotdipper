@@ -4,7 +4,7 @@
 /// - compiled/ directory
 /// - manifest.lock
 /// - meta.json (profile name, timestamp, host, version)
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -114,6 +114,13 @@ pub fn unpack(bundle_path: &Path, _dest_dir: &Path) -> Result<BundleMeta> {
     let meta_content = fs::read_to_string(&meta_path)?;
     let meta: BundleMeta = serde_json::from_str(&meta_content)?;
 
+    crate::profiles::validate_profile_name(&meta.profile_name).with_context(|| {
+        format!(
+            "Bundle meta.json has invalid profile_name {:?}",
+            meta.profile_name
+        )
+    })?;
+
     // Get profile paths
     let profile_paths = crate::profiles::profile_paths(&meta.profile_name)?;
 
@@ -121,8 +128,11 @@ pub fn unpack(bundle_path: &Path, _dest_dir: &Path) -> Result<BundleMeta> {
     let src_compiled = bundle_root.join("compiled");
     if src_compiled.exists() {
         if profile_paths.compiled.exists() {
-            // Backup existing
-            let backup = profile_paths.compiled.with_extension("compiled.backup");
+            // Timestamped backup so repeated pulls don't fail on ENOTEMPTY
+            let backup = profile_paths.compiled.with_file_name(format!(
+                "compiled.backup.{}",
+                Utc::now().format("%Y%m%d-%H%M%S-%3f")
+            ));
             fs::rename(&profile_paths.compiled, &backup)?;
         }
 

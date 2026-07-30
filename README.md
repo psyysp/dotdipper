@@ -323,6 +323,8 @@ dotdipper profile remove work
 
 Legacy top-level `compiled/` is migrated into `profiles/default/` on first use. Snapshot, apply, push, pull, status, diff, install, and remote bundles all use the **active** profile store.
 
+**Note:** GitHub `push`/`pull` currently share one repo/branch from global `[github]` config across profiles. Prefer cloud `remote` bundles per profile, or use separate `repo_name` values, until branch-per-profile lands. Mixing profiles into one `main` can cross-contaminate via fetch/rebase.
+
 **Features:**
 
 - Per-profile `compiled/`, `manifest.lock`, and `snapshots/`

@@ -8,11 +8,16 @@ All notable changes to dotdipper are documented here.
 
 - **SOPS secrets provider:** encrypt / decrypt / edit via the `sops` CLI with an age backend; apply decrypts `.sops.*` (and common `.enc.*`) names in-memory like `.age`.
 - **Profile selection:** active profile drives `compiled/`, `manifest.lock`, and `snapshots/` under `profiles/<name>/`; `DOTDIPPER_PROFILE` overrides config; legacy top-level stores migrate into `profiles/default/`; compatibility symlinks keep `~/.config/dotdipper/compiled` working.
+- **`[secrets].recipients`:** multi-machine SOPS age recipients; encrypt also honors `SOPS_AGE_RECIPIENTS` / `.sops.yaml` without forcing a single local `--age`.
 
 ### Changed
 
 - `dotdipper init` scaffolds `profiles/default` and sets `active_profile = "default"`.
 - `doctor` checks for `sops` when `[secrets].provider = "sops"`.
+- Discover always skips the dotdipper base dir; default ignore covers all of `profiles/**`.
+- Pull→apply no longer puts encrypted store names into `tracked_files`; snapshot preserves encrypted compiled blobs so consumer machines can push.
+- Profile names are validated (blocks path traversal); non-default profiles are not auto-created from env typos.
+- Remote push honors `DOTDIPPER_PROFILE`; remote pull uses timestamped backups and clearer profile-switch hints.
 
 ## [0.7.4] - 2026-07-29
 

@@ -163,6 +163,7 @@ mod age_encryption_tests {
             secrets: Some(SecretsConfig {
                 provider: Some("age".to_string()),
                 key_path: Some(key_path.to_string_lossy().to_string()),
+                recipients: vec![],
             }),
             ..Config::default()
         };
@@ -211,6 +212,7 @@ mod age_encryption_tests {
             secrets: Some(SecretsConfig {
                 provider: Some("sops".to_string()),
                 key_path: Some(key_path.to_string_lossy().to_string()),
+                recipients: vec![],
             }),
             ..Config::default()
         };
@@ -249,6 +251,7 @@ mod secrets_config_tests {
             secrets: Some(SecretsConfig {
                 provider: Some("age".to_string()),
                 key_path: Some("~/.config/age/keys.txt".to_string()),
+                recipients: vec![],
             }),
             ..Config::default()
         };
@@ -263,6 +266,7 @@ mod secrets_config_tests {
         let secrets = SecretsConfig {
             provider: Some("age".to_string()),
             key_path: Some("/path/to/keys.txt".to_string()),
+            recipients: vec![],
         };
 
         let toml = toml::to_string(&secrets).unwrap();

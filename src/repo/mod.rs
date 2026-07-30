@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::cfg::Config;
-use crate::hash::{hash_file, hash_files, Manifest};
+use crate::hash::{hash_file, Manifest};
 use crate::ui;
 
 /// Files that live in `compiled/` but are not user dotfiles.
@@ -98,25 +98,59 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     // Create new manifest
     let mut manifest = Manifest::new();
     let tracked_files = &config.general.tracked_files;
-
-    // Hash all tracked files
-    let hashes = hash_files(tracked_files, true)?;
-
-    // Copy files to repo and add to manifest
+    let home = dirs::home_dir().context("Failed to find home directory")?;
     let repo_path = get_compiled_path()?;
     fs::create_dir_all(&repo_path)?;
 
+    // Hash tracked home files. Encrypted store names that are missing from $HOME
+    // (common after pull→apply decrypt) are skipped here and preserved from compiled/.
+    let mut hashes = Vec::new();
+    let pb_hash = ui::progress_bar(tracked_files.len() as u64, "Hashing files");
+    for path in tracked_files {
+        let rel = path.strip_prefix(&home).unwrap_or(path);
+        if path.exists() {
+            // Never snapshot decrypted plaintext over an encrypted store entry
+            if compiled_has_encrypted_for_plain(&repo_path, rel) {
+                ui::warn(&format!(
+                    "Skipping plaintext {} — encrypted copy already in compiled store",
+                    path.display()
+                ));
+                pb_hash.inc(1);
+                continue;
+            }
+            hashes.push(crate::hash::hash_file(path).with_context(|| {
+                format!(
+                    "Failed to hash tracked file {}. \
+                     Check that the path exists and is readable (expand ~ if needed).",
+                    path.display()
+                )
+            })?);
+        } else if crate::secrets::is_encrypted_secret_path(rel) {
+            // Legacy/bad sync put encrypted names into tracked_files; keep store copy
+            ui::hint(&format!(
+                "Tracked encrypted path {} missing from $HOME; preserving compiled copy",
+                rel.display()
+            ));
+        } else {
+            anyhow::bail!(
+                "Failed to hash tracked file {}: file not found. \
+                 Check that the path exists and is readable (expand ~ if needed).",
+                path.display()
+            );
+        }
+        pb_hash.inc(1);
+    }
+    pb_hash.finish_with_message("Hashing complete");
+
+    // Copy files to repo and add to manifest
     let pb = ui::progress_bar(hashes.len() as u64, "Creating snapshot");
 
     for file_hash in hashes {
-        // Calculate relative path from home
-        let home = dirs::home_dir().context("Failed to find home directory")?;
         let rel_path = file_hash
             .path
             .strip_prefix(&home)
             .unwrap_or(&file_hash.path);
 
-        // Copy file to repo
         let dest_path = repo_path.join(rel_path);
         if let Some(parent) = dest_path.parent() {
             fs::create_dir_all(parent)?;
@@ -124,7 +158,6 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
         copy_file_with_permissions(&file_hash.path, &dest_path)?;
 
-        // Add to manifest with relative path
         let mut relative_hash = file_hash.clone();
         relative_hash.path = rel_path.to_path_buf();
         manifest.add_file(relative_hash);
@@ -133,6 +166,10 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     }
 
     pb.finish_with_message("Snapshot created");
+
+    // Keep encrypted blobs already in the store so consumer machines can push
+    // without re-hashing missing ~/file.age paths after decrypt-on-apply.
+    preserve_encrypted_store_entries(&mut manifest, &repo_path)?;
 
     // Save manifest outside and inside the git store so pull/apply work on new machines
     manifest.save(&manifest_path)?;
@@ -242,12 +279,19 @@ fn save_manifest_into_compiled(manifest: &Manifest) -> Result<()> {
 }
 
 /// Update config `tracked_files` from a pulled/rebuilt manifest so install/discover work.
+/// Encrypted store names (`.age` / `.sops.*`) are skipped — after apply they decrypt to a
+/// plaintext home path, and tracking the encrypted name breaks consumer `snapshot`/`push`.
 pub fn sync_tracked_files_from_manifest(
     config_path: &Path,
     manifest: &Manifest,
 ) -> Result<Vec<PathBuf>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
-    let files: Vec<PathBuf> = manifest.files.keys().map(|rel| home.join(rel)).collect();
+    let files: Vec<PathBuf> = manifest
+        .files
+        .keys()
+        .filter(|rel| !crate::secrets::is_encrypted_secret_path(rel))
+        .map(|rel| home.join(rel))
+        .collect();
 
     if !files.is_empty() {
         crate::cfg::update_discovered(config_path, &files)?;
@@ -258,6 +302,61 @@ pub fn sync_tracked_files_from_manifest(
     }
 
     Ok(files)
+}
+
+fn compiled_has_encrypted_for_plain(compiled: &Path, plain_rel: &Path) -> bool {
+    let Some(name) = plain_rel.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let parent = plain_rel.parent().unwrap_or_else(|| Path::new(""));
+    let candidates = [
+        format!("{name}.age"),
+        format!("{name}.sops"),
+        // file.yaml → file.sops.yaml
+        {
+            if let Some(dot) = name.rfind('.') {
+                let (stem, ext) = name.split_at(dot);
+                format!("{stem}.sops{ext}")
+            } else {
+                String::new()
+            }
+        },
+    ];
+    candidates.iter().any(|c| {
+        if c.is_empty() {
+            return false;
+        }
+        compiled.join(parent).join(c).is_file()
+    })
+}
+
+fn preserve_encrypted_store_entries(manifest: &mut Manifest, compiled: &Path) -> Result<()> {
+    if !compiled.exists() {
+        return Ok(());
+    }
+
+    for entry in walkdir::WalkDir::new(compiled)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+    {
+        let Ok(rel) = entry.path().strip_prefix(compiled) else {
+            continue;
+        };
+        if is_store_metadata(rel) {
+            continue;
+        }
+        if !crate::secrets::is_encrypted_secret_path(rel) {
+            continue;
+        }
+        if manifest.has_file(rel) {
+            continue;
+        }
+        let mut fh = hash_file(entry.path())?;
+        fh.path = rel.to_path_buf();
+        manifest.add_file(fh);
+    }
+    Ok(())
 }
 
 pub fn status(config: &Config) -> Result<Status> {

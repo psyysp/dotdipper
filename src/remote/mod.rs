@@ -224,8 +224,8 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     ui::info(&format!("Pushing to remote: {}", remote.name()));
 
-    // Get active profile
-    let profile_name = crate::profiles::active_profile_name()?;
+    // Get active profile (honors DOTDIPPER_PROFILE)
+    let profile_name = crate::profiles::resolve_active_profile_name()?;
     let profile_paths = crate::profiles::profile_paths(&profile_name)?;
 
     if !profile_paths.compiled.exists() {
@@ -303,7 +303,19 @@ pub async fn pull(config: &Config) -> Result<()> {
     // Clean up bundle
     std::fs::remove_file(&bundle_path)?;
 
-    ui::hint("Apply changes with: dotdipper apply");
+    let active =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    if active != extracted_meta.profile_name {
+        ui::hint(&format!(
+            "Bundle restored profile '{}', but active profile is '{}'. Switch with: \
+             dotdipper profile switch {}",
+            extracted_meta.profile_name, active, extracted_meta.profile_name
+        ));
+    }
+    ui::hint(&format!(
+        "Apply with: DOTDIPPER_PROFILE={} dotdipper apply   (or switch first)",
+        extracted_meta.profile_name
+    ));
 
     Ok(())
 }

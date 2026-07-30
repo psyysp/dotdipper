@@ -49,6 +49,7 @@ mode = "copy"  # Copy git config to allow local modifications
 [secrets]
 provider = "age"  # "age" or "sops" (sops CLI required for sops)
 key_path = "~/.config/age/keys.txt"
+# recipients = ["age1qq..."]  # optional multi-machine SOPS recipients
 
 # Hooks (run scripts at specific points)
 [hooks]

@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tempfile::TempDir;
 
+use dotdipper::hash::Manifest;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1174,4 +1176,167 @@ fn e2e_pull_help_documents_force_semantics() {
         .success()
         .stdout(predicate::str::contains("compiled"))
         .stdout(predicate::str::contains("--apply"));
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted secrets: decrypt-on-apply + consumer snapshot preserves ciphertext
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+fn e2e_age_decrypt_on_apply_and_consumer_snapshot() {
+    if StdCommand::new("age").arg("--version").output().is_err() {
+        eprintln!("skipping: age not installed");
+        return;
+    }
+
+    let m = TempDir::new().unwrap();
+    let home = m.path().join("home");
+    let base = m.path().join("dotdipper");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(home.join(".config").join("age")).unwrap();
+
+    let key_path = home.join(".config").join("age").join("keys.txt");
+    let gen = StdCommand::new("age-keygen")
+        .arg("-o")
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    assert!(gen.status.success());
+
+    let plain = home.join("secret.txt");
+    fs::write(&plain, "top-secret-value\n").unwrap();
+
+    let config = base.join("config.toml");
+    let content = format!(
+        r#"
+[general]
+default_mode = "copy"
+backup = true
+active_profile = "default"
+tracked_files = [
+  "{enc}",
+]
+
+[secrets]
+provider = "age"
+key_path = "{key}"
+"#,
+        enc = home.join("secret.txt.age").display(),
+        key = key_path.display()
+    );
+    fs::create_dir_all(&base).unwrap();
+    fs::write(&config, content).unwrap();
+
+    let _guard = EnvGuard::apply(&[
+        ("HOME", Some(&home)),
+        ("DOTDIPPER_HOME", Some(&base)),
+        ("XDG_CONFIG_HOME", None),
+        ("DOTDIPPER_PROFILE", None),
+    ]);
+
+    // Encrypt into home as secret.txt.age
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "secrets",
+            "encrypt",
+            plain.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    assert!(home.join("secret.txt.age").exists());
+
+    // Snapshot encrypted blob into compiled store
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "snapshot",
+            "create",
+            "-m",
+            "secret",
+        ])
+        .assert()
+        .success();
+
+    let compiled_enc = base
+        .join("profiles")
+        .join("default")
+        .join("compiled")
+        .join("secret.txt.age");
+    assert!(
+        compiled_enc.exists(),
+        "encrypted file must be in compiled store"
+    );
+
+    // Simulate consumer: remove encrypted home file, keep only plaintext after apply
+    fs::remove_file(home.join("secret.txt.age")).unwrap();
+    fs::remove_file(&plain).unwrap();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .args(["--config", config.to_str().unwrap(), "apply", "--force"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(&plain).unwrap(),
+        "top-secret-value\n",
+        "apply must decrypt to plaintext home path"
+    );
+    assert!(
+        !home.join("secret.txt.age").exists(),
+        "encrypted name should not be written to $HOME"
+    );
+
+    // Consumer sync tracked_files from manifest (as pull does), then snapshot must succeed
+    // and must not copy plaintext into the store.
+    let manifest = Manifest::load(&base.join("profiles").join("default").join("manifest.lock"))
+        .or_else(|_| Manifest::load(&base.join("manifest.lock")))
+        .unwrap();
+    // Use library helper the same way pull does
+    let _ = dotdipper::repo::sync_tracked_files_from_manifest(&config, &manifest);
+
+    // Even if tracked_files still lists the .age path, snapshot must preserve ciphertext
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "snapshot",
+            "create",
+            "--force",
+            "-m",
+            "consumer",
+        ])
+        .assert()
+        .success();
+
+    assert!(compiled_enc.exists(), "ciphertext must remain in store");
+    let store_plain = base
+        .join("profiles")
+        .join("default")
+        .join("compiled")
+        .join("secret.txt");
+    assert!(
+        !store_plain.exists(),
+        "must not leak plaintext into compiled store"
+    );
+    let enc_bytes = fs::read(&compiled_enc).unwrap();
+    assert!(
+        !enc_bytes.windows(10).any(|w| w == b"top-secret"),
+        "compiled copy must stay encrypted"
+    );
 }
