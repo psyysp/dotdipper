@@ -536,6 +536,53 @@ pub fn resolve_push_ignored_paths(config: &Config) -> Result<Vec<String>> {
     Ok(ignored)
 }
 
+/// Convert a tracked path (`~/…`, absolute under `$HOME`, or already relative) into a
+/// home-relative path. Returns `None` when the path is outside `$HOME`.
+pub fn home_relative_path(path: &Path, home: &Path) -> Option<PathBuf> {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return Some(PathBuf::new());
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return Some(PathBuf::from(rest));
+    }
+    if let Ok(stripped) = path.strip_prefix(home) {
+        return Some(stripped.to_path_buf());
+    }
+    if path.is_relative() && !raw.starts_with('/') {
+        return Some(path.to_path_buf());
+    }
+    None
+}
+
+/// Look up a `[files]` override: exact `~/rel` or `rel` key, then longest directory prefix.
+pub fn file_override_for<'a>(config: &'a Config, rel: &Path) -> Option<&'a FileOverride> {
+    let exact_tilde = format!("~/{}", rel.display());
+    if let Some(ov) = config.files.get(&exact_tilde) {
+        return Some(ov);
+    }
+    let exact = rel.display().to_string();
+    if let Some(ov) = config.files.get(&exact) {
+        return Some(ov);
+    }
+
+    let mut best: Option<(&FileOverride, usize)> = None;
+    for (key, ov) in &config.files {
+        let key_rel = key.strip_prefix("~/").unwrap_or(key.as_str());
+        let key_path = Path::new(key_rel);
+        if key_path.as_os_str().is_empty() {
+            continue;
+        }
+        if rel.starts_with(key_path) {
+            let len = key_rel.len();
+            if best.map(|(_, l)| len > l).unwrap_or(true) {
+                best = Some((ov, len));
+            }
+        }
+    }
+    best.map(|(ov, _)| ov)
+}
+
 pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
     let mut config = load(config_path)?;
     let pattern = pattern.trim();

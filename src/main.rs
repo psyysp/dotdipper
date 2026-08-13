@@ -168,7 +168,7 @@ enum Commands {
         repo: Option<String>,
     },
 
-    /// Generate and run installation scripts
+    /// Generate install scripts from tracked dotfiles/packages and run them
     Install {
         /// Only generate scripts without running
         #[arg(long)]
@@ -873,23 +873,14 @@ async fn cmd_install(
 
     if !dry_run {
         ui::info("Running installation scripts...");
-        install::run_scripts(&scripts)?;
-
-        // Apply dotfiles after installation
-        ui::info("Applying dotfiles...");
-        let compiled_path = dotdipper::paths::compiled_dir()?;
-        let manifest_path = dotdipper::paths::manifest_file()?;
-
-        if compiled_path.exists() && manifest_path.exists() {
-            let manifest = crate::hash::Manifest::load(&manifest_path)?;
-            let opts = repo::apply::ApplyOpts {
-                force: false,
-                allow_outside_home,
-            };
-            repo::apply::apply(&compiled_path, &manifest, &config, &opts)?;
+        if allow_outside_home {
+            ui::warn(
+                "Generated scripts only install files under $HOME; --unsafe-allow-outside-home is ignored here. Use 'dotdipper apply --unsafe-allow-outside-home' for paths outside home.",
+            );
         }
-
+        install::run_scripts(&scripts)?;
         ui::success("Installation completed successfully!");
+        ui::hint("Dotfiles were placed by setup_dotfiles.sh. Run 'dotdipper apply' to re-apply with the native engine.");
     } else {
         ui::hint("Remove --dry-run to execute the installation scripts");
     }

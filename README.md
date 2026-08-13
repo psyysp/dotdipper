@@ -183,8 +183,9 @@ dotdipper diff --detailed
 # 5. Apply selectively
 dotdipper apply --interactive
 
-# 6. Install packages
-dotdipper install
+# 6. Generate + run bootstrap scripts (packages + tracked dotfiles)
+dotdipper install --dry-run   # write ~/.config/dotdipper/install/*.sh
+dotdipper install             # run install.sh (packages, then setup_dotfiles.sh)
 ```
 
 ---
@@ -635,8 +636,8 @@ dotdipper discover --packages --validate          # Check which are already inst
 dotdipper discover --packages --write             # Add discovered packages to config
 dotdipper discover --packages --include-low-confidence  # Include uncertain matches
 
-# Install packages
-dotdipper install [--dry-run]       # Install packages
+# Install packages and generate/run a tracked-file install script
+dotdipper install [--dry-run]       # Writes install.sh, install_<os>.sh, setup_dotfiles.sh
 dotdipper install --target-os ubuntu  # Target specific OS
 ```
 

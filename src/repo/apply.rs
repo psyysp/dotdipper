@@ -122,9 +122,18 @@ pub fn apply(
             continue;
         }
 
-        // Check for file-specific overrides
-        let path_str = format!("~/{}", rel_path.display());
-        let file_override = cfg.files.get(&path_str);
+        // Check for file-specific overrides (exact path, then longest directory prefix).
+        // Encrypted files are stored as `foo.age` but overrides are often keyed as `~/foo`.
+        let stripped_rel = if is_encrypted {
+            Some(rel_path.with_extension(""))
+        } else {
+            None
+        };
+        let file_override = crate::cfg::file_override_for(cfg, rel_path).or_else(|| {
+            stripped_rel
+                .as_ref()
+                .and_then(|p| crate::cfg::file_override_for(cfg, p))
+        });
 
         // Check if excluded
         if file_override.is_some_and(|o| o.exclude) {
@@ -139,10 +148,14 @@ pub fn apply(
             continue;
         }
 
-        // Determine mode (override or default)
-        let mode = file_override
+        // Determine mode (override or default). Encrypted files must be copied:
+        // a symlink to a temp decrypted file would dangle after cleanup.
+        let mut mode = file_override
             .and_then(|o| o.mode)
             .unwrap_or(cfg.general.default_mode);
+        if is_encrypted {
+            mode = RestoreMode::Copy;
+        }
 
         // Apply the file
         let action = apply_file(

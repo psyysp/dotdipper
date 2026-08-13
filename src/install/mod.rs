@@ -5,8 +5,6 @@ pub mod validators;
 
 use anyhow::{Context, Result};
 use os_info::Type as OsType;
-use shell_escape::escape;
-use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -86,6 +84,8 @@ fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScri
 
 set -euo pipefail
 
+TARGET_OS='{}'
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -111,7 +111,7 @@ if [[ $EUID -eq 0 ]]; then
    exit 1
 fi
 
-log_info "Starting Dotdipper installation for $target_os"
+log_info "Starting Dotdipper installation for $TARGET_OS"
 
 # Set up directories
 DOTDIPPER_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}"
@@ -148,6 +148,7 @@ log_info "Installation complete!"
 log_info "Run 'dotdipper status' to check your dotfiles"
 "#,
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        target_os,
         target_os,
         target_os,
         target_os
@@ -261,8 +262,10 @@ log_info "Package installation complete"
 }
 
 fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let tracked_body = generate_dotfiles_tracked_body(config)?;
-    let summary = tracked_setup_summary(config);
+    let entries = resolve_install_entries(config)?;
+    let summary = tracked_setup_summary(&entries);
+    let tracked_body = generate_dotfiles_tracked_body(&entries);
+    let age_key = age_key_default(config);
 
     let content = format!(
         r#"#!/usr/bin/env bash
@@ -294,6 +297,7 @@ log_warn() {{
 COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
 HOME_DIR="$HOME"
 BACKUP_ENABLED={}
+AGE_KEY="${{AGE_KEY:-{}}}"
 
 # Check if compiled directory exists
 if [[ ! -d "$COMPILED_DIR" ]]; then
@@ -332,6 +336,7 @@ log_info "Dotfiles setup complete"
 "#,
         summary,
         if config.general.backup { "1" } else { "0" },
+        age_key,
         tracked_body
     );
 
@@ -342,27 +347,123 @@ log_info "Dotfiles setup complete"
     })
 }
 
-/// Expand `general.tracked_files` into concrete file paths (directories become their files).
-fn expand_tracked_file_paths(config: &Config) -> Result<Vec<PathBuf>> {
+#[derive(Debug, Clone)]
+struct DotfileInstallEntry {
+    compiled_rel: PathBuf,
+    mode: RestoreMode,
+    encrypted: bool,
+}
+
+fn mode_token(entry: &DotfileInstallEntry) -> &'static str {
+    if entry.encrypted {
+        "decrypt"
+    } else {
+        match entry.mode {
+            RestoreMode::Symlink => "symlink",
+            RestoreMode::Copy => "copy",
+        }
+    }
+}
+
+fn is_encrypted_rel(rel: &Path) -> bool {
+    rel.extension().and_then(|e| e.to_str()) == Some("age")
+}
+
+fn age_key_default(config: &Config) -> String {
+    let raw = config
+        .secrets
+        .as_ref()
+        .and_then(|s| s.key_path.clone())
+        .unwrap_or_else(|| "~/.config/age/keys.txt".to_string());
+    if let Some(rest) = raw.strip_prefix("~/") {
+        format!("$HOME/{}", rest)
+    } else {
+        raw
+    }
+}
+
+/// Inventory for the install script, in order:
+/// 1. `manifest.lock` (home-relative keys — same source as `apply`)
+/// 2. files under `compiled/`
+/// 3. `general.tracked_files` converted to home-relative paths (existence not required)
+fn collect_compiled_rel_paths(config: &Config) -> Result<Vec<PathBuf>> {
+    if let Ok(manifest_path) = crate::paths::manifest_file() {
+        if manifest_path.exists() {
+            if let Ok(manifest) = crate::hash::Manifest::load(&manifest_path) {
+                let mut keys: Vec<PathBuf> = manifest.files.keys().cloned().collect();
+                keys.sort();
+                if !keys.is_empty() {
+                    return Ok(keys);
+                }
+            }
+        }
+    }
+
+    if let Ok(compiled) = crate::paths::compiled_dir() {
+        if compiled.is_dir() {
+            let walked = walk_compiled_files(&compiled)?;
+            if !walked.is_empty() {
+                return Ok(walked);
+            }
+        }
+    }
+
+    tracked_files_as_rel(config)
+}
+
+fn walk_compiled_files(compiled: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(compiled)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let Ok(rel) = p.strip_prefix(compiled) else {
+            continue;
+        };
+        let rel_str = rel.to_string_lossy();
+        if rel_str == ".git" || rel_str.starts_with(".git/") {
+            continue;
+        }
+        out.push(rel.to_path_buf());
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn tracked_files_as_rel(config: &Config) -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
     let mut out = Vec::new();
 
     for tracked in &config.general.tracked_files {
-        if !tracked.exists() {
+        let Some(rel) = crate::cfg::home_relative_path(tracked, &home) else {
             continue;
-        }
-        if tracked.is_dir() {
-            for entry in WalkDir::new(tracked)
+        };
+        let abs = if tracked.is_absolute() {
+            tracked.clone()
+        } else {
+            home.join(&rel)
+        };
+        if abs.is_dir() {
+            for entry in WalkDir::new(&abs)
                 .follow_links(false)
                 .into_iter()
                 .filter_map(|e| e.ok())
             {
                 let p = entry.path();
                 if p.is_file() {
-                    out.push(p.to_path_buf());
+                    if let Ok(child) = p.strip_prefix(&home) {
+                        out.push(child.to_path_buf());
+                    }
                 }
             }
-        } else if tracked.is_file() {
-            out.push(tracked.clone());
+        } else {
+            out.push(rel);
         }
     }
 
@@ -371,168 +472,167 @@ fn expand_tracked_file_paths(config: &Config) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn sh_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\"'\"'"))
+fn resolve_install_entries(config: &Config) -> Result<Vec<DotfileInstallEntry>> {
+    let rels = collect_compiled_rel_paths(config)?;
+    let mut entries = Vec::new();
+
+    for compiled_rel in rels {
+        let encrypted = is_encrypted_rel(&compiled_rel);
+        let target_rel = if encrypted {
+            compiled_rel.with_extension("")
+        } else {
+            compiled_rel.clone()
+        };
+
+        let file_override = crate::cfg::file_override_for(config, &compiled_rel)
+            .or_else(|| crate::cfg::file_override_for(config, &target_rel));
+
+        if file_override.is_some_and(|o| o.exclude) {
+            continue;
+        }
+
+        let mut mode = file_override
+            .and_then(|o| o.mode)
+            .unwrap_or(config.general.default_mode);
+        if encrypted {
+            mode = RestoreMode::Copy;
+        }
+
+        entries.push(DotfileInstallEntry {
+            compiled_rel,
+            mode,
+            encrypted,
+        });
+    }
+
+    Ok(entries)
 }
 
-fn tracked_setup_summary(config: &Config) -> String {
-    let Ok(paths) = expand_tracked_file_paths(config) else {
-        return "Per tracked file from config".to_string();
-    };
-
-    if paths.is_empty() {
+fn tracked_setup_summary(entries: &[DotfileInstallEntry]) -> String {
+    if entries.is_empty() {
         return "No tracked files in config (nothing to install)".to_string();
     }
 
-    let symlink_count = paths
+    let decrypt = entries.iter().filter(|e| e.encrypted).count();
+    let symlink = entries
         .iter()
-        .filter(|p| {
-            let Some(rel) = rel_path_under_home(p) else {
-                return false;
-            };
-            let key = format!("~/{}", rel.display());
-            if config.files.get(&key).is_some_and(|o| o.exclude) {
-                return false;
-            }
-            let mode = config
-                .files
-                .get(&key)
-                .and_then(|o| o.mode)
-                .unwrap_or(config.general.default_mode);
-            mode == RestoreMode::Symlink
-        })
+        .filter(|e| !e.encrypted && e.mode == RestoreMode::Symlink)
         .count();
-
-    let total = paths.len();
+    let copy = entries.len().saturating_sub(decrypt + symlink);
 
     format!(
-        "Per tracked file from config ({} paths: {} symlink, {} copy)",
-        total,
-        symlink_count,
-        total.saturating_sub(symlink_count)
+        "From tracked list / manifest ({} paths: {} symlink, {} copy, {} decrypt)",
+        entries.len(),
+        symlink,
+        copy,
+        decrypt
     )
 }
 
-fn rel_path_under_home(path: &Path) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    path.strip_prefix(&home).ok().map(|p| p.to_path_buf())
-}
-
-fn target_rel_for_compiled(rel: &Path) -> PathBuf {
-    if rel.extension().and_then(|e| e.to_str()) == Some("age") {
-        rel.with_extension("")
-    } else {
-        rel.to_path_buf()
-    }
-}
-
-fn generate_dotfiles_tracked_body(config: &Config) -> Result<String> {
-    let paths = expand_tracked_file_paths(config)?;
-
-    if paths.is_empty() {
-        return Ok(
-            r#"log_warn "No tracked dotfiles in config — add paths with 'dotdipper discover --write' or edit config.toml""#
-                .to_string(),
-        );
+fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
+    if entries.is_empty() {
+        return r#"log_warn "No tracked dotfiles — add paths with 'dotdipper discover --write', or run 'dotdipper pull' / snapshot so manifest.lock exists""#
+            .to_string();
     }
 
     let mut lines = Vec::new();
+    lines.push(
+        r#"while IFS=$'\t' read -r rel mode; do
+  [[ -z "$rel" ]] && continue
+  source_file="$COMPILED_DIR/$rel"
 
-    for abs in paths {
-        let Some(rel) = rel_path_under_home(&abs) else {
-            lines.push(format!(
-                r#"log_warn "Skipping {} (outside $HOME)""#,
-                sh_single_quote(&abs.display().to_string())
-            ));
-            continue;
-        };
+  if [[ "$mode" == "decrypt" ]]; then
+    target_rel="${rel%.age}"
+  else
+    target_rel="$rel"
+  fi
+  target_file="$HOME_DIR/$target_rel"
 
-        let path_key = format!("~/{}", rel.display());
-        if config
-            .files
-            .get(&path_key)
-            .is_some_and(|o| o.exclude)
-        {
+  if [[ ! -f "$source_file" ]]; then
+    log_warn "Missing in compiled tree: $rel (run dotdipper snapshot or pull)"
+    continue
+  fi
+
+  ensure_parent_dir "$target_file"
+
+  case "$mode" in
+    symlink)
+      if [[ -L "$target_file" ]] && [[ "$(readlink "$target_file")" == "$source_file" ]]; then
+        log_info "Already linked $target_rel"
+        continue
+      fi
+      if [[ -e "$target_file" || -L "$target_file" ]]; then
+        rm -f "$target_file"
+      fi
+      ln -s "$source_file" "$target_file"
+      log_info "Linked $target_rel"
+      ;;
+    copy)
+      if [[ -e "$target_file" || -L "$target_file" ]]; then
+        backup_file "$target_file"
+        rm -f "$target_file"
+      fi
+      cp -p "$source_file" "$target_file"
+      log_info "Copied $target_rel"
+      ;;
+    decrypt)
+      if ! command -v age >/dev/null 2>&1; then
+        log_warn "Skipping encrypted $rel (age not installed)"
+        continue
+      fi
+      if [[ ! -f "$AGE_KEY" ]]; then
+        log_warn "Skipping encrypted $rel (no age key at $AGE_KEY)"
+        continue
+      fi
+      if [[ -e "$target_file" || -L "$target_file" ]]; then
+        backup_file "$target_file"
+        rm -f "$target_file"
+      fi
+      if ! age -d -i "$AGE_KEY" -o "$target_file" "$source_file"; then
+        log_error "Failed to decrypt $rel"
+        continue
+      fi
+      log_info "Decrypted $target_rel"
+      ;;
+    *)
+      log_warn "Unknown mode '$mode' for $rel"
+      ;;
+  esac
+done <<'DOTDIPPER_FILES'"#
+            .to_string(),
+    );
+
+    for entry in entries {
+        let rel = entry.compiled_rel.to_string_lossy();
+        if rel.contains('\t') || rel.contains('\n') {
             continue;
         }
-
-        let mode = config
-            .files
-            .get(&path_key)
-            .and_then(|o| o.mode)
-            .unwrap_or(config.general.default_mode);
-
-        let compiled_rel = rel;
-        let target_rel = target_rel_for_compiled(&compiled_rel);
-
-        let compiled_q = sh_single_quote(&compiled_rel.display().to_string());
-        let target_q = sh_single_quote(&target_rel.display().to_string());
-
-        let source_var = format!(
-            "$COMPILED_DIR/{}",
-            escape(Cow::Borrowed(&compiled_rel.display().to_string()))
-        );
-        let target_var = format!(
-            "$HOME_DIR/{}",
-            escape(Cow::Borrowed(&target_rel.display().to_string()))
-        );
-
-        match mode {
-            RestoreMode::Symlink => {
-                lines.push(format!(
-                    r#"if [[ -f {source} ]]; then
-  ensure_parent_dir {target}
-  if [[ -e {target} || -L {target} ]]; then rm -f {target}; fi
-  ln -s {source} {target}
-  log_info "Linked {tr}"
-else
-  log_warn "Missing in compiled tree: {cr} (run dotdipper snapshot or pull)"
-fi"#,
-                    source = source_var,
-                    target = target_var,
-                    tr = target_q,
-                    cr = compiled_q,
-                ));
-            }
-            RestoreMode::Copy => {
-                lines.push(format!(
-                    r#"if [[ -f {source} ]]; then
-  ensure_parent_dir {target}
-  if [[ -e {target} || -L {target} ]]; then backup_file {target}; rm -f {target}; fi
-  cp -p {source} {target}
-  log_info "Copied {tr}"
-else
-  log_warn "Missing in compiled tree: {cr} (run dotdipper snapshot or pull)"
-fi"#,
-                    source = source_var,
-                    target = target_var,
-                    tr = target_q,
-                    cr = compiled_q,
-                ));
-            }
-        }
+        lines.push(format!("{}\t{}", rel, mode_token(entry)));
     }
-
-    Ok(lines.join("\n\n"))
+    lines.push("DOTDIPPER_FILES".to_string());
+    lines.join("\n")
 }
 
+/// Run the generated installer. Only `install.sh` is executed; it invokes the
+/// OS package script and `setup_dotfiles.sh` so each step runs once.
 pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
-    for script in scripts {
-        ui::info(&format!("Running {}...", script.name));
+    let Some(main) = scripts.iter().find(|s| s.name == "install.sh") else {
+        anyhow::bail!("install.sh was not generated");
+    };
 
-        let output = Command::new("bash")
-            .arg(&script.path)
-            .output()
-            .with_context(|| format!("Failed to run script: {}", script.name))?;
+    ui::info(&format!("Running {}...", main.name));
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Script {} failed: {}", script.name, stderr);
-        }
+    let output = Command::new("bash")
+        .arg(&main.path)
+        .output()
+        .with_context(|| format!("Failed to run script: {}", main.name))?;
 
-        ui::success(&format!("{} completed", script.name));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Script {} failed: {}", main.name, stderr);
     }
 
+    ui::success(&format!("{} completed", main.name));
     Ok(())
 }
 
@@ -540,28 +640,80 @@ pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
 mod tests {
     use super::*;
     use crate::cfg::{Config, FileOverride};
+    use crate::hash::{FileHash, Manifest};
+    use chrono::Utc;
     use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
+
+    struct EnvGuard {
+        home: Option<String>,
+        dd: Option<String>,
+        xdg: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn isolate(tmp: &Path) -> (Self, PathBuf, PathBuf) {
+            let guard = EnvGuard {
+                home: std::env::var("HOME").ok(),
+                dd: std::env::var("DOTDIPPER_HOME").ok(),
+                xdg: std::env::var("XDG_CONFIG_HOME").ok(),
+            };
+            let home = tmp.join("home");
+            let dd = tmp.join("dotdipper");
+            fs::create_dir_all(&home).unwrap();
+            fs::create_dir_all(&dd).unwrap();
+            std::env::set_var("HOME", &home);
+            std::env::set_var("DOTDIPPER_HOME", &dd);
+            std::env::remove_var("XDG_CONFIG_HOME");
+            (guard, home, dd)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.home {
+                Some(h) => std::env::set_var("HOME", h),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.dd {
+                Some(h) => std::env::set_var("DOTDIPPER_HOME", h),
+                None => std::env::remove_var("DOTDIPPER_HOME"),
+            }
+            match &self.xdg {
+                Some(h) => std::env::set_var("XDG_CONFIG_HOME", h),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    fn file_hash(rel: &str) -> FileHash {
+        FileHash {
+            path: PathBuf::from(rel),
+            hash: "abc".to_string(),
+            size: 1,
+            mode: 0o644,
+            modified: Utc::now(),
+        }
+    }
 
     #[test]
     #[serial]
     fn dotfiles_setup_script_reflects_tracked_files_and_modes() {
         let tmp = TempDir::new().unwrap();
-        let fake_home = tmp.path();
-        fs::write(fake_home.join(".vimrc"), b"v").unwrap();
-        fs::create_dir_all(fake_home.join(".config/foo")).unwrap();
-        fs::write(fake_home.join(".config/foo/bar.toml"), b"{}").unwrap();
-        fs::write(fake_home.join(".config/secret.age"), b"ENC").unwrap();
+        let (_guard, home, dd) = EnvGuard::isolate(tmp.path());
+        let _ = dd;
 
-        let old_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", fake_home.as_os_str());
+        fs::write(home.join(".vimrc"), b"v").unwrap();
+        fs::create_dir_all(home.join(".config/foo")).unwrap();
+        fs::write(home.join(".config/foo/bar.toml"), b"{}").unwrap();
+        fs::write(home.join(".config/secret.age"), b"ENC").unwrap();
 
         let mut config = Config::default();
         config.general.tracked_files = vec![
-            fake_home.join(".vimrc"),
-            fake_home.join(".config/foo"),
-            fake_home.join(".config/secret.age"),
+            home.join(".vimrc"),
+            home.join(".config/foo"),
+            home.join(".config/secret.age"),
         ];
         config.general.default_mode = RestoreMode::Copy;
         config.files.insert(
@@ -583,32 +735,23 @@ mod tests {
             script.content.contains("cp -p"),
             "expected copy for default_mode files"
         );
-        assert!(script.content.contains(".vimrc"));
-        assert!(script.content.contains("foo/bar.toml"));
-        assert!(
-            script.content.contains("$HOME_DIR/.config/secret"),
-            "encrypted .age should map target without .age suffix"
-        );
-        assert!(!script.content.contains("$HOME_DIR/.config/secret.age"));
-
-        match old_home {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
+        assert!(script.content.contains(".vimrc\tsymlink"));
+        assert!(script.content.contains("foo/bar.toml\tcopy"));
+        assert!(script.content.contains(".config/secret.age\tdecrypt"));
+        assert!(script.content.contains("age -d"));
+        assert!(!script.content.contains(".config/secret.age\tcopy"));
+        assert!(!script.content.contains(".config/secret.age\tsymlink"));
     }
 
     #[test]
     #[serial]
     fn excluded_tracked_file_omitted_from_script() {
         let tmp = TempDir::new().unwrap();
-        let fake_home = tmp.path();
-        fs::write(fake_home.join(".ssh_config_local"), b"x").unwrap();
-
-        let old_home = std::env::var("HOME").ok();
-        std::env::set_var("HOME", fake_home.as_os_str());
+        let (_guard, home, _dd) = EnvGuard::isolate(tmp.path());
+        fs::write(home.join(".ssh_config_local"), b"x").unwrap();
 
         let mut config = Config::default();
-        config.general.tracked_files = vec![fake_home.join(".ssh_config_local")];
+        config.general.tracked_files = vec![home.join(".ssh_config_local")];
         config.files.insert(
             "~/.ssh_config_local".to_string(),
             FileOverride {
@@ -620,10 +763,71 @@ mod tests {
 
         let script = generate_dotfiles_script(&config).unwrap();
         assert!(!script.content.contains("ssh_config_local"));
+    }
 
-        match old_home {
-            Some(h) => std::env::set_var("HOME", h),
-            None => std::env::remove_var("HOME"),
-        }
+    #[test]
+    #[serial]
+    fn manifest_drives_script_when_home_files_are_missing() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, _home, dd) = EnvGuard::isolate(tmp.path());
+
+        let mut manifest = Manifest::new();
+        manifest.add_file(file_hash(".zshrc"));
+        manifest.add_file(file_hash(".config/git/config"));
+        manifest.save(&dd.join("manifest.lock")).unwrap();
+
+        let config = Config::default();
+        let script = generate_dotfiles_script(&config).unwrap();
+
+        assert!(script.content.contains(".zshrc\tsymlink"));
+        assert!(script.content.contains(".config/git/config\tsymlink"));
+        assert!(!script.content.contains("No tracked dotfiles"));
+    }
+
+    #[test]
+    #[serial]
+    fn tilde_tracked_paths_work_without_existing_files() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, _home, _dd) = EnvGuard::isolate(tmp.path());
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![PathBuf::from("~/.vimrc")];
+        config.general.default_mode = RestoreMode::Copy;
+
+        let script = generate_dotfiles_script(&config).unwrap();
+        assert!(script.content.contains(".vimrc\tcopy"));
+    }
+
+    #[test]
+    #[serial]
+    fn directory_exclude_applies_to_children() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, _home, dd) = EnvGuard::isolate(tmp.path());
+
+        let mut manifest = Manifest::new();
+        manifest.add_file(file_hash(".config/nvim/init.lua"));
+        manifest.add_file(file_hash(".zshrc"));
+        manifest.save(&dd.join("manifest.lock")).unwrap();
+
+        let mut config = Config::default();
+        config.files.insert(
+            "~/.config/nvim".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: true,
+                local_only: false,
+            },
+        );
+
+        let script = generate_dotfiles_script(&config).unwrap();
+        assert!(!script.content.contains("init.lua"));
+        assert!(script.content.contains(".zshrc"));
+    }
+
+    #[test]
+    fn install_sh_binds_target_os() {
+        let script = generate_main_script(&Config::default(), "ubuntu").unwrap();
+        assert!(script.content.contains("TARGET_OS='ubuntu'"));
+        assert!(!script.content.contains("$target_os"));
     }
 }
