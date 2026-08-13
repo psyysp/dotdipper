@@ -174,9 +174,17 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
-        /// Target OS (auto-detected if not specified)
+        /// Target OS (auto-detected at runtime if not specified)
         #[arg(long)]
         target_os: Option<String>,
+
+        /// Skip OS package installation (only set up dotfiles)
+        #[arg(long)]
+        skip_packages: bool,
+
+        /// Passed through to the generated scripts as DOTDIPPER_FORCE=1
+        #[arg(short, long)]
+        force: bool,
 
         /// Allow operations outside $HOME (unsafe)
         #[arg(long)]
@@ -475,8 +483,20 @@ async fn main() -> Result<()> {
         Commands::Install {
             dry_run,
             target_os,
+            skip_packages,
+            force,
             unsafe_allow_outside_home,
-        } => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
+        } => {
+            cmd_install(
+                config_path,
+                dry_run,
+                target_os,
+                skip_packages,
+                force,
+                unsafe_allow_outside_home,
+            )
+            .await
+        }
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
         Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
@@ -813,12 +833,15 @@ async fn cmd_install(
     config_path: PathBuf,
     dry_run: bool,
     target_os: Option<String>,
+    skip_packages: bool,
+    force: bool,
     allow_outside_home: bool,
 ) -> Result<()> {
     ui::info("Generating installation scripts...");
     let mut config = cfg::load(&config_path)?;
 
     let os = target_os.unwrap_or_else(install::detect_os);
+    let _ = install::restore_artifacts_from_compiled();
 
     // Auto-discover packages if none are configured
     if config.packages.common.is_empty() {
@@ -862,7 +885,7 @@ async fn cmd_install(
         }
     }
 
-    let scripts = install::generate_scripts(&config, &os)?;
+    let scripts = install::generate_scripts_with_export(&config, &os, false)?;
 
     ui::success(&format!("Generated {} installation scripts", scripts.len()));
 
@@ -878,9 +901,16 @@ async fn cmd_install(
                 "Generated scripts only install files under $HOME; --unsafe-allow-outside-home is ignored here. Use 'dotdipper apply --unsafe-allow-outside-home' for paths outside home.",
             );
         }
-        install::run_scripts(&scripts)?;
+        install::run_scripts(
+            &scripts,
+            &install::ScriptRunOpts {
+                skip_packages,
+                force,
+                target_os: Some(os.clone()),
+            },
+        )?;
         ui::success("Installation completed successfully!");
-        ui::hint("Dotfiles were placed by setup_dotfiles.sh. Run 'dotdipper apply' to re-apply with the native engine.");
+        ui::hint("Scripts also live in compiled/install so they ship with `dotdipper push`.");
     } else {
         ui::hint("Remove --dry-run to execute the installation scripts");
     }
@@ -1191,7 +1221,7 @@ async fn cmd_config(
         ui::success("Configuration edited");
     } else if show {
         let config = cfg::load(&config_path)?;
-        println!("{}", toml::to_string_pretty(&config)?);
+        println!("{}", toml::to_string_pretty(&cfg::portable_config(&config))?);
     } else {
         ui::hint("Use --edit to modify, --show to view, or --set key=value to set a value");
     }

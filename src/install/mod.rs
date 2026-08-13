@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use os_info::Type as OsType;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use walkdir::WalkDir;
 
 use crate::cfg::{Config, PackagesConfig, RestoreMode};
@@ -36,41 +36,163 @@ pub fn detect_os() -> String {
     }
 }
 
+const PACKAGE_SCRIPT_OSES: &[&str] = &["macos", "ubuntu", "arch", "fedora", "linux"];
+
+pub struct ScriptRunOpts {
+    pub skip_packages: bool,
+    pub force: bool,
+    pub target_os: Option<String>,
+}
+
+impl Default for ScriptRunOpts {
+    fn default() -> Self {
+        Self {
+            skip_packages: false,
+            force: false,
+            target_os: None,
+        }
+    }
+}
+
 pub fn generate_scripts(config: &Config, target_os: &str) -> Result<Vec<InstallScript>> {
+    generate_scripts_with_export(config, target_os, true)
+}
+
+/// `export_to_compiled` copies scripts into `compiled/install/` (snapshot/push).
+/// `dotdipper install` passes false so a fresh machine cannot overwrite pulled scripts.
+pub fn generate_scripts_with_export(
+    config: &Config,
+    target_os: &str,
+    export_to_compiled: bool,
+) -> Result<Vec<InstallScript>> {
+    let config = config_for_scripts(config);
     let mut scripts = Vec::new();
 
-    // Generate main install script
-    let main_script = generate_main_script(config, target_os)?;
-    scripts.push(main_script);
+    scripts.push(generate_main_script(&config, target_os)?);
+    scripts.push(generate_dotfiles_script(&config)?);
 
-    // Generate OS-specific package install script
-    let package_script = generate_package_script(&config.packages, target_os)?;
-    scripts.push(package_script);
+    for os in PACKAGE_SCRIPT_OSES {
+        scripts.push(generate_package_script(&config.packages, os)?);
+    }
 
-    // Generate dotfiles setup script
-    let dotfiles_script = generate_dotfiles_script(config)?;
-    scripts.push(dotfiles_script);
-
-    // Save scripts to disk
     let script_dir = crate::paths::install_dir()?;
-
     fs::create_dir_all(&script_dir)?;
+
+    let compiled_export = if export_to_compiled {
+        crate::paths::compiled_dir()
+            .ok()
+            .filter(|p| p.exists())
+            .map(|p| p.join("install"))
+    } else {
+        None
+    };
+    if let Some(dir) = &compiled_export {
+        fs::create_dir_all(dir)?;
+    }
 
     for script in &mut scripts {
         script.path = script_dir.join(&script.name);
-        fs::write(&script.path, &script.content)?;
-
-        // Make script executable on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&script.path)?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&script.path, perms)?;
+        write_executable(&script.path, &script.content)?;
+        if let Some(dir) = &compiled_export {
+            write_executable(&dir.join(&script.name), &script.content)?;
         }
     }
 
     Ok(scripts)
+}
+
+fn is_fresh_init(config: &Config) -> bool {
+    config.general.tracked_files.is_empty()
+        && config.files.is_empty()
+        && config.packages == PackagesConfig::default()
+}
+
+fn load_bootstrap_config() -> Option<Config> {
+    let path = crate::paths::compiled_dir()
+        .ok()?
+        .join(".dotdipper")
+        .join("bootstrap.toml");
+    if !path.exists() {
+        return None;
+    }
+    let contents = fs::read_to_string(path).ok()?;
+    toml::from_str(&contents).ok()
+}
+
+/// On a freshly inited machine, use the bootstrap.toml that traveled with the compiled repo.
+fn config_for_scripts(local: &Config) -> Config {
+    let Some(boot) = load_bootstrap_config() else {
+        return local.clone();
+    };
+    if !is_fresh_init(local) {
+        return local.clone();
+    }
+    let mut merged = local.clone();
+    merged.general.default_mode = boot.general.default_mode;
+    merged.general.backup = boot.general.backup;
+    merged.packages = boot.packages;
+    merged.files = boot.files;
+    merged.secrets = boot.secrets;
+    merged
+}
+
+fn write_executable(path: &Path, content: &str) -> Result<()> {
+    fs::write(path, content)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)?;
+    }
+    Ok(())
+}
+
+/// After `git pull` of the compiled repo, copy bundled manifest + install scripts
+/// into the local dotdipper directories.
+pub fn restore_artifacts_from_compiled() -> Result<()> {
+    let compiled = crate::paths::compiled_dir()?;
+    if !compiled.exists() {
+        return Ok(());
+    }
+
+    let bundled = compiled.join(".dotdipper").join("manifest.lock");
+    if bundled.exists() {
+        let dest = crate::paths::manifest_file()?;
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(&bundled, &dest).with_context(|| {
+            format!(
+                "Failed to restore manifest from {}",
+                bundled.display()
+            )
+        })?;
+    }
+
+    let src_install = compiled.join("install");
+    if src_install.is_dir() {
+        let dest_install = crate::paths::install_dir()?;
+        fs::create_dir_all(&dest_install)?;
+        for entry in fs::read_dir(&src_install)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                let dest = dest_install.join(entry.file_name());
+                fs::copy(&path, &dest)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&dest)?.permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&dest, perms)?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScript> {
@@ -79,12 +201,33 @@ fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScri
 #
 # Dotdipper Installation Script
 # Generated: {}
-# Target OS: {}
+# Default target OS (overridable): {}
 #
 
 set -euo pipefail
 
-TARGET_OS='{}'
+detect_os() {{
+    case "$(uname -s)" in
+        Darwin) echo macos ;;
+        Linux)
+            if [[ -f /etc/os-release ]]; then
+                # shellcheck disable=SC1091
+                . /etc/os-release
+                case "${{ID:-}}" in
+                    ubuntu|debian) echo ubuntu ;;
+                    arch|manjaro|endeavouros) echo arch ;;
+                    fedora|rhel|centos) echo fedora ;;
+                    *) echo linux ;;
+                esac
+            else
+                echo linux
+            fi
+            ;;
+        *) echo linux ;;
+    esac
+}}
+
+TARGET_OS="${{DOTDIPPER_TARGET_OS:-$(detect_os)}}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -113,33 +256,38 @@ fi
 
 log_info "Starting Dotdipper installation for $TARGET_OS"
 
-# Set up directories
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 DOTDIPPER_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}"
-COMPILED_DIR="$DOTDIPPER_DIR/compiled"
-INSTALL_DIR="$DOTDIPPER_DIR/install"
+if [[ -d "$SCRIPT_DIR/../.dotdipper" || -d "$SCRIPT_DIR/../.git" ]]; then
+    COMPILED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+else
+    COMPILED_DIR="${{DOTDIPPER_COMPILED:-$DOTDIPPER_DIR/compiled}}"
+fi
+COMPILED_DIR="${{DOTDIPPER_COMPILED:-$COMPILED_DIR}}"
+INSTALL_DIR="$SCRIPT_DIR"
 
 mkdir -p "$DOTDIPPER_DIR"
 mkdir -p "$COMPILED_DIR"
 mkdir -p "$INSTALL_DIR"
 
-# Check for required tools
-command -v git >/dev/null 2>&1 || {{
-    log_error "Git is not installed. Please install git first."
-    exit 1
-}}
-
-# Run OS-specific package installation
-log_info "Installing packages..."
-if [[ -f "$INSTALL_DIR/install_{}.sh" ]]; then
-    bash "$INSTALL_DIR/install_{}.sh"
-else
-    log_warn "Package installation script not found"
+if ! command -v git >/dev/null 2>&1; then
+    log_warn "Git is not installed; package recipes that need it may fail"
 fi
 
-# Set up dotfiles
+if [[ "${{DOTDIPPER_SKIP_PACKAGES:-0}}" == "1" ]]; then
+    log_info "Skipping package installation"
+elif [[ -f "$INSTALL_DIR/install_${{TARGET_OS}}.sh" ]]; then
+    log_info "Installing packages..."
+    if ! bash "$INSTALL_DIR/install_${{TARGET_OS}}.sh"; then
+        log_warn "Package installation failed or package manager missing; continuing with dotfiles"
+    fi
+else
+    log_warn "Package installation script not found for $TARGET_OS"
+fi
+
 log_info "Setting up dotfiles..."
 if [[ -f "$INSTALL_DIR/setup_dotfiles.sh" ]]; then
-    bash "$INSTALL_DIR/setup_dotfiles.sh"
+    DOTDIPPER_COMPILED="$COMPILED_DIR" bash "$INSTALL_DIR/setup_dotfiles.sh"
 else
     log_warn "Dotfiles setup script not found"
 fi
@@ -148,9 +296,6 @@ log_info "Installation complete!"
 log_info "Run 'dotdipper status' to check your dotfiles"
 "#,
         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        target_os,
-        target_os,
-        target_os,
         target_os
     );
 
@@ -212,10 +357,35 @@ log_error() {{
     echo -e "${{RED}}[ERROR]${{NC}} $1" >&2
 }}
 
+log_warn() {{
+    echo -e "${{YELLOW}}[WARN]${{NC}} $1"
+}}
+
+is_installed() {{
+    local pkg="$1"
+    case "{}" in
+        brew)
+            brew list --formula "$pkg" >/dev/null 2>&1 || brew list --cask "$pkg" >/dev/null 2>&1
+            ;;
+        apt)
+            dpkg -s "$pkg" >/dev/null 2>&1
+            ;;
+        pacman)
+            pacman -Qi "$pkg" >/dev/null 2>&1
+            ;;
+        dnf)
+            rpm -q "$pkg" >/dev/null 2>&1
+            ;;
+        *)
+            command -v "$pkg" >/dev/null 2>&1
+            ;;
+    esac
+}}
+
 # Check if package manager exists
 if ! command -v {} &> /dev/null; then
-    log_error "Package manager '{}' not found"
-    exit 1
+    log_warn "Package manager '{}' not found; skipping package install"
+    exit 0
 fi
 
 # Update package lists
@@ -229,6 +399,10 @@ packages=(
 
 # Install packages
 for package in "${{packages[@]}}"; do
+    if is_installed "$package"; then
+        log_info "Already installed: $package"
+        continue
+    fi
     if {} "$package"; then
         log_info "Installed $package"
     else
@@ -240,6 +414,10 @@ log_info "Package installation complete"
 "#,
         target_os,
         package_manager,
+        package_manager
+            .split_whitespace()
+            .next()
+            .unwrap_or(package_manager),
         package_manager
             .split_whitespace()
             .next()
@@ -294,10 +472,20 @@ log_warn() {{
     echo -e "${{YELLOW}}[WARN]${{NC}} $1"
 }}
 
-COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
+COMPILED_DIR="${{DOTDIPPER_COMPILED:-}}"
+if [[ -z "$COMPILED_DIR" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+    if [[ -d "$SCRIPT_DIR/../.dotdipper" || -d "$SCRIPT_DIR/../.git" ]]; then
+        COMPILED_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+    else
+        COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
+    fi
+fi
 HOME_DIR="$HOME"
 BACKUP_ENABLED={}
-AGE_KEY="${{AGE_KEY:-{}}}"
+if [[ -z "${{AGE_KEY:-}}" ]]; then
+    AGE_KEY={}
+fi
 
 # Check if compiled directory exists
 if [[ ! -d "$COMPILED_DIR" ]]; then
@@ -376,9 +564,9 @@ fn age_key_default(config: &Config) -> String {
         .and_then(|s| s.key_path.clone())
         .unwrap_or_else(|| "~/.config/age/keys.txt".to_string());
     if let Some(rest) = raw.strip_prefix("~/") {
-        format!("$HOME/{}", rest)
+        format!("\"$HOME/{}\"", rest.replace('"', "\\\""))
     } else {
-        raw
+        format!("'{}'", raw.replace('\'', "'\"'\"'"))
     }
 }
 
@@ -387,9 +575,13 @@ fn age_key_default(config: &Config) -> String {
 /// 2. files under `compiled/`
 /// 3. `general.tracked_files` converted to home-relative paths (existence not required)
 fn collect_compiled_rel_paths(config: &Config) -> Result<Vec<PathBuf>> {
-    if let Ok(manifest_path) = crate::paths::manifest_file() {
-        if manifest_path.exists() {
-            if let Ok(manifest) = crate::hash::Manifest::load(&manifest_path) {
+    let candidates = [
+        crate::paths::manifest_file().ok(),
+        crate::paths::compiled_bundled_manifest().ok(),
+    ];
+    for path in candidates.into_iter().flatten() {
+        if path.exists() {
+            if let Ok(manifest) = crate::hash::Manifest::load(&path) {
                 let mut keys: Vec<PathBuf> = manifest.files.keys().cloned().collect();
                 keys.sort();
                 if !keys.is_empty() {
@@ -411,6 +603,14 @@ fn collect_compiled_rel_paths(config: &Config) -> Result<Vec<PathBuf>> {
     tracked_files_as_rel(config)
 }
 
+fn is_reserved_compiled_rel(rel: &Path) -> bool {
+    matches!(
+        rel.components().next(),
+        Some(std::path::Component::Normal(c))
+            if matches!(c.to_str(), Some(".git" | ".dotdipper" | "install"))
+    )
+}
+
 fn walk_compiled_files(compiled: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in WalkDir::new(compiled)
@@ -425,8 +625,7 @@ fn walk_compiled_files(compiled: &Path) -> Result<Vec<PathBuf>> {
         let Ok(rel) = p.strip_prefix(compiled) else {
             continue;
         };
-        let rel_str = rel.to_string_lossy();
-        if rel_str == ".git" || rel_str.starts_with(".git/") {
+        if is_reserved_compiled_rel(rel) {
             continue;
         }
         out.push(rel.to_path_buf());
@@ -537,7 +736,13 @@ fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
 
     let mut lines = Vec::new();
     lines.push(
-        r#"while IFS=$'\t' read -r rel mode; do
+        r#"linked=0
+copied=0
+decrypted=0
+missing=0
+skipped=0
+
+while IFS=$'\t' read -r rel mode; do
   [[ -z "$rel" ]] && continue
   source_file="$COMPILED_DIR/$rel"
 
@@ -550,6 +755,7 @@ fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
 
   if [[ ! -f "$source_file" ]]; then
     log_warn "Missing in compiled tree: $rel (run dotdipper snapshot or pull)"
+    missing=$((missing + 1))
     continue
   fi
 
@@ -559,13 +765,16 @@ fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
     symlink)
       if [[ -L "$target_file" ]] && [[ "$(readlink "$target_file")" == "$source_file" ]]; then
         log_info "Already linked $target_rel"
+        skipped=$((skipped + 1))
         continue
       fi
       if [[ -e "$target_file" || -L "$target_file" ]]; then
+        backup_file "$target_file"
         rm -f "$target_file"
       fi
       ln -s "$source_file" "$target_file"
       log_info "Linked $target_rel"
+      linked=$((linked + 1))
       ;;
     copy)
       if [[ -e "$target_file" || -L "$target_file" ]]; then
@@ -574,14 +783,17 @@ fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
       fi
       cp -p "$source_file" "$target_file"
       log_info "Copied $target_rel"
+      copied=$((copied + 1))
       ;;
     decrypt)
       if ! command -v age >/dev/null 2>&1; then
         log_warn "Skipping encrypted $rel (age not installed)"
+        skipped=$((skipped + 1))
         continue
       fi
       if [[ ! -f "$AGE_KEY" ]]; then
         log_warn "Skipping encrypted $rel (no age key at $AGE_KEY)"
+        skipped=$((skipped + 1))
         continue
       fi
       if [[ -e "$target_file" || -L "$target_file" ]]; then
@@ -590,15 +802,18 @@ fn generate_dotfiles_tracked_body(entries: &[DotfileInstallEntry]) -> String {
       fi
       if ! age -d -i "$AGE_KEY" -o "$target_file" "$source_file"; then
         log_error "Failed to decrypt $rel"
+        skipped=$((skipped + 1))
         continue
       fi
       log_info "Decrypted $target_rel"
+      decrypted=$((decrypted + 1))
       ;;
     *)
       log_warn "Unknown mode '$mode' for $rel"
+      skipped=$((skipped + 1))
       ;;
   esac
-done <<'DOTDIPPER_FILES'"#
+done <<'DOTDIPPER_MANIFEST_EOF'"#
             .to_string(),
     );
 
@@ -609,27 +824,51 @@ done <<'DOTDIPPER_FILES'"#
         }
         lines.push(format!("{}\t{}", rel, mode_token(entry)));
     }
-    lines.push("DOTDIPPER_FILES".to_string());
+    lines.push("DOTDIPPER_MANIFEST_EOF".to_string());
+    lines.push(
+        r#"log_info "Summary: linked=$linked copied=$copied decrypted=$decrypted skipped=$skipped missing=$missing""#
+            .to_string(),
+    );
     lines.join("\n")
 }
 
 /// Run the generated installer. Only `install.sh` is executed; it invokes the
 /// OS package script and `setup_dotfiles.sh` so each step runs once.
-pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
+pub fn run_scripts(scripts: &[InstallScript], opts: &ScriptRunOpts) -> Result<()> {
     let Some(main) = scripts.iter().find(|s| s.name == "install.sh") else {
         anyhow::bail!("install.sh was not generated");
     };
 
     ui::info(&format!("Running {}...", main.name));
 
-    let output = Command::new("bash")
-        .arg(&main.path)
-        .output()
+    let mut cmd = Command::new("bash");
+    cmd.arg(&main.path)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if opts.skip_packages {
+        cmd.env("DOTDIPPER_SKIP_PACKAGES", "1");
+    }
+    if opts.force {
+        cmd.env("DOTDIPPER_FORCE", "1");
+    }
+    if let Some(os) = &opts.target_os {
+        cmd.env("DOTDIPPER_TARGET_OS", os);
+    }
+
+    let status = cmd
+        .status()
         .with_context(|| format!("Failed to run script: {}", main.name))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Script {} failed: {}", main.name, stderr);
+    if !status.success() {
+        anyhow::bail!(
+            "Script {} failed with status {}",
+            main.name,
+            status
+                .code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".to_string())
+        );
     }
 
     ui::success(&format!("{} completed", main.name));
@@ -825,9 +1064,88 @@ mod tests {
     }
 
     #[test]
-    fn install_sh_binds_target_os() {
+    #[serial]
+    fn fresh_init_merges_bootstrap_packages() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, _home, dd) = EnvGuard::isolate(tmp.path());
+        fs::create_dir_all(dd.join("compiled/.dotdipper")).unwrap();
+        fs::write(
+            dd.join("compiled/.dotdipper/bootstrap.toml"),
+            r#"
+[packages]
+common = ["ripgrep-from-bootstrap"]
+"#,
+        )
+        .unwrap();
+
+        let config = Config::default();
+        assert!(is_fresh_init(&config));
+        let merged = config_for_scripts(&config);
+        assert!(merged
+            .packages
+            .common
+            .iter()
+            .any(|p| p == "ripgrep-from-bootstrap"));
+    }
+
+    #[test]
+    fn install_sh_detects_os_at_runtime() {
         let script = generate_main_script(&Config::default(), "ubuntu").unwrap();
-        assert!(script.content.contains("TARGET_OS='ubuntu'"));
+        assert!(script.content.contains("detect_os"));
+        assert!(script.content.contains("DOTDIPPER_TARGET_OS"));
+        assert!(script.content.contains("DOTDIPPER_SKIP_PACKAGES"));
         assert!(!script.content.contains("$target_os"));
+    }
+
+    #[test]
+    #[serial]
+    fn setup_script_installs_from_compiled_on_empty_home() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, home, dd) = EnvGuard::isolate(tmp.path());
+
+        let compiled = dd.join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        fs::write(compiled.join(".vimrc"), b"set nocompatible").unwrap();
+
+        let mut manifest = Manifest::new();
+        manifest.add_file(file_hash(".vimrc"));
+        manifest.save(&dd.join("manifest.lock")).unwrap();
+
+        let config = Config::default();
+        let script = generate_dotfiles_script(&config).unwrap();
+        let script_path = tmp.path().join("setup_dotfiles.sh");
+        fs::write(&script_path, &script.content).unwrap();
+
+        let status = std::process::Command::new("bash")
+            .arg(&script_path)
+            .env("HOME", &home)
+            .env("DOTDIPPER_HOME", &dd)
+            .env("DOTDIPPER_COMPILED", &compiled)
+            .status()
+            .unwrap();
+        assert!(status.success(), "setup_dotfiles.sh should succeed");
+
+        let installed = home.join(".vimrc");
+        assert!(installed.exists());
+        assert!(installed.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(&installed).unwrap(), "set nocompatible");
+    }
+
+    #[test]
+    #[serial]
+    fn restore_artifacts_copies_bundled_manifest_and_scripts() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, _home, dd) = EnvGuard::isolate(tmp.path());
+
+        let compiled = dd.join("compiled");
+        fs::create_dir_all(compiled.join(".dotdipper")).unwrap();
+        fs::create_dir_all(compiled.join("install")).unwrap();
+        fs::write(compiled.join(".dotdipper/manifest.lock"), b"{}").unwrap();
+        fs::write(compiled.join("install/install.sh"), b"#!/bin/sh\necho hi\n").unwrap();
+
+        restore_artifacts_from_compiled().unwrap();
+
+        assert!(dd.join("manifest.lock").exists());
+        assert!(dd.join("install/install.sh").exists());
     }
 }

@@ -53,6 +53,16 @@ pub fn install_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("install"))
 }
 
+/// Install scripts copied into the compiled git repo so they travel with `push`/`pull`.
+pub fn compiled_install_dir() -> Result<PathBuf> {
+    Ok(compiled_dir()?.join("install"))
+}
+
+/// Manifest snapshot stored inside the compiled repo for new-machine bootstrap.
+pub fn compiled_bundled_manifest() -> Result<PathBuf> {
+    Ok(compiled_dir()?.join(".dotdipper").join("manifest.lock"))
+}
+
 pub fn profiles_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("profiles"))
 }

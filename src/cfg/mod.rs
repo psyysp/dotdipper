@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -108,7 +109,7 @@ pub struct GitHubConfig {
     pub private: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackagesConfig {
     #[serde(default)]
     pub common: Vec<String>,
@@ -464,13 +465,37 @@ pub fn load(config_path: &Path) -> Result<Config> {
         // Note: we keep the dotfiles section for backward compatibility but use general.tracked_files
     }
 
+    if let Some(home) = dirs::home_dir() {
+        config.general.tracked_files = config
+            .general
+            .tracked_files
+            .into_iter()
+            .map(|p| expand_tracked_path(&p, &home))
+            .collect();
+    }
+
     Ok(config)
 }
 
 pub fn save(config_path: &Path, config: &Config) -> Result<()> {
-    let toml_string = toml::to_string_pretty(config).context("Failed to serialize config")?;
+    let to_write = portable_config(config);
+    let toml_string = toml::to_string_pretty(&to_write).context("Failed to serialize config")?;
     fs::write(config_path, toml_string).context("Failed to write config file")?;
     Ok(())
+}
+
+/// Clone of `config` with tracked paths stored as portable `~/…` entries.
+pub fn portable_config(config: &Config) -> Config {
+    let mut cloned = config.clone();
+    if let Some(home) = dirs::home_dir() {
+        cloned.general.tracked_files = cloned
+            .general
+            .tracked_files
+            .iter()
+            .map(|p| to_portable_tracked_path(p, &home))
+            .collect();
+    }
+    cloned
 }
 
 pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
@@ -583,6 +608,52 @@ pub fn file_override_for<'a>(config: &'a Config, rel: &Path) -> Option<&'a FileO
     best.map(|(ov, _)| ov)
 }
 
+/// Expand `~/…` or home-relative paths to an absolute path under `$HOME`.
+pub fn expand_tracked_path(path: &Path, home: &Path) -> PathBuf {
+    match home_relative_path(path, home) {
+        Some(rel) if rel.as_os_str().is_empty() => home.to_path_buf(),
+        Some(rel) => home.join(rel),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Store a path as `~/rel` when it lives under `$HOME`, otherwise leave it unchanged.
+pub fn to_portable_tracked_path(path: &Path, home: &Path) -> PathBuf {
+    match home_relative_path(path, home) {
+        Some(rel) if rel.as_os_str().is_empty() => PathBuf::from("~"),
+        Some(rel) => PathBuf::from(format!("~/{}", rel.display())),
+        None => path.to_path_buf(),
+    }
+}
+
+/// Existing files from `tracked_files`, with directories expanded to their files.
+pub fn existing_tracked_files(config: &Config) -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let mut out = Vec::new();
+
+    for tracked in &config.general.tracked_files {
+        let abs = expand_tracked_path(tracked, &home);
+        if abs.is_dir() {
+            for entry in WalkDir::new(&abs)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let p = entry.path();
+                if p.is_file() {
+                    out.push(p.to_path_buf());
+                }
+            }
+        } else if abs.is_file() {
+            out.push(abs);
+        }
+    }
+
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
     let mut config = load(config_path)?;
     let pattern = pattern.trim();
@@ -650,4 +721,36 @@ pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()
 
     save(config_path, &config)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_roundtrip_under_home() {
+        let home = PathBuf::from("/home/alice");
+        let abs = home.join(".zshrc");
+        assert_eq!(
+            home_relative_path(&abs, &home).unwrap(),
+            PathBuf::from(".zshrc")
+        );
+        assert_eq!(
+            to_portable_tracked_path(&abs, &home),
+            PathBuf::from("~/.zshrc")
+        );
+        assert_eq!(expand_tracked_path(&PathBuf::from("~/.zshrc"), &home), abs);
+        assert_eq!(
+            expand_tracked_path(&PathBuf::from(".vimrc"), &home),
+            home.join(".vimrc")
+        );
+    }
+
+    #[test]
+    fn portable_leaves_outside_home_unchanged() {
+        let home = PathBuf::from("/home/alice");
+        let abs = PathBuf::from("/etc/hosts");
+        assert!(home_relative_path(&abs, &home).is_none());
+        assert_eq!(to_portable_tracked_path(&abs, &home), abs);
+    }
 }

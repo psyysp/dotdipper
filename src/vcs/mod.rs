@@ -295,6 +295,13 @@ pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
         }
     }
 
+    if let Err(e) = crate::install::restore_artifacts_from_compiled() {
+        ui::warn(&format!(
+            "Pulled repo but could not restore install artifacts: {:#}",
+            e
+        ));
+    }
+
     Ok(repo_name)
 }
 

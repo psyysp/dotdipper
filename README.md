@@ -174,19 +174,25 @@ dotdipper undo
 # 2. Initialize
 dotdipper init
 
-# 3. Pull your dotfiles
+# 3. Pull your compiled repo (dotfiles + bundled install scripts + manifest)
 dotdipper pull
 
-# 4. Review changes
+# 4. Review and apply, or run the generated bootstrap:
 dotdipper diff --detailed
-
-# 5. Apply selectively
-dotdipper apply --interactive
-
-# 6. Generate + run bootstrap scripts (packages + tracked dotfiles)
-dotdipper install --dry-run   # write ~/.config/dotdipper/install/*.sh
-dotdipper install             # run install.sh (packages, then setup_dotfiles.sh)
+dotdipper apply --interactive          # native engine (decrypts .age)
+# or
+dotdipper install --dry-run            # regenerate scripts
+dotdipper install --skip-packages      # only place dotfiles
+dotdipper install                      # packages + setup_dotfiles.sh
 ```
+
+Scripts are written to `~/.config/dotdipper/install/` and copied into `compiled/install/` so they ship with `dotdipper push`. After pull you can also run:
+
+```bash
+bash ~/.config/dotdipper/compiled/install/install.sh
+```
+
+`install.sh` detects macOS / Ubuntu / Arch / Fedora at runtime (`DOTDIPPER_TARGET_OS` overrides). Encrypted `*.age` files are decrypted with `age` when a key is available.
 
 ---
 
@@ -538,6 +544,7 @@ linux = ["neovim", "fzf", "bat"]
 dotdipper init                    # Initialize dotdipper
 dotdipper discover [--write]      # Find dotfiles
 dotdipper discover --packages     # Discover required packages from dotfiles
+dotdipper install [--dry-run] [--skip-packages] [--target-os OS]
 dotdipper snapshot create [-m "msg"]  # Create snapshot
 dotdipper status [--detailed]     # Check status
 dotdipper config --show | --edit  # View/edit config
@@ -637,8 +644,10 @@ dotdipper discover --packages --write             # Add discovered packages to c
 dotdipper discover --packages --include-low-confidence  # Include uncertain matches
 
 # Install packages and generate/run a tracked-file install script
-dotdipper install [--dry-run]       # Writes install.sh, install_<os>.sh, setup_dotfiles.sh
-dotdipper install --target-os ubuntu  # Target specific OS
+dotdipper install [--dry-run]         # Write install.sh, setup_dotfiles.sh, install_<os>.sh
+dotdipper install --skip-packages     # Only run setup_dotfiles.sh
+dotdipper install --target-os ubuntu  # Force package script OS
+```
 ```
 
 ---

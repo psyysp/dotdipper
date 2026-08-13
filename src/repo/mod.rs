@@ -54,17 +54,19 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     // Check if we need to create a snapshot
     if !force && manifest_path.exists() {
         let current_manifest = Manifest::load(&manifest_path)?;
-        let tracked_files = &config.general.tracked_files;
+        let home = dirs::home_dir().context("Failed to find home directory")?;
+        let tracked_files = crate::cfg::existing_tracked_files(config)?;
 
-        // Quick check if any files have changed
-        let mut has_changes = false;
-        for file in tracked_files {
+        // Quick check if any files have changed (manifest keys are home-relative)
+        let mut has_changes = tracked_files.len() != current_manifest.files.len();
+        for file in &tracked_files {
+            let rel = file.strip_prefix(&home).unwrap_or(file);
             if !file.exists() {
                 has_changes = true;
                 break;
             }
 
-            if let Some(stored_hash) = current_manifest.get_file(file) {
+            if let Some(stored_hash) = current_manifest.get_file(rel) {
                 if let Ok(current_hash) = crate::hash::hash_file(file) {
                     if stored_hash.hash != current_hash.hash {
                         has_changes = true;
@@ -87,10 +89,8 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
     // Create new manifest
     let mut manifest = Manifest::new();
-    let tracked_files = &config.general.tracked_files;
-
-    // Hash all tracked files
-    let hashes = hash_files(tracked_files, true)?;
+    // Hash all tracked files (directories are expanded)
+    let hashes = hash_files(&crate::cfg::existing_tracked_files(config)?, true)?;
 
     // Copy files to repo and add to manifest
     let repo_path = get_compiled_path()?;
@@ -124,10 +124,24 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
     pb.finish_with_message("Snapshot created");
 
-    // Save manifest
+    // Save manifest (local + bundled copy that travels with the compiled git repo)
     manifest.save(&manifest_path)?;
+    let bundled_dir = repo_path.join(".dotdipper");
+    fs::create_dir_all(&bundled_dir)?;
+    manifest.save(&bundled_dir.join("manifest.lock"))?;
+    if let Err(e) = write_bootstrap_toml(&bundled_dir, config) {
+        ui::warn(&format!("Could not write bootstrap.toml: {:#}", e));
+    }
 
     write_push_gitignore(&repo_path, config)?;
+
+    // Keep bootstrap scripts in the compiled repo so `push` ships them.
+    if let Err(e) = crate::install::generate_scripts(config, &crate::install::detect_os()) {
+        ui::warn(&format!(
+            "Could not refresh install scripts after snapshot: {:#}",
+            e
+        ));
+    }
 
     Ok(Snapshot {
         file_count: manifest.files.len(),
@@ -154,9 +168,10 @@ pub fn status(config: &Config) -> Result<Status> {
     };
 
     let home = dirs::home_dir().context("Failed to find home directory")?;
+    let tracked_files = crate::cfg::existing_tracked_files(config)?;
 
     // Check tracked files
-    for file_path in &config.general.tracked_files {
+    for file_path in &tracked_files {
         let rel_path = file_path.strip_prefix(&home).unwrap_or(file_path);
 
         if !file_path.exists() {
@@ -180,7 +195,7 @@ pub fn status(config: &Config) -> Result<Status> {
     // Check for files in manifest that are no longer tracked
     for rel_path in manifest.files.keys() {
         let full_path = home.join(rel_path);
-        if !config.general.tracked_files.contains(&full_path) {
+        if !tracked_files.contains(&full_path) {
             status.deleted.push(full_path);
         }
     }
@@ -251,6 +266,24 @@ fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
     content.push('\n');
 
     fs::write(repo_path.join(".gitignore"), content)?;
+    Ok(())
+}
+
+fn write_bootstrap_toml(bundled_dir: &Path, config: &Config) -> Result<()> {
+    let mut boot = crate::cfg::portable_config(config);
+    boot.github = crate::cfg::GitHubConfig::default();
+    boot.general.tracked_files.clear();
+    boot.general.active_profile = None;
+    boot.hooks = None;
+    boot.daemon = None;
+    boot.remote = None;
+    boot.auto_prune = None;
+    boot.dotfiles = None;
+    boot.push_ignore.clear();
+    boot.exclude_patterns.clear();
+    boot.include_patterns.clear();
+    let toml_string = toml::to_string_pretty(&boot)?;
+    fs::write(bundled_dir.join("bootstrap.toml"), toml_string)?;
     Ok(())
 }
 

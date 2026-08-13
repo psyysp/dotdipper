@@ -75,7 +75,7 @@ pub fn start(config: &Config) -> Result<()> {
     ));
 
     // Get tracked files
-    let tracked_files: Vec<PathBuf> = config.general.tracked_files.clone();
+    let tracked_files: Vec<PathBuf> = crate::cfg::existing_tracked_files(config)?;
 
     if tracked_files.is_empty() {
         bail!("No tracked files configured. Add files with 'dotdipper discover --write'");
