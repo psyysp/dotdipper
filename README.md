@@ -323,14 +323,16 @@ dotdipper profile remove work
 
 Legacy top-level `compiled/` is migrated into `profiles/default/` on first use. Snapshot, apply, push, pull, status, diff, install, and remote bundles all use the **active** profile store.
 
-**Note:** GitHub `push`/`pull` currently share one repo/branch from global `[github]` config across profiles. Prefer cloud `remote` bundles per profile, or use separate `repo_name` values, until branch-per-profile lands. Mixing profiles into one `main` can cross-contaminate via fetch/rebase.
+**Per-profile overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). Leave it comments-only to inherit everything. `dotdipper config --set` / `--edit` still write the global file; `profile switch` only updates `active_profile` there.
+
+**GitHub sync:** each profile pushes to its own branch by default (`main` for `default`, `dotdipper/<name>` otherwise). Set `[github].repo_name` in the overlay for a dedicated repository. Branch and repo are independent; set `[github].branch` to override the default.
 
 **Features:**
 
-- Per-profile `compiled/`, `manifest.lock`, and `snapshots/`
+- Per-profile `compiled/`, `manifest.lock`, `snapshots/`, and overlay `config.toml`
 - `DOTDIPPER_PROFILE` env override
 - Compatibility symlinks so older scripts still see `~/.config/dotdipper/compiled`
-- Legacy migration support
+- Legacy store migration support
 
 ### ☁️ Cloud Backups
 
@@ -521,6 +523,7 @@ tracked_files = [
 [github]
 username = "psyysp"
 repo_name = "dotfiles"
+# branch = "main"  # optional; default is "main" for the default profile, else "dotdipper/<name>"
 private = true
 
 [secrets]
@@ -730,11 +733,20 @@ dotdipper apply --interactive
 # Create work profile
 dotdipper profile create work
 
+# Optional: dedicated repo and/or branch in the profile overlay
+# ~/.config/dotdipper/profiles/work/config.toml
+# [github]
+# repo_name = "dotfiles-work"
+# branch = "main"
+
 # Switch to work
 dotdipper profile switch work
 
 # Work-specific snapshot
 dotdipper snapshot create -m "Work dotfiles"
+
+# Push uses branch dotdipper/work (or overlay github.branch / github.repo_name)
+dotdipper push -m "Work dotfiles"
 
 # Switch back to personal
 dotdipper profile switch default

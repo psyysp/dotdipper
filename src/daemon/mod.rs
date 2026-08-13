@@ -198,7 +198,7 @@ pub fn status(_config: &Config) -> Result<()> {
 
 /// Enable the daemon in configuration
 pub fn enable(config_path: &std::path::Path) -> Result<()> {
-    let mut config = crate::cfg::load(config_path)?;
+    let mut config = crate::cfg::load_file(config_path)?;
 
     // Create daemon config if it doesn't exist
     if config.daemon.is_none() {
@@ -223,7 +223,7 @@ pub fn enable(config_path: &std::path::Path) -> Result<()> {
 
 /// Disable the daemon in configuration
 pub fn disable(config_path: &std::path::Path) -> Result<()> {
-    let mut config = crate::cfg::load(config_path)?;
+    let mut config = crate::cfg::load_file(config_path)?;
 
     if let Some(ref mut daemon) = config.daemon {
         daemon.enabled = false;

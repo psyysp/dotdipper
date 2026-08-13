@@ -8,6 +8,8 @@ All notable changes to dotdipper are documented here.
 
 - **SOPS secrets provider:** encrypt / decrypt / edit via the `sops` CLI with an age backend; apply decrypts `.sops.*` (and common `.enc.*`) names in-memory like `.age`.
 - **Profile selection:** active profile drives `compiled/`, `manifest.lock`, and `snapshots/` under `profiles/<name>/`; `DOTDIPPER_PROFILE` overrides config; legacy top-level stores migrate into `profiles/default/`; compatibility symlinks keep `~/.config/dotdipper/compiled` working.
+- **Per-profile config overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). New profiles get a comments-only overlay so they inherit the global file.
+- **Per-profile GitHub target:** push/pull/undo/clone use branch `main` for `default` and `dotdipper/<name>` otherwise. Overlay or global `[github].repo_name` can select a dedicated repository; `[github].branch` overrides the default. Branch and repo are independent.
 - **`[secrets].recipients`:** multi-machine SOPS age recipients; encrypt also honors `SOPS_AGE_RECIPIENTS` / `.sops.yaml` without forcing a single local `--age`.
 
 ### Changed
@@ -19,7 +21,8 @@ All notable changes to dotdipper are documented here.
 - Profile names are validated (blocks path traversal); non-default profiles are not auto-created from env typos.
 - Remote push honors `DOTDIPPER_PROFILE`; remote pull uses timestamped backups and clearer profile-switch hints.
 - Remote bundles omit `.git` / `.gitignore` and honor `push_ignore` / `local_only`.
-- GitHub push warns when the active profile is not `default` (shared `main` branch).
+- Config writes are atomic (temp file + rename). Discover writes `tracked_files` / packages to the active profile overlay.
+- `dotdipper config --set` / `--edit` and `profile switch` write the global config only (overlays are not flattened).
 - Dependency bumps: `tar` 0.4.46, `rust-s3` 0.37, `rustls-webpki` 0.103.14, `anyhow` 1.0.104 (cargo-audit).
 
 ### Fixed

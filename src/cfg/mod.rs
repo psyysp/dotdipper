@@ -104,6 +104,10 @@ pub struct DotfilesConfig {
 pub struct GitHubConfig {
     pub username: Option<String>,
     pub repo_name: Option<String>,
+    /// Optional git branch override. When unset, `default` uses `main` and
+    /// other profiles use `dotdipper/<name>`. Independent of `repo_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     #[serde(default = "default_private")]
     pub private: bool,
 }
@@ -253,6 +257,7 @@ impl Default for GitHubConfig {
         GitHubConfig {
             username: None,
             repo_name: None,
+            branch: None,
             private: default_private(),
         }
     }
@@ -448,7 +453,10 @@ pub fn init(config_path: PathBuf, force: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn load(config_path: &Path) -> Result<Config> {
+/// Parse a single config file with no profile overlay.
+/// Use this when reading/writing the global `config.toml` so overlay keys
+/// are never flattened back into the base file.
+pub fn load_file(config_path: &Path) -> Result<Config> {
     if !config_path.exists() {
         anyhow::bail!(
             "Config not found at {}. Run 'dotdipper init' first.",
@@ -457,15 +465,154 @@ pub fn load(config_path: &Path) -> Result<Config> {
     }
 
     let contents = fs::read_to_string(config_path).context("Failed to read config file")?;
-    let mut config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
+    let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
+    Ok(normalize_config(config))
+}
 
-    // Migrate from legacy dotfiles config if present
-    if let Some(dotfiles) = &config.dotfiles {
-        config.general.tracked_files = dotfiles.tracked_files.clone();
-        // Note: we keep the dotfiles section for backward compatibility but use general.tracked_files
+/// Load global config and overlay `profiles/<active>/config.toml`.
+/// Overlay keys win. `general.active_profile` is never taken from an overlay.
+pub fn load(config_path: &Path) -> Result<Config> {
+    let base = load_file(config_path)?;
+    apply_profile_overlay(config_path, base)
+}
+
+/// Comment-only starter overlay so new profiles inherit the global config.
+pub const SPARSE_OVERLAY_CONTENTS: &str = r#"# Per-profile overlay.
+# Keys here override the global config.toml for this profile only.
+# Leave this file comments-only to inherit everything from the global config.
+#
+# [github]
+# repo_name = "dotfiles-work"   # optional dedicated repository
+# branch = "main"               # optional; default is "main" (default profile) or "dotdipper/<name>"
+"#;
+
+pub fn overlay_path_for(profile: &str) -> Result<PathBuf> {
+    Ok(crate::paths::base_dir()?
+        .join("profiles")
+        .join(profile)
+        .join("config.toml"))
+}
+
+pub fn write_sparse_overlay_if_missing(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).context("Failed to create profile overlay directory")?;
+    }
+    atomic_write(path, SPARSE_OVERLAY_CONTENTS).context("Failed to write profile overlay")?;
+    Ok(())
+}
+
+fn apply_profile_overlay(config_path: &Path, base: Config) -> Result<Config> {
+    let profile =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let overlay_path = overlay_path_for(&profile)?;
+    if overlay_path == config_path {
+        return Ok(base);
+    }
+    let Some(overlay) = parse_overlay_file(&overlay_path)? else {
+        return Ok(base);
+    };
+    let base_value = toml::Value::try_from(&base)
+        .context("Failed to serialize base config for overlay merge")?;
+    let merged = merge_toml_values(base_value, overlay);
+    let config: Config = merged
+        .try_into()
+        .context("Failed to parse merged profile overlay")?;
+    Ok(normalize_config(config))
+}
+
+fn parse_overlay_file(path: &Path) -> Result<Option<toml::Value>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read profile overlay {}", path.display()))?;
+    if overlay_is_blank(&contents) {
+        return Ok(None);
+    }
+    let mut value: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse profile overlay {}", path.display()))?;
+    sanitize_overlay(&mut value);
+    if value.as_table().map(|t| t.is_empty()).unwrap_or(true) {
+        return Ok(None);
+    }
+    Ok(Some(value))
+}
+
+fn overlay_is_blank(contents: &str) -> bool {
+    contents.lines().all(|line| {
+        let trimmed = line.trim();
+        trimmed.is_empty() || trimmed.starts_with('#')
+    })
+}
+
+/// Overlay keys win. Tables merge recursively; arrays and scalars replace.
+pub fn merge_toml_values(base: toml::Value, overlay: toml::Value) -> toml::Value {
+    match (base, overlay) {
+        (toml::Value::Table(mut base_map), toml::Value::Table(overlay_map)) => {
+            for (key, overlay_val) in overlay_map {
+                match base_map.remove(&key) {
+                    Some(base_val) => {
+                        base_map.insert(key, merge_toml_values(base_val, overlay_val));
+                    }
+                    None => {
+                        base_map.insert(key, overlay_val);
+                    }
+                }
+            }
+            toml::Value::Table(base_map)
+        }
+        (_base, overlay) => overlay,
+    }
+}
+
+fn sanitize_overlay(value: &mut toml::Value) {
+    let Some(table) = value.as_table_mut() else {
+        return;
+    };
+
+    if let Some(general) = table.get_mut("general").and_then(|v| v.as_table_mut()) {
+        general.remove("active_profile");
+        if matches!(general.get("tracked_files"), Some(toml::Value::Array(a)) if a.is_empty()) {
+            general.remove("tracked_files");
+        }
+        if general.is_empty() {
+            table.remove("general");
+        }
     }
 
-    // Expand ~ in tracked file paths so example/hand-edited configs work
+    if let Some(packages) = table.get_mut("packages").and_then(|v| v.as_table_mut()) {
+        for key in ["common", "macos", "linux", "ubuntu", "arch"] {
+            if matches!(packages.get(key), Some(toml::Value::Array(a)) if a.is_empty()) {
+                packages.remove(key);
+            }
+        }
+        if packages.is_empty() {
+            table.remove("packages");
+        }
+    }
+
+    if let Some(github) = table.get_mut("github").and_then(|v| v.as_table_mut()) {
+        for key in ["username", "repo_name", "branch"] {
+            if matches!(github.get(key), Some(toml::Value::String(s)) if s.trim().is_empty()) {
+                github.remove(key);
+            }
+        }
+        if github.is_empty() {
+            table.remove("github");
+        }
+    }
+}
+
+fn normalize_config(mut config: Config) -> Config {
+    if let Some(dotfiles) = &config.dotfiles {
+        if config.general.tracked_files.is_empty() {
+            config.general.tracked_files = dotfiles.tracked_files.clone();
+        }
+    }
+
     config.general.tracked_files = config
         .general
         .tracked_files
@@ -481,7 +628,7 @@ pub fn load(config_path: &Path) -> Result<Config> {
         }
     }
 
-    Ok(config)
+    config
 }
 
 fn expand_user_path(path: PathBuf) -> PathBuf {
@@ -489,19 +636,123 @@ fn expand_user_path(path: PathBuf) -> PathBuf {
     PathBuf::from(shellexpand::tilde(&as_str).as_ref())
 }
 
-pub fn save(config_path: &Path, config: &Config) -> Result<()> {
-    let toml_string = toml::to_string_pretty(config).context("Failed to serialize config")?;
-    fs::write(config_path, toml_string).context("Failed to write config file")?;
+fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("Failed to create directory for {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config.toml");
+    let tmp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    fs::write(&tmp, contents.as_ref())
+        .with_context(|| format!("Failed to write temporary file {}", tmp.display()))?;
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("Failed to write {}", path.display()));
+    }
     Ok(())
 }
 
+pub fn save(config_path: &Path, config: &Config) -> Result<()> {
+    let toml_string = toml::to_string_pretty(config).context("Failed to serialize config")?;
+    atomic_write(config_path, toml_string).context("Failed to write config file")?;
+    Ok(())
+}
+
+fn read_overlay_table(path: &Path) -> Result<toml::map::Map<String, toml::Value>> {
+    if !path.exists() {
+        return Ok(toml::map::Map::new());
+    }
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read profile overlay {}", path.display()))?;
+    if overlay_is_blank(&contents) {
+        return Ok(toml::map::Map::new());
+    }
+    let value: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("Failed to parse profile overlay {}", path.display()))?;
+    Ok(value.as_table().cloned().unwrap_or_default())
+}
+
+fn write_overlay_table(path: &Path, table: toml::map::Map<String, toml::Value>) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let serialized = toml::to_string_pretty(&toml::Value::Table(table))
+        .context("Failed to serialize profile overlay")?;
+    atomic_write(path, serialized)
+}
+
+fn overlay_general_table(
+    table: &mut toml::map::Map<String, toml::Value>,
+) -> &mut toml::map::Map<String, toml::Value> {
+    let general = table
+        .entry("general".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !general.is_table() {
+        *general = toml::Value::Table(toml::map::Map::new());
+    }
+    general.as_table_mut().expect("general table")
+}
+
+/// Write discovered tracked files to the active profile overlay when a
+/// profile store exists; otherwise write them to the global config file.
 pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
-    let mut config = load(config_path)?;
     let mut tracked_files = files.to_vec();
     tracked_files.sort();
     tracked_files.dedup();
-    config.general.tracked_files = tracked_files;
 
+    if let Ok(profile) = crate::profiles::resolve_active_profile_name() {
+        if let Ok(overlay_path) = overlay_path_for(&profile) {
+            if overlay_path.parent().map(|p| p.exists()).unwrap_or(false) {
+                let mut table = read_overlay_table(&overlay_path)?;
+                let general = overlay_general_table(&mut table);
+                general.remove("active_profile");
+                general.insert(
+                    "tracked_files".to_string(),
+                    toml::Value::Array(
+                        tracked_files
+                            .iter()
+                            .map(|p| toml::Value::String(p.to_string_lossy().into_owned()))
+                            .collect(),
+                    ),
+                );
+                return write_overlay_table(&overlay_path, table);
+            }
+        }
+    }
+
+    let mut config = load_file(config_path)?;
+    config.general.tracked_files = tracked_files;
+    save(config_path, &config)?;
+    Ok(())
+}
+
+/// Persist discovered package names on the active profile overlay when possible.
+pub fn update_packages_common(config_path: &Path, packages: Vec<String>) -> Result<()> {
+    if let Ok(profile) = crate::profiles::resolve_active_profile_name() {
+        if let Ok(overlay_path) = overlay_path_for(&profile) {
+            if overlay_path.parent().map(|p| p.exists()).unwrap_or(false) {
+                let mut table = read_overlay_table(&overlay_path)?;
+                let packages_table = table
+                    .entry("packages".to_string())
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                if !packages_table.is_table() {
+                    *packages_table = toml::Value::Table(toml::map::Map::new());
+                }
+                if let Some(pkg) = packages_table.as_table_mut() {
+                    pkg.insert(
+                        "common".to_string(),
+                        toml::Value::Array(packages.into_iter().map(toml::Value::String).collect()),
+                    );
+                }
+                return write_overlay_table(&overlay_path, table);
+            }
+        }
+    }
+
+    let mut config = load_file(config_path)?;
+    config.packages.common = packages;
     save(config_path, &config)?;
     Ok(())
 }
@@ -559,7 +810,7 @@ pub fn resolve_push_ignored_paths(config: &Config) -> Result<Vec<String>> {
 }
 
 pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
-    let mut config = load(config_path)?;
+    let mut config = load_file(config_path)?;
     let pattern = pattern.trim();
 
     if pattern.is_empty() {
@@ -580,7 +831,7 @@ pub fn add_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
 }
 
 pub fn remove_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
-    let mut config = load(config_path)?;
+    let mut config = load_file(config_path)?;
     let pattern = pattern.trim();
 
     if pattern.is_empty() {
@@ -593,11 +844,19 @@ pub fn remove_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
 }
 
 pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()> {
-    let mut config = load(config_path)?;
+    let mut config = load_file(config_path)?;
 
     match key {
         "github.username" => config.github.username = Some(value.to_string()),
         "github.repo_name" => config.github.repo_name = Some(value.to_string()),
+        "github.branch" => {
+            let trimmed = value.trim();
+            config.github.branch = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+        }
         "github.private" => {
             config.github.private = value
                 .parse()
@@ -617,7 +876,7 @@ pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()
         }
         _ => anyhow::bail!(
             "Unknown config key '{}'. Supported keys:\n  \
-             github.username, github.repo_name, github.private,\n  \
+             github.username, github.repo_name, github.branch, github.private,\n  \
              general.default_mode, general.backup",
             key
         ),
@@ -625,4 +884,145 @@ pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()
 
     save(config_path, &config)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn merge_from_toml(base: &str, overlay: &str) -> Config {
+        let mut overlay_value: toml::Value = toml::from_str(overlay).unwrap();
+        sanitize_overlay(&mut overlay_value);
+        let base_value: toml::Value = toml::from_str(base).unwrap();
+        let merged = merge_toml_values(base_value, overlay_value);
+        let config: Config = merged.try_into().unwrap();
+        normalize_config(config)
+    }
+
+    #[test]
+    fn overlay_keys_win_and_active_profile_is_stripped() {
+        let config = merge_from_toml(
+            r#"
+[general]
+active_profile = "default"
+backup = true
+tracked_files = ["/tmp/a"]
+
+[github]
+username = "alice"
+repo_name = "dotfiles"
+"#,
+            r#"
+[general]
+active_profile = "should-not-apply"
+tracked_files = ["/tmp/b"]
+
+[github]
+repo_name = "dotfiles-work"
+branch = "dotdipper/work"
+"#,
+        );
+
+        assert_eq!(config.general.active_profile.as_deref(), Some("default"));
+        assert_eq!(config.general.tracked_files, vec![PathBuf::from("/tmp/b")]);
+        assert_eq!(config.github.username.as_deref(), Some("alice"));
+        assert_eq!(config.github.repo_name.as_deref(), Some("dotfiles-work"));
+        assert_eq!(config.github.branch.as_deref(), Some("dotdipper/work"));
+        assert!(config.general.backup);
+    }
+
+    #[test]
+    fn empty_tracked_files_and_packages_inherit() {
+        let config = merge_from_toml(
+            r#"
+[general]
+tracked_files = ["/tmp/keep"]
+
+[packages]
+common = ["git"]
+macos = ["fzf"]
+"#,
+            r#"
+[general]
+tracked_files = []
+
+[packages]
+common = []
+"#,
+        );
+
+        assert_eq!(
+            config.general.tracked_files,
+            vec![PathBuf::from("/tmp/keep")]
+        );
+        assert_eq!(config.packages.common, vec!["git".to_string()]);
+        assert_eq!(config.packages.macos, vec!["fzf".to_string()]);
+    }
+
+    #[test]
+    fn empty_include_patterns_replace() {
+        let config = merge_from_toml(
+            r#"
+include_patterns = ["~/.zshrc"]
+exclude_patterns = ["**/*.key"]
+"#,
+            r#"
+include_patterns = []
+"#,
+        );
+
+        assert!(config.include_patterns.is_empty());
+        assert_eq!(config.exclude_patterns, vec!["**/*.key".to_string()]);
+    }
+
+    #[test]
+    #[serial]
+    fn switch_does_not_flatten_overlay_into_global() {
+        let temp = TempDir::new().unwrap();
+        let base = temp.path().join("dotdipper");
+        fs::create_dir_all(base.join("profiles").join("work")).unwrap();
+        let global = base.join("config.toml");
+        fs::write(
+            &global,
+            r#"
+[general]
+active_profile = "default"
+backup = true
+tracked_files = ["/tmp/global"]
+
+[github]
+username = "alice"
+repo_name = "dotfiles"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            base.join("profiles").join("work").join("config.toml"),
+            r#"
+[github]
+repo_name = "dotfiles-work"
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::set_var("DOTDIPPER_PROFILE", "work");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let loaded = load(&global).unwrap();
+        assert_eq!(loaded.github.repo_name.as_deref(), Some("dotfiles-work"));
+
+        let mut raw = load_file(&global).unwrap();
+        raw.general.active_profile = Some("work".to_string());
+        save(&global, &raw).unwrap();
+
+        let global_after = fs::read_to_string(&global).unwrap();
+        assert!(global_after.contains("repo_name = \"dotfiles\""));
+        assert!(!global_after.contains("dotfiles-work"));
+
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("DOTDIPPER_HOME");
+    }
 }

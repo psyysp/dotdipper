@@ -1277,6 +1277,13 @@ async fn cmd_config(
     } else if show {
         let config = cfg::load(&config_path)?;
         println!("{}", toml::to_string_pretty(&config)?);
+        if let Ok(profile) = profiles::resolve_active_profile_name() {
+            if let Ok(overlay) = cfg::overlay_path_for(&profile) {
+                if overlay.exists() {
+                    ui::hint(&format!("merged with overlay {}", overlay.display()));
+                }
+            }
+        }
     } else {
         ui::hint("Use --edit to modify, --show to view, or --set key=value to set a value");
     }

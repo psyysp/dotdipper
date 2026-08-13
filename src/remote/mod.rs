@@ -23,6 +23,15 @@ use std::path::{Path, PathBuf};
 use crate::cfg::Config;
 use crate::ui;
 
+/// Removes a temp bundle file when dropped (success, error, or dry-run).
+struct TempBundle(PathBuf);
+
+impl Drop for TempBundle {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Remote backend trait
 #[async_trait]
 pub trait Remote: Send + Sync {
@@ -144,7 +153,7 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
     let dotdipper_dir = get_dotdipper_dir()?;
     let config_path = dotdipper_dir.join("config.toml");
     let mut cfg = if config_path.exists() {
-        crate::cfg::load(&config_path)?
+        crate::cfg::load_file(&config_path)?
     } else {
         Config::default()
     };
@@ -234,13 +243,13 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     // Create bundle
     let dotdipper_dir = get_dotdipper_dir()?;
-    let bundle_path = dotdipper_dir.join("bundle.tar.zst");
+    let temp_bundle = TempBundle(dotdipper_dir.join("bundle.tar.zst"));
 
     ui::info("Creating bundle...");
     let meta = bundle::pack(
         &profile_paths.compiled,
         &profile_paths.manifest,
-        &bundle_path,
+        &temp_bundle.0,
         &profile_name,
         &crate::cfg::resolve_push_ignored_paths(config).unwrap_or_default(),
     )?;
@@ -248,7 +257,7 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
     let size_str = humansize::format_size(meta.size_bytes, humansize::DECIMAL);
     ui::success(&format!(
         "Bundle created: {} ({} files, {})",
-        bundle_path.display(),
+        temp_bundle.0.display(),
         meta.file_count,
         size_str
     ));
@@ -260,16 +269,13 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     // Push bundle
     ui::info("Uploading bundle...");
-    let obj = remote.push_bundle(&bundle_path).await?;
+    let obj = remote.push_bundle(&temp_bundle.0).await?;
 
     let uploaded_size = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!(
         "Pushed to remote: {} ({})",
         obj.etag_or_rev, uploaded_size
     ));
-
-    // Clean up bundle
-    std::fs::remove_file(&bundle_path)?;
 
     Ok(())
 }
@@ -284,25 +290,22 @@ pub async fn pull(config: &Config) -> Result<()> {
 
     // Download bundle
     let dotdipper_dir = get_dotdipper_dir()?;
-    let bundle_path = dotdipper_dir.join("bundle_download.tar.zst");
+    let temp_bundle = TempBundle(dotdipper_dir.join("bundle_download.tar.zst"));
 
     ui::info("Downloading bundle...");
-    let obj = remote.pull_latest(&bundle_path).await?;
+    let obj = remote.pull_latest(&temp_bundle.0).await?;
 
     let size_str = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!("Downloaded: {} ({})", obj.etag_or_rev, size_str));
 
     // Extract bundle
     ui::info("Extracting bundle...");
-    let extracted_meta = bundle::unpack(&bundle_path, &dotdipper_dir)?;
+    let extracted_meta = bundle::unpack(&temp_bundle.0, &dotdipper_dir)?;
 
     ui::success(&format!(
         "Extracted {} files to profile: {}",
         extracted_meta.file_count, extracted_meta.profile_name
     ));
-
-    // Clean up bundle
-    std::fs::remove_file(&bundle_path)?;
 
     let active =
         crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());

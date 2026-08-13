@@ -7,7 +7,13 @@
 //! ~/.config/dotdipper/profiles/<name>/compiled/
 //! ~/.config/dotdipper/profiles/<name>/manifest.lock
 //! ~/.config/dotdipper/profiles/<name>/snapshots/
+//! ~/.config/dotdipper/profiles/<name>/config.toml   # sparse overlay
 //! ```
+//!
+//! Global `config.toml` is the base. The profile overlay is merged on load
+//! (overlay keys win). GitHub push defaults to branch `main` for `default`
+//! and `dotdipper/<name>` for other profiles; set `[github].repo_name` in the
+//! overlay for a dedicated repository.
 //!
 //! Legacy `~/.config/dotdipper/compiled/` is migrated into `profiles/default/` on first use.
 
@@ -16,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cfg::{Config, GeneralConfig, RestoreMode};
+use crate::cfg::Config;
 use crate::ui;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,23 +163,16 @@ pub fn create(_config: &Config, name: &str) -> Result<Profile> {
     fs::create_dir_all(profile_dir.join("compiled"))?;
     fs::create_dir_all(profile_dir.join("snapshots"))?;
 
-    let profile_config = Config {
-        general: GeneralConfig {
-            default_mode: RestoreMode::Symlink,
-            backup: true,
-            tracked_files: Vec::new(),
-            active_profile: None,
-        },
-        ..Default::default()
-    };
-
     let config_path = profile_dir.join("config.toml");
-    let config_toml = toml::to_string_pretty(&profile_config)?;
-    fs::write(&config_path, config_toml)?;
+    crate::cfg::write_sparse_overlay_if_missing(&config_path)?;
 
     ui::success(&format!("Profile '{}' created", name));
     ui::hint(&format!(
         "Switch to it with: dotdipper profile switch {}",
+        name
+    ));
+    ui::hint(&format!(
+        "Optional overlay: profiles/{}/config.toml (github.repo_name / branch / tracked_files)",
         name
     ));
 
@@ -201,7 +200,7 @@ pub fn switch(_config: &Config, name: &str) -> Result<()> {
 
     let main_config_path = get_dotdipper_dir()?.join("config.toml");
     let mut config = if main_config_path.exists() {
-        crate::cfg::load(&main_config_path)?
+        crate::cfg::load_file(&main_config_path)?
     } else {
         Config::default()
     };
@@ -216,6 +215,12 @@ pub fn switch(_config: &Config, name: &str) -> Result<()> {
         "compat links: compiled/ → profiles/{}/compiled",
         name
     ));
+    if name != "default" {
+        ui::hint(&format!(
+            "GitHub push defaults to branch dotdipper/{}",
+            name
+        ));
+    }
 
     Ok(())
 }
@@ -264,7 +269,7 @@ pub fn active_profile_name() -> Result<String> {
     let main_config_path = get_dotdipper_dir()?.join("config.toml");
 
     if main_config_path.exists() {
-        let config = crate::cfg::load(&main_config_path)?;
+        let config = crate::cfg::load_file(&main_config_path)?;
         if let Some(profile) = config.general.active_profile {
             if !profile.trim().is_empty() {
                 return Ok(profile);
@@ -292,10 +297,7 @@ pub fn ensure_exists(name: &str) -> Result<()> {
         }
         fs::create_dir_all(profile_dir.join("compiled"))?;
         fs::create_dir_all(profile_dir.join("snapshots"))?;
-
-        let config = Config::default();
-        let config_toml = toml::to_string_pretty(&config)?;
-        fs::write(profile_dir.join("config.toml"), config_toml)?;
+        crate::cfg::write_sparse_overlay_if_missing(&profile_dir.join("config.toml"))?;
     } else {
         fs::create_dir_all(profile_dir.join("compiled"))?;
         fs::create_dir_all(profile_dir.join("snapshots"))?;
@@ -382,7 +384,7 @@ pub fn migrate_legacy_if_needed() -> Result<()> {
     // Persist active_profile = default when unset
     let main_config_path = base.join("config.toml");
     if main_config_path.exists() {
-        let mut config = crate::cfg::load(&main_config_path)?;
+        let mut config = crate::cfg::load_file(&main_config_path)?;
         if config.general.active_profile.is_none() {
             config.general.active_profile = Some("default".to_string());
             let _ = crate::cfg::save(&main_config_path, &config);

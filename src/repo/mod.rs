@@ -1,8 +1,8 @@
 pub mod apply;
 
 use anyhow::{Context, Result};
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::collections::HashSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cfg::Config;
@@ -403,9 +403,10 @@ pub fn status(config: &Config) -> Result<Status> {
     }
 
     // Check for files in manifest that are no longer tracked
+    let tracked: HashSet<&PathBuf> = config.general.tracked_files.iter().collect();
     for rel_path in manifest.files.keys() {
         let full_path = home.join(rel_path);
-        if !config.general.tracked_files.contains(&full_path) {
+        if !tracked.contains(&full_path) {
             status.deleted.push(full_path);
         }
     }
@@ -480,18 +481,9 @@ fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
 }
 
 fn copy_file_with_permissions(source: &Path, dest: &Path) -> Result<()> {
-    // Read source file
-    let mut source_file = File::open(source)
-        .with_context(|| format!("Failed to open source file: {}", source.display()))?;
-    let mut contents = Vec::new();
-    source_file.read_to_end(&mut contents)?;
+    fs::copy(source, dest)
+        .with_context(|| format!("Failed to copy {} -> {}", source.display(), dest.display()))?;
 
-    // Write to destination
-    let mut dest_file = File::create(dest)
-        .with_context(|| format!("Failed to create destination file: {}", dest.display()))?;
-    dest_file.write_all(&contents)?;
-
-    // Copy permissions on Unix
     #[cfg(unix)]
     {
         let metadata = source.metadata()?;

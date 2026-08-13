@@ -240,3 +240,265 @@ fn dotdipper_profile_env_overrides_config() {
     assert!(paths.compiled.join("marker").exists());
     std::env::remove_var("DOTDIPPER_PROFILE");
 }
+
+#[test]
+#[serial]
+fn overlay_wins_and_switch_does_not_flatten_global() {
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let base = root.path().join("dotdipper");
+    fs::create_dir_all(&home).unwrap();
+
+    let _guard = EnvGuard::apply(&[
+        ("HOME", Some(&home)),
+        ("DOTDIPPER_HOME", Some(&base)),
+        ("XDG_CONFIG_HOME", None),
+        ("DOTDIPPER_PROFILE", None),
+    ]);
+
+    let config = base.join("config.toml");
+    write_config(&config, &home, &[".zshrc"], "default");
+    let global = fs::read_to_string(&config).unwrap();
+    let global = format!("{global}\n[github]\nusername = \"alice\"\nrepo_name = \"dotfiles\"\n");
+    fs::write(&config, global).unwrap();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "profile",
+            "create",
+            "work",
+        ])
+        .assert()
+        .success();
+
+    fs::write(
+        base.join("profiles").join("work").join("config.toml"),
+        r#"
+[github]
+repo_name = "dotfiles-work"
+branch = "main"
+
+[general]
+tracked_files = ["/tmp/work-only"]
+"#,
+    )
+    .unwrap();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "profile",
+            "switch",
+            "work",
+        ])
+        .assert()
+        .success();
+
+    let global_after = fs::read_to_string(&config).unwrap();
+    assert!(
+        global_after.contains("repo_name = \"dotfiles\""),
+        "switch must not copy overlay repo_name into the global config:\n{global_after}"
+    );
+    assert!(!global_after.contains("dotfiles-work"));
+    assert!(global_after.contains("active_profile = \"work\""));
+
+    let loaded = dotdipper::cfg::load(&config).unwrap();
+    assert_eq!(loaded.github.repo_name.as_deref(), Some("dotfiles-work"));
+    assert_eq!(loaded.github.branch.as_deref(), Some("main"));
+    assert_eq!(
+        loaded.general.tracked_files,
+        vec![PathBuf::from("/tmp/work-only")]
+    );
+    assert_eq!(loaded.general.active_profile.as_deref(), Some("work"));
+}
+
+fn git(repo: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+#[serial]
+fn profiles_push_to_separate_branches() {
+    let remote_root = TempDir::new().unwrap();
+    let remote = remote_root.path().join("dotfiles.git");
+    fs::create_dir_all(&remote).unwrap();
+    let init = std::process::Command::new("git")
+        .args(["init", "--bare", "--initial-branch=main"])
+        .current_dir(&remote)
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+
+    let root = TempDir::new().unwrap();
+    let home = root.path().join("home");
+    let base = root.path().join("dotdipper");
+    fs::create_dir_all(&home).unwrap();
+
+    let _guard = EnvGuard::apply(&[
+        ("HOME", Some(&home)),
+        ("DOTDIPPER_HOME", Some(&base)),
+        ("XDG_CONFIG_HOME", None),
+        ("DOTDIPPER_PROFILE", None),
+    ]);
+
+    let config = base.join("config.toml");
+    fs::write(home.join(".zshrc"), "export DEFAULT=1\n").unwrap();
+    write_config(&config, &home, &[".zshrc"], "default");
+    let mut global = fs::read_to_string(&config).unwrap();
+    global.push_str("\n[github]\nusername = \"e2e-user\"\nrepo_name = \"dotfiles\"\n");
+    fs::write(&config, global).unwrap();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "snapshot",
+            "create",
+            "-m",
+            "default",
+        ])
+        .assert()
+        .success();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "push",
+            "-m",
+            "default profile",
+        ])
+        .assert()
+        .success();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "profile",
+            "create",
+            "work",
+        ])
+        .assert()
+        .success();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "profile",
+            "switch",
+            "work",
+        ])
+        .assert()
+        .success();
+
+    fs::write(home.join(".zshrc"), "export WORK=1\n").unwrap();
+    write_config(&config, &home, &[".zshrc"], "work");
+    let mut global = fs::read_to_string(&config).unwrap();
+    global.push_str("\n[github]\nusername = \"e2e-user\"\nrepo_name = \"dotfiles\"\n");
+    fs::write(&config, global).unwrap();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "snapshot",
+            "create",
+            "-m",
+            "work",
+        ])
+        .assert()
+        .success();
+
+    bin()
+        .env("HOME", &home)
+        .env("DOTDIPPER_HOME", &base)
+        .env("DOTDIPPER_TEST_REMOTE", &remote)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "push",
+            "-m",
+            "work profile",
+        ])
+        .assert()
+        .success();
+
+    let refs = std::process::Command::new("git")
+        .args(["--git-dir", remote.to_str().unwrap(), "show-ref"])
+        .output()
+        .unwrap();
+    let refs = String::from_utf8_lossy(&refs.stdout);
+    assert!(
+        refs.contains("refs/heads/main"),
+        "default profile should push main:\n{refs}"
+    );
+    assert!(
+        refs.contains("refs/heads/dotdipper/work"),
+        "work profile should push dotdipper/work:\n{refs}"
+    );
+
+    let inspect = root.path().join("inspect");
+    git(
+        root.path(),
+        &[
+            "clone",
+            "--branch",
+            "dotdipper/work",
+            "--single-branch",
+            remote.to_str().unwrap(),
+            inspect.to_str().unwrap(),
+        ],
+    );
+    let work_zsh = fs::read_to_string(inspect.join(".zshrc")).unwrap();
+    assert!(work_zsh.contains("WORK=1"));
+}

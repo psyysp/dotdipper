@@ -17,6 +17,8 @@ tracked_files = [
 [github]
 username = "your-github-username"
 repo_name = "dotfiles"
+# Optional branch override. Unset: "main" for the default profile, else "dotdipper/<name>".
+# branch = "main"
 private = true
 
 [packages]
@@ -124,3 +126,14 @@ exclude_patterns = [
     "**/Cache/**",
     "~/.Trash/**",
 ]
+
+# Per-profile overlay lives at profiles/<name>/config.toml
+# Overlay keys win over this file. Example:
+#
+# [github]
+# repo_name = "dotfiles-work"
+# branch = "dotdipper/work"
+#
+# [general]
+# tracked_files = ["~/.zshrc"]
+

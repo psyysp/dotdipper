@@ -46,22 +46,43 @@ pub fn check_gh() -> Result<()> {
     Ok(())
 }
 
-pub fn init_repo(repo_path: &Path) -> Result<()> {
+pub fn init_repo(repo_path: &Path, branch: &str) -> Result<()> {
     if repo_path.join(".git").exists() {
         return Ok(());
     }
 
+    std::fs::create_dir_all(repo_path).context("Failed to create compiled repository directory")?;
+
     let output = Command::new("git")
-        .args(["init", "-b", "main"])
+        .args(["init", "-b", branch])
         .current_dir(repo_path)
         .output()
         .context("Failed to initialize git repository")?;
 
     if !output.status.success() {
-        anyhow::bail!(
-            "Failed to initialize git repository: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let fallback = Command::new("git")
+            .args(["init"])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to initialize git repository")?;
+        if !fallback.status.success() {
+            anyhow::bail!(
+                "Failed to initialize git repository: {}",
+                String::from_utf8_lossy(&fallback.stderr)
+            );
+        }
+        let checkout = Command::new("git")
+            .args(["checkout", "-b", branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to create initial branch")?;
+        if !checkout.status.success() {
+            anyhow::bail!(
+                "Failed to create branch '{}': {}",
+                branch,
+                String::from_utf8_lossy(&checkout.stderr)
+            );
+        }
     }
 
     std::fs::write(repo_path.join(".gitignore"), BASE_GITIGNORE)?;
@@ -116,6 +137,50 @@ fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolved GitHub push/pull target. Branch and repo are independent:
+/// overlay/global `[github].repo_name` can point at a dedicated repo while
+/// the branch still defaults to `main` / `dotdipper/<profile>`.
+#[derive(Debug, Clone)]
+pub struct GitTarget {
+    pub username: String,
+    pub repo_name: String,
+    pub branch: String,
+}
+
+impl GitTarget {
+    pub fn origin_ref(&self) -> String {
+        format!("origin/{}", self.branch)
+    }
+}
+
+pub fn default_branch_for_profile(profile: &str) -> String {
+    if profile == "default" {
+        "main".to_string()
+    } else {
+        format!("dotdipper/{profile}")
+    }
+}
+
+pub fn resolve_git_target(config: &Config, repo_override: Option<&str>) -> Result<GitTarget> {
+    let username = resolve_github_username(config)?;
+    let repo_name = resolve_repo_name(config, repo_override);
+    let profile =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let branch = config
+        .github
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| default_branch_for_profile(&profile));
+    Ok(GitTarget {
+        username,
+        repo_name,
+        branch,
+    })
+}
+
 pub fn push(
     config: &Config,
     message: Option<String>,
@@ -123,23 +188,17 @@ pub fn push(
     repo_override: Option<&str>,
 ) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let target = resolve_git_target(config, repo_override)?;
 
-    // Ensure git is initialized
-    init_repo(&repo_path)?;
+    // Ensure git is initialized on the profile branch
+    init_repo(&repo_path, &target.branch)?;
     write_push_gitignore(&repo_path, config)?;
+    checkout_or_create_branch(&repo_path, &target.branch)?;
 
-    let profile_name =
-        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
-    if profile_name != "default" {
-        ui::warn(&format!(
-            "GitHub push uses the shared 'main' branch for all profiles. \
-             Profile '{}' can overwrite or merge with another profile's files. \
-             Prefer `dotdipper remote push` or a separate github.repo_name per profile.",
-            profile_name
-        ));
-    }
+    ui::info(&format!(
+        "Pushing to {}/{} ({})",
+        target.username, target.repo_name, target.branch
+    ));
 
     // Add all files
     let output = Command::new("git")
@@ -191,39 +250,14 @@ pub fn push(
         ui::success("Changes committed");
     }
 
-    // Ensure the branch is named 'main'
-    let branch_output = Command::new("git")
-        .args(["branch", "--show-current"])
-        .current_dir(&repo_path)
-        .output()
-        .context("Failed to get current branch name")?;
-
-    let current_branch = String::from_utf8_lossy(&branch_output.stdout)
-        .trim()
-        .to_string();
-    if !current_branch.is_empty() && current_branch != "main" {
-        let rename_output = Command::new("git")
-            .args(["branch", "-M", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .context("Failed to rename branch to main")?;
-
-        if !rename_output.status.success() {
-            anyhow::bail!(
-                "Failed to rename branch to main: {}",
-                String::from_utf8_lossy(&rename_output.stderr)
-            );
-        }
-    }
-
-    if let Err(e) = ensure_github_repo(config, &repo_path, &username, &repo_name) {
+    if let Err(e) = ensure_github_repo(config, &repo_path, &target.username, &target.repo_name) {
         ui::warn(&format!("Could not create GitHub repo: {}", e));
         ui::hint("Create a GitHub repository manually and add it as a remote");
-        return Ok(repo_name);
+        return Ok(target.repo_name);
     }
 
     // Push to remote
-    let mut push_args = vec!["push", "origin", "main"];
+    let mut push_args = vec!["push", "origin", target.branch.as_str()];
     if force {
         push_args.push("--force");
     }
@@ -244,7 +278,7 @@ pub fn push(
             // Remote has commits we don't have (e.g. repo created with README). Fetch, rebase, retry.
             ui::info("Remote has commits you don't have locally. Syncing and retrying push...");
             let fetch_out = Command::new("git")
-                .args(["fetch", "origin", "main"])
+                .args(["fetch", "origin", &target.branch])
                 .current_dir(&repo_path)
                 .output()
                 .context("Failed to fetch from origin")?;
@@ -255,10 +289,10 @@ pub fn push(
                 );
             }
             let rebase_out = Command::new("git")
-                .args(["rebase", "origin/main"])
+                .args(["rebase", &target.origin_ref()])
                 .current_dir(&repo_path)
                 .output()
-                .context("Failed to rebase onto origin/main")?;
+                .context("Failed to rebase onto origin")?;
             if !rebase_out.status.success() {
                 anyhow::bail!(
                     "Rebase failed (remote and local both have changes): {}\n\
@@ -281,7 +315,7 @@ pub fn push(
         } else if stderr.contains("failed to push") || stderr.contains("rejected") {
             // No upstream set; try set-upstream and push again
             let output = Command::new("git")
-                .args(["push", "--set-upstream", "origin", "main"])
+                .args(["push", "--set-upstream", "origin", &target.branch])
                 .current_dir(&repo_path)
                 .output()
                 .context("Failed to set upstream branch")?;
@@ -297,20 +331,30 @@ pub fn push(
         }
     }
 
-    Ok(repo_name)
+    Ok(target.repo_name)
 }
 
 pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let target = resolve_git_target(config, repo_override)?;
+    let origin_ref = target.origin_ref();
+
+    ui::info(&format!(
+        "Pulling from {}/{} ({})",
+        target.username, target.repo_name, target.branch
+    ));
 
     // If repo doesn't exist, clone it
     if !repo_path.join(".git").exists() {
-        clone_repo(&username, &repo_name, &repo_path)?;
+        clone_repo(
+            &target.username,
+            &target.repo_name,
+            &target.branch,
+            &repo_path,
+        )?;
     } else {
         // Ensure current origin points at the selected repo
-        add_remote(&username, &repo_name, &repo_path)?;
+        add_remote(&target.username, &target.repo_name, &repo_path)?;
 
         let dirty = has_uncommitted_changes(&repo_path)?;
         if dirty && !force {
@@ -327,26 +371,16 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
         }
 
         // Fetch first so force reset / pull both see latest remote
-        let fetch_output = Command::new("git")
-            .args(["fetch", "origin", "main"])
-            .current_dir(&repo_path)
-            .output()
-            .context("Failed to fetch from GitHub")?;
-
-        if !fetch_output.status.success() {
-            anyhow::bail!(
-                "Failed to fetch: {}",
-                String::from_utf8_lossy(&fetch_output.stderr)
-            );
-        }
+        fetch_origin_branch(&repo_path, &target.branch)?;
+        checkout_tracking_branch(&repo_path, &target.branch)?;
 
         if force {
             // Overwrite local compiled git state with remote (HOME untouched)
             let reset_output = Command::new("git")
-                .args(["reset", "--hard", "origin/main"])
+                .args(["reset", "--hard", origin_ref.as_str()])
                 .current_dir(&repo_path)
                 .output()
-                .context("Failed to reset to origin/main")?;
+                .context("Failed to reset to origin")?;
 
             if !reset_output.status.success() {
                 anyhow::bail!(
@@ -370,7 +404,7 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
         } else {
             // Pull changes
             let output = Command::new("git")
-                .args(["pull", "origin", "main"])
+                .args(["pull", "origin", target.branch.as_str()])
                 .current_dir(&repo_path)
                 .output()
                 .context("Failed to pull from GitHub")?;
@@ -379,8 +413,13 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 if stderr.contains("no tracking information") {
                     // Set tracking branch
+                    let upstream = format!("origin/{}", target.branch);
                     let output = Command::new("git")
-                        .args(["branch", "--set-upstream-to=origin/main", "main"])
+                        .args([
+                            "branch",
+                            &format!("--set-upstream-to={upstream}"),
+                            &target.branch,
+                        ])
                         .current_dir(&repo_path)
                         .output()
                         .context("Failed to set tracking branch")?;
@@ -388,7 +427,7 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
                     if output.status.success() {
                         // Try pull again
                         let output = Command::new("git")
-                            .args(["pull", "origin", "main"])
+                            .args(["pull", "origin", target.branch.as_str()])
                             .current_dir(&repo_path)
                             .output()
                             .context("Failed to pull from GitHub")?;
@@ -418,7 +457,7 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
         ui::hint("You can rebuild it with the files under compiled/ once they exist.");
     }
 
-    Ok(repo_name)
+    Ok(target.repo_name)
 }
 
 fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
@@ -462,20 +501,25 @@ fn stash_local_changes(repo_path: &Path) -> Result<()> {
 
 pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let target = resolve_git_target(config, repo_override)?;
+    let origin_ref = target.origin_ref();
 
     if !repo_path.join(".git").exists() {
-        clone_repo(&username, &repo_name, &repo_path)?;
+        clone_repo(
+            &target.username,
+            &target.repo_name,
+            &target.branch,
+            &repo_path,
+        )?;
     } else {
-        add_remote(&username, &repo_name, &repo_path)?;
+        add_remote(&target.username, &target.repo_name, &repo_path)?;
     }
 
     ensure_clean_worktree(&repo_path)?;
-    fetch_origin_main(&repo_path)?;
-    ensure_main_checked_out(&repo_path)?;
-    fast_forward_main_to_origin(&repo_path)?;
-    ensure_head_matches_ref(&repo_path, "origin/main")?;
+    fetch_origin_branch(&repo_path, &target.branch)?;
+    checkout_tracking_branch(&repo_path, &target.branch)?;
+    fast_forward_to_origin(&repo_path, &target.branch)?;
+    ensure_head_matches_ref(&repo_path, &origin_ref)?;
     ensure_head_is_not_merge_commit(&repo_path)?;
 
     let commit_summary = git_stdout(&repo_path, &["log", "-1", "--pretty=%h %s", "HEAD"])?;
@@ -490,17 +534,17 @@ pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>)
         )
     {
         ui::info("Undo cancelled");
-        return Ok(repo_name);
+        return Ok(target.repo_name);
     }
 
     revert_head_commit(&repo_path)?;
-    push_main(&repo_path)?;
+    push_branch(&repo_path, &target.branch)?;
 
     ui::success(&format!(
         "Created and pushed a revert for {}",
         commit_summary
     ));
-    Ok(repo_name)
+    Ok(target.repo_name)
 }
 
 fn ensure_clean_worktree(repo_path: &Path) -> Result<()> {
@@ -526,16 +570,16 @@ fn ensure_clean_worktree(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn fetch_origin_main(repo_path: &Path) -> Result<()> {
+fn fetch_origin_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
-        .args(["fetch", "origin", "main"])
+        .args(["fetch", "origin", branch])
         .current_dir(repo_path)
         .output()
-        .context("Failed to fetch origin/main")?;
+        .with_context(|| format!("Failed to fetch origin/{branch}"))?;
 
     if !output.status.success() {
         anyhow::bail!(
-            "Failed to fetch origin/main: {}",
+            "Failed to fetch origin/{branch}: {}. Push this profile first, or set [github].branch.",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -543,27 +587,53 @@ fn fetch_origin_main(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn ensure_main_checked_out(repo_path: &Path) -> Result<()> {
-    let current_branch = git_stdout(repo_path, &["branch", "--show-current"])?;
-    if current_branch == "main" {
+/// Keep the working tree: create or reset the local branch to the current HEAD.
+fn checkout_or_create_branch(repo_path: &Path, branch: &str) -> Result<()> {
+    let current = git_stdout(repo_path, &["branch", "--show-current"]).unwrap_or_default();
+    if current == branch {
         return Ok(());
     }
 
-    let args = if git_ref_exists(repo_path, "refs/heads/main")? {
-        vec!["checkout", "main"]
+    let output = Command::new("git")
+        .args(["checkout", "-B", branch])
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("Failed to switch to branch {branch}"))?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to switch to branch '{branch}': {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
+/// Check out a branch that tracks origin/<branch> (used by pull/undo).
+fn checkout_tracking_branch(repo_path: &Path, branch: &str) -> Result<()> {
+    let current = git_stdout(repo_path, &["branch", "--show-current"]).unwrap_or_default();
+    if current == branch {
+        return Ok(());
+    }
+
+    let local_ref = format!("refs/heads/{branch}");
+    let origin_ref = format!("origin/{branch}");
+    let args: Vec<&str> = if git_ref_exists(repo_path, &local_ref)? {
+        vec!["checkout", branch]
     } else {
-        vec!["checkout", "-B", "main", "origin/main"]
+        vec!["checkout", "-B", branch, origin_ref.as_str()]
     };
 
     let output = Command::new("git")
         .args(&args)
         .current_dir(repo_path)
         .output()
-        .context("Failed to switch to main branch")?;
+        .with_context(|| format!("Failed to switch to branch {branch}"))?;
 
     if !output.status.success() {
         anyhow::bail!(
-            "Failed to switch to main branch: {}",
+            "Failed to switch to branch '{branch}': {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -581,16 +651,17 @@ fn git_ref_exists(repo_path: &Path, git_ref: &str) -> Result<bool> {
     Ok(output.status.success())
 }
 
-fn fast_forward_main_to_origin(repo_path: &Path) -> Result<()> {
+fn fast_forward_to_origin(repo_path: &Path, branch: &str) -> Result<()> {
+    let origin_ref = format!("origin/{branch}");
     let output = Command::new("git")
-        .args(["merge", "--ff-only", "origin/main"])
+        .args(["merge", "--ff-only", origin_ref.as_str()])
         .current_dir(repo_path)
         .output()
-        .context("Failed to fast-forward local main branch")?;
+        .with_context(|| format!("Failed to fast-forward local {branch} branch"))?;
 
     if !output.status.success() {
         anyhow::bail!(
-            "Failed to fast-forward local main branch: {}",
+            "Failed to fast-forward local {branch} branch: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -644,9 +715,9 @@ fn revert_head_commit(repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn push_main(repo_path: &Path) -> Result<()> {
+fn push_branch(repo_path: &Path, branch: &str) -> Result<()> {
     let output = Command::new("git")
-        .args(["push", "origin", "main"])
+        .args(["push", "origin", branch])
         .current_dir(repo_path)
         .output()
         .context("Failed to push revert commit")?;
@@ -793,26 +864,51 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn clone_repo(username: &str, repo_name: &str, dest_path: &Path) -> Result<()> {
+fn clone_repo(username: &str, repo_name: &str, branch: &str, dest_path: &Path) -> Result<()> {
     let repo_url = resolve_remote_url(username, repo_name);
 
-    ui::info(&format!("Cloning repository from {}", repo_url));
+    ui::info(&format!(
+        "Cloning repository from {} ({})",
+        repo_url, branch
+    ));
 
     // Create parent directory
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let output = Command::new("git")
-        .args(["clone", repo_url.as_str(), dest_path.to_str().unwrap()])
+    let dest = dest_path
+        .to_str()
+        .context("Repository path is not valid UTF-8")?;
+    let mut output = Command::new("git")
+        .args([
+            "clone",
+            "--branch",
+            branch,
+            "--single-branch",
+            repo_url.as_str(),
+            dest,
+        ])
         .output()
         .context("Failed to clone repository")?;
 
     if !output.status.success() {
-        anyhow::bail!(
-            "Failed to clone: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // Branch may not exist yet on a shared repo; clone default then create it.
+        ui::info(&format!(
+            "Branch '{}' not found on remote; cloning default branch",
+            branch
+        ));
+        output = Command::new("git")
+            .args(["clone", repo_url.as_str(), dest])
+            .output()
+            .context("Failed to clone repository")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to clone: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        checkout_or_create_branch(dest_path, branch)?;
     }
 
     ui::success("Repository cloned successfully");
@@ -1033,13 +1129,13 @@ mod tests {
         git_ok(local_dir.path(), &["push", "origin", "main"]);
 
         ensure_clean_worktree(local_dir.path()).unwrap();
-        fetch_origin_main(local_dir.path()).unwrap();
-        ensure_main_checked_out(local_dir.path()).unwrap();
-        fast_forward_main_to_origin(local_dir.path()).unwrap();
+        fetch_origin_branch(local_dir.path(), "main").unwrap();
+        checkout_tracking_branch(local_dir.path(), "main").unwrap();
+        fast_forward_to_origin(local_dir.path(), "main").unwrap();
         ensure_head_matches_ref(local_dir.path(), "origin/main").unwrap();
         ensure_head_is_not_merge_commit(local_dir.path()).unwrap();
         revert_head_commit(local_dir.path()).unwrap();
-        push_main(local_dir.path()).unwrap();
+        push_branch(local_dir.path(), "main").unwrap();
 
         let inspect_root = TempDir::new().unwrap();
         let inspect_repo = inspect_root.path().join("inspect");
@@ -1090,5 +1186,67 @@ mod tests {
 
         let err = ensure_head_is_not_merge_commit(temp_dir.path()).unwrap_err();
         assert!(err.to_string().contains("merge commit"));
+    }
+
+    #[test]
+    fn default_branch_for_default_profile_is_main() {
+        assert_eq!(default_branch_for_profile("default"), "main");
+        assert_eq!(default_branch_for_profile("work"), "dotdipper/work");
+    }
+
+    #[test]
+    fn git_target_uses_explicit_branch_and_repo() {
+        let mut config = crate::cfg::Config::default();
+        config.github.username = Some("alice".into());
+        config.github.repo_name = Some("dotfiles-work".into());
+        config.github.branch = Some("main".into());
+        let previous = std::env::var("DOTDIPPER_PROFILE").ok();
+        std::env::set_var("DOTDIPPER_PROFILE", "work");
+        let target = resolve_git_target(&config, None).unwrap();
+        match previous {
+            Some(value) => std::env::set_var("DOTDIPPER_PROFILE", value),
+            None => std::env::remove_var("DOTDIPPER_PROFILE"),
+        }
+        assert_eq!(target.repo_name, "dotfiles-work");
+        assert_eq!(target.branch, "main");
+        assert_eq!(target.username, "alice");
+    }
+
+    #[test]
+    fn git_target_defaults_profile_branch() {
+        let mut config = crate::cfg::Config::default();
+        config.github.username = Some("alice".into());
+        let previous = std::env::var("DOTDIPPER_PROFILE").ok();
+        std::env::set_var("DOTDIPPER_PROFILE", "work");
+        let target = resolve_git_target(&config, None).unwrap();
+        match previous {
+            Some(value) => std::env::set_var("DOTDIPPER_PROFILE", value),
+            None => std::env::remove_var("DOTDIPPER_PROFILE"),
+        }
+        assert_eq!(target.repo_name, "dotfiles");
+        assert_eq!(target.branch, "dotdipper/work");
+    }
+
+    #[test]
+    fn checkout_or_create_branch_keeps_worktree() {
+        if which::which("git").is_err() {
+            return;
+        }
+
+        let temp_dir = TempDir::new().unwrap();
+        init_repo(temp_dir.path());
+        fs::write(temp_dir.path().join("keep.txt"), "keep\n").unwrap();
+        git_ok(temp_dir.path(), &["add", "-A"]);
+        git_ok(temp_dir.path(), &["commit", "-m", "Initial"]);
+
+        checkout_or_create_branch(temp_dir.path(), "dotdipper/work").unwrap();
+        assert_eq!(
+            git_stdout(temp_dir.path(), &["branch", "--show-current"]).unwrap(),
+            "dotdipper/work"
+        );
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("keep.txt")).unwrap(),
+            "keep\n"
+        );
     }
 }
