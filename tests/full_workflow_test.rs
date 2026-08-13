@@ -203,7 +203,8 @@ fn test_apply_force_and_interactive_flags() {
         .stdout(predicate::str::contains("--only"));
 
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let home = temp_dir.path();
+    let config_path = home.join("config.toml");
 
     fs::write(
         &config_path,
@@ -214,8 +215,13 @@ tracked_files = []
     )
     .unwrap();
 
+    // Isolate from XDG_CONFIG_HOME / leaked runner stores (CI failure cause)
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
+    cmd.env("HOME", home)
+        .env("DOTDIPPER_HOME", home.join("dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .arg("--config")
         .arg(&config_path)
         .arg("apply")
         .arg("--force");
@@ -312,6 +318,9 @@ post_snapshot = ["echo 'post' >> {}"]
 
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.env("HOME", temp_dir.path())
+            .env("DOTDIPPER_HOME", &dotdipper_dir)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("DOTDIPPER_PROFILE")
             .arg("--config")
             .arg(&config_path)
             .arg("snapshot")
@@ -344,9 +353,13 @@ tracked_files = []
         )
         .unwrap();
 
-        // Without a manifest, diff exits non-zero (even with --detailed)
+        // Without a manifest, diff exits non-zero (even with --detailed).
+        // Isolate XDG_CONFIG_HOME so a parallel snapshot test cannot leak a store.
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.env("HOME", temp_dir.path())
+            .env("DOTDIPPER_HOME", &dotdipper_dir)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("DOTDIPPER_PROFILE")
             .arg("--config")
             .arg(&config_path)
             .arg("diff");
@@ -355,6 +368,9 @@ tracked_files = []
 
         let mut cmd = Command::cargo_bin("dotdipper").unwrap();
         cmd.env("HOME", temp_dir.path())
+            .env("DOTDIPPER_HOME", &dotdipper_dir)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("DOTDIPPER_PROFILE")
             .arg("--config")
             .arg(&config_path)
             .arg("diff")

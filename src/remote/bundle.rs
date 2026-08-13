@@ -27,6 +27,7 @@ pub fn pack(
     manifest_path: &Path,
     output_bundle: &Path,
     profile_name: &str,
+    skip_rel_paths: &[String],
 ) -> Result<BundleMeta> {
     if !compiled_root.exists() {
         anyhow::bail!(
@@ -45,7 +46,7 @@ pub fn pack(
         .and_then(|h| h.into_string().ok())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let (file_count, size_bytes) = count_files_and_size(compiled_root)?;
+    let (file_count, size_bytes) = count_files_and_size(compiled_root, skip_rel_paths)?;
 
     let meta = BundleMeta {
         profile_name: profile_name.to_string(),
@@ -61,9 +62,14 @@ pub fn pack(
     let bundle_root = temp_dir.path().join("dotdipper_bundle");
     fs::create_dir_all(&bundle_root)?;
 
-    // Copy compiled/ to bundle
+    // Copy compiled/ to bundle (omit .git and push_ignore / local_only paths)
     let bundle_compiled = bundle_root.join("compiled");
-    copy_dir_recursive(compiled_root, &bundle_compiled)?;
+    copy_dir_recursive(
+        compiled_root,
+        &bundle_compiled,
+        compiled_root,
+        skip_rel_paths,
+    )?;
 
     // Copy manifest
     fs::copy(manifest_path, bundle_root.join("manifest.lock"))?;
@@ -136,7 +142,7 @@ pub fn unpack(bundle_path: &Path, _dest_dir: &Path) -> Result<BundleMeta> {
             fs::rename(&profile_paths.compiled, &backup)?;
         }
 
-        copy_dir_recursive(&src_compiled, &profile_paths.compiled)?;
+        copy_dir_recursive(&src_compiled, &profile_paths.compiled, &src_compiled, &[])?;
     }
 
     // Copy manifest
@@ -166,16 +172,31 @@ fn find_bundle_root(extract_root: &Path) -> Result<PathBuf> {
     anyhow::bail!("Could not find bundle root in extracted archive");
 }
 
-fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+fn copy_dir_recursive(
+    src: &Path,
+    dest: &Path,
+    compiled_root: &Path,
+    skip_rel_paths: &[String],
+) -> Result<()> {
     fs::create_dir_all(dest)?;
 
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
-        let dest_path = dest.join(entry.file_name());
+        let name = entry.file_name();
+        if name == ".git" || name == ".gitignore" {
+            continue;
+        }
+
+        let rel = path.strip_prefix(compiled_root).unwrap_or(&path);
+        if should_skip_rel(rel, skip_rel_paths) {
+            continue;
+        }
+
+        let dest_path = dest.join(&name);
 
         if path.is_dir() {
-            copy_dir_recursive(&path, &dest_path)?;
+            copy_dir_recursive(&path, &dest_path, compiled_root, skip_rel_paths)?;
         } else if path.is_file() {
             fs::copy(&path, &dest_path)?;
 
@@ -194,16 +215,39 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-fn count_files_and_size(dir: &Path) -> Result<(usize, u64)> {
+fn should_skip_rel(rel: &Path, skip_rel_paths: &[String]) -> bool {
+    let rel_str = rel.to_string_lossy().replace('\\', "/");
+    skip_rel_paths.iter().any(|pat| {
+        let pat = pat.trim_start_matches("./").replace('\\', "/");
+        rel_str == pat
+            || rel_str.starts_with(&format!("{pat}/"))
+            || glob::Pattern::new(&pat)
+                .map(|g| g.matches(&rel_str))
+                .unwrap_or(false)
+    })
+}
+
+fn count_files_and_size(dir: &Path, skip_rel_paths: &[String]) -> Result<(usize, u64)> {
     let mut count = 0;
     let mut size = 0u64;
 
     for entry in WalkDir::new(dir) {
         let entry = entry?;
-        if entry.file_type().is_file() {
-            count += 1;
-            size += entry.metadata()?.len();
+        if !entry.file_type().is_file() {
+            continue;
         }
+        let Ok(rel) = entry.path().strip_prefix(dir) else {
+            continue;
+        };
+        let s = rel.to_string_lossy();
+        if s == ".git" || s.starts_with(".git/") || s == ".gitignore" {
+            continue;
+        }
+        if should_skip_rel(rel, skip_rel_paths) {
+            continue;
+        }
+        count += 1;
+        size += entry.metadata()?.len();
     }
 
     Ok((count, size))
@@ -229,5 +273,21 @@ mod tests {
 
         assert_eq!(parsed.profile_name, "default");
         assert_eq!(parsed.file_count, 10);
+    }
+
+    #[test]
+    fn skips_git_and_ignored_rel_paths() {
+        assert!(should_skip_rel(
+            Path::new(".ssh/config"),
+            &[".ssh/config".into()]
+        ));
+        assert!(should_skip_rel(
+            Path::new("private/token"),
+            &["private/**".into()]
+        ));
+        assert!(!should_skip_rel(
+            Path::new(".zshrc"),
+            &[".ssh/config".into()]
+        ));
     }
 }

@@ -242,6 +242,7 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
         &profile_paths.manifest,
         &bundle_path,
         &profile_name,
+        &crate::cfg::resolve_push_ignored_paths(config).unwrap_or_default(),
     )?;
 
     let size_str = humansize::format_size(meta.size_bytes, humansize::DECIMAL);

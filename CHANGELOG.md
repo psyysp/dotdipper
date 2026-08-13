@@ -18,6 +18,13 @@ All notable changes to dotdipper are documented here.
 - Pull→apply no longer puts encrypted store names into `tracked_files`; snapshot preserves encrypted compiled blobs so consumer machines can push.
 - Profile names are validated (blocks path traversal); non-default profiles are not auto-created from env typos.
 - Remote push honors `DOTDIPPER_PROFILE`; remote pull uses timestamped backups and clearer profile-switch hints.
+- Remote bundles omit `.git` / `.gitignore` and honor `push_ignore` / `local_only`.
+- GitHub push warns when the active profile is not `default` (shared `main` branch).
+- Dependency bumps: `tar` 0.4.46, `rust-s3` 0.37, `rustls-webpki` 0.103.14, `anyhow` 1.0.104 (cargo-audit).
+
+### Fixed
+
+- Apply/diff tests no longer share the runner `XDG_CONFIG_HOME` store (CI false-success / false-failure).
 
 ## [0.7.4] - 2026-07-29
 

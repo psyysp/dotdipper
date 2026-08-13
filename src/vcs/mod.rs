@@ -130,6 +130,17 @@ pub fn push(
     init_repo(&repo_path)?;
     write_push_gitignore(&repo_path, config)?;
 
+    let profile_name =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    if profile_name != "default" {
+        ui::warn(&format!(
+            "GitHub push uses the shared 'main' branch for all profiles. \
+             Profile '{}' can overwrite or merge with another profile's files. \
+             Prefer `dotdipper remote push` or a separate github.repo_name per profile.",
+            profile_name
+        ));
+    }
+
     // Add all files
     let output = Command::new("git")
         .args(["add", "-A"])
