@@ -217,24 +217,19 @@ fn should_skip_file(file_path: &Path, exclude_patterns: &[String]) -> bool {
     false
 }
 
-/// Update configuration with discovered packages
+/// Update configuration with discovered packages (portable binary names).
 pub fn update_config_with_packages(config_path: &Path, result: &DiscoveryResult) -> Result<()> {
     let mut config = crate::cfg::load(config_path)?;
 
-    // Merge discovered packages with existing common packages
-    let mut packages = config.packages.common.clone();
-
-    for package in result.packages.values() {
-        if !packages.contains(package) {
-            packages.push(package.clone());
+    let mut requirements = config.packages.requirements.clone();
+    for binary in result.packages.keys() {
+        if !requirements.contains(binary) {
+            requirements.push(binary.clone());
         }
     }
-
-    // Sort and deduplicate
-    packages.sort();
-    packages.dedup();
-
-    config.packages.common = packages;
+    requirements.sort();
+    requirements.dedup();
+    config.packages.requirements = requirements;
 
     crate::cfg::save(config_path, &config)?;
 

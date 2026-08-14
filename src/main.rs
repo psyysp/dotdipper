@@ -15,7 +15,7 @@ use dotdipper::vcs;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Dotdipper - A smart dotfiles manager with GitHub sync and machine bootstrapping
 #[derive(Parser)]
@@ -36,11 +36,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize dotdipper in the current directory
+    /// Initialize dotdipper
     Init {
         /// Force initialization even if config exists
         #[arg(short, long)]
         force: bool,
+
+        /// GitHub repository to use (owner/name or name)
+        #[arg(long)]
+        repo: Option<String>,
     },
 
     /// Discover dotfiles on the system
@@ -133,7 +137,7 @@ enum Commands {
         #[arg(short, long)]
         force: bool,
 
-        /// Override the GitHub repository name (e.g. 'dotfiles-dotdipper')
+        /// Override the GitHub repository (name or owner/name)
         #[arg(long)]
         repo: Option<String>,
     },
@@ -152,7 +156,7 @@ enum Commands {
         #[arg(long)]
         unsafe_allow_outside_home: bool,
 
-        /// Override the GitHub repository name
+        /// Override the GitHub repository (name or owner/name)
         #[arg(long)]
         repo: Option<String>,
     },
@@ -189,6 +193,20 @@ enum Commands {
         /// Allow operations outside $HOME (unsafe)
         #[arg(long)]
         unsafe_allow_outside_home: bool,
+    },
+
+    /// Bootstrap this machine from a GitHub dotfiles repo (init + pull + install)
+    Bootstrap {
+        /// GitHub repository: owner/name, or name (uses `gh` username)
+        repo: String,
+
+        /// Only generate/run scripts without installing OS packages
+        #[arg(long)]
+        skip_packages: bool,
+
+        /// Force overwrite existing files
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Run diagnostics and check system health
@@ -426,7 +444,7 @@ async fn main() -> Result<()> {
     });
 
     let result = match cli.command {
-        Commands::Init { force } => cmd_init(config_path, force).await,
+        Commands::Init { force, repo } => cmd_init(config_path, force, repo).await,
         Commands::Discover {
             write,
             all,
@@ -497,6 +515,11 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Commands::Bootstrap {
+            repo,
+            skip_packages,
+            force,
+        } => cmd_bootstrap(config_path, repo, skip_packages, force).await,
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
         Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
@@ -510,11 +533,77 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn cmd_init(config_path: PathBuf, force: bool) -> Result<()> {
+fn apply_repo_spec(config_path: &Path, spec: &str) -> Result<()> {
+    let (owner, name) = vcs::parse_github_repo(spec);
+    if let Some(owner) = owner {
+        cfg::set_config_value(config_path, "github.username", &owner)?;
+    }
+    if !name.is_empty() {
+        cfg::set_config_value(config_path, "github.repo_name", &name)?;
+    }
+    Ok(())
+}
+
+/// Persist the resolved GitHub identity so later pull/push/install do not guess.
+fn persist_resolved_username(config_path: &Path, repo_override: Option<&str>) -> Result<()> {
+    let config = cfg::load(config_path)?;
+    if config.github.username.is_some() {
+        return Ok(());
+    }
+    let (username, _) = vcs::resolve_identity(&config, repo_override)?;
+    cfg::set_config_value(config_path, "github.username", &username)?;
+    Ok(())
+}
+
+fn persist_github_identity(
+    config_path: &Path,
+    repo_override: Option<&str>,
+) -> Result<(String, String)> {
+    if let Some(spec) = repo_override {
+        apply_repo_spec(config_path, spec)?;
+    }
+    let config = cfg::load(config_path)?;
+    let (username, repo_name) = vcs::resolve_identity(&config, repo_override)?;
+    if config.github.username.as_deref() != Some(username.as_str()) {
+        cfg::set_config_value(config_path, "github.username", &username)?;
+    }
+    if config.github.repo_name.as_deref() != Some(repo_name.as_str()) {
+        cfg::set_config_value(config_path, "github.repo_name", &repo_name)?;
+    }
+    Ok((username, repo_name))
+}
+
+fn age_key_path(config: &cfg::Config) -> PathBuf {
+    config
+        .secrets
+        .as_ref()
+        .and_then(|s| s.key_path.as_ref())
+        .map(|p| PathBuf::from(shellexpand::tilde(p).to_string()))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join(".config/age/keys.txt")
+        })
+}
+
+fn snapshot_has_encrypted(config: &cfg::Config) -> bool {
+    config
+        .general
+        .tracked_files
+        .iter()
+        .any(|p| p.extension().and_then(|e| e.to_str()) == Some("age"))
+}
+
+async fn cmd_init(config_path: PathBuf, force: bool, repo: Option<String>) -> Result<()> {
     ui::info("Initializing dotdipper...");
-    cfg::init(config_path, force)?;
+    cfg::init(config_path.clone(), force)?;
+    if let Some(spec) = repo.as_deref() {
+        apply_repo_spec(&config_path, spec)?;
+        ui::info(&format!("GitHub repo set to {}", spec));
+    }
     ui::success("Dotdipper initialized successfully!");
-    ui::hint("Run 'dotdipper discover --write' to find and add dotfiles to track");
+    ui::hint("On this machine: 'dotdipper discover --write' then 'dotdipper snapshot create' and 'dotdipper push'");
+    ui::hint("On a new machine: 'gh auth login' then 'dotdipper bootstrap owner/repo'");
     Ok(())
 }
 
@@ -533,21 +622,38 @@ async fn cmd_discover(
 
     ui::info(&format!("Found {} dotfiles", discovered.len()));
 
-    // Handle package discovery if requested
+    if write {
+        cfg::update_discovered(&config_path, &discovered)?;
+    }
+
+    // Handle package discovery if requested. Use the just-discovered file list
+    // so the first `discover --write --packages` actually records requirements.
     if packages {
         ui::info("Discovering required packages from dotfiles...");
 
         let os = target_os.unwrap_or_else(install::detect_os);
         ui::info(&format!("Target OS: {}", os));
 
+        let mut pkg_config = if write {
+            cfg::load(&config_path)?
+        } else {
+            let mut cloned = config.clone();
+            cloned.general.tracked_files = discovered.clone();
+            cloned
+        };
+        if pkg_config.general.tracked_files.is_empty() {
+            pkg_config.general.tracked_files = discovered.clone();
+        }
+        pkg_config.general.tracked_files = install::paths_for_package_discovery(&pkg_config);
+
         let discovery_config = install::DiscoveryConfig {
             target_os: os.clone(),
             include_low_confidence,
             custom_mappings: std::collections::HashMap::new(),
-            exclude_patterns: config.exclude_patterns.clone(),
+            exclude_patterns: pkg_config.exclude_patterns.clone(),
         };
 
-        let result = install::discover::discover_packages(&config, &discovery_config)?;
+        let result = install::discover::discover_packages(&pkg_config, &discovery_config)?;
 
         // Display discovered packages
         if result.has_packages() {
@@ -718,6 +824,7 @@ async fn cmd_push(
     repo: Option<String>,
 ) -> Result<()> {
     ui::info("Pushing to GitHub...");
+    let (_, repo_name) = persist_github_identity(&config_path, repo.as_deref())?;
     let config = cfg::load(&config_path)?;
 
     // Create snapshot first
@@ -725,13 +832,8 @@ async fn cmd_push(
 
     // Push to GitHub
     let effective_repo = vcs::push(&config, message, force, repo.as_deref())?;
-
-    if repo.is_some() && config.github.repo_name.is_none() {
+    if effective_repo != repo_name {
         cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
-        ui::info(&format!(
-            "Saved '{}' as default GitHub repository in config",
-            effective_repo
-        ));
     }
 
     ui::success("Successfully pushed to GitHub!");
@@ -746,19 +848,32 @@ async fn cmd_pull(
     repo: Option<String>,
 ) -> Result<()> {
     ui::info("Pulling from GitHub...");
+    if let Some(spec) = repo.as_deref() {
+        apply_repo_spec(&config_path, spec)?;
+    }
+    // Persist the clone owner from `owner/repo` or `gh` *before* hydrate so a
+    // name-only spec cannot be overwritten by bootstrap.toml from another user.
+    persist_resolved_username(&config_path, repo.as_deref())?;
     let config = cfg::load(&config_path)?;
 
-    let effective_repo = vcs::pull(&config, repo.as_deref())?;
+    let _effective_repo = vcs::pull(&config, repo.as_deref())?;
 
-    if repo.is_some() && config.github.repo_name.is_none() {
-        cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
-        ui::info(&format!(
-            "Saved '{}' as default GitHub repository in config",
-            effective_repo
-        ));
+    install::hydrate_from_compiled(&config_path)
+        .with_context(|| "Failed to restore tracked files/packages from the pulled snapshot")?;
+
+    // Fill any identity still missing after hydrate (do not overwrite
+    // owner/repo restored from bootstrap.toml with a guessed default).
+    let config = cfg::load(&config_path)?;
+    if config.github.username.is_none() || config.github.repo_name.is_none() {
+        persist_github_identity(&config_path, repo.as_deref())?;
     }
 
+    let config = cfg::load(&config_path)?;
     ui::success("Successfully pulled from GitHub!");
+    ui::info(&format!(
+        "Tracking {} files from the shared snapshot",
+        config.general.tracked_files.len()
+    ));
 
     if apply {
         ui::info("Applying changes to system...");
@@ -777,7 +892,7 @@ async fn cmd_pull(
             ui::warn("No manifest found. Run 'dotdipper snapshot' first.");
         }
     } else {
-        ui::hint("Use --apply to apply the pulled changes to your system");
+        ui::hint("Use --apply to apply the pulled changes, or 'dotdipper install' / 'dotdipper bootstrap owner/repo'");
     }
 
     Ok(())
@@ -785,20 +900,39 @@ async fn cmd_pull(
 
 async fn cmd_undo(config_path: PathBuf, force: bool, repo: Option<String>) -> Result<()> {
     ui::info("Undoing the last pushed commit...");
+    persist_github_identity(&config_path, repo.as_deref())?;
     let config = cfg::load(&config_path)?;
 
     let effective_repo = vcs::undo_last_push(&config, force, repo.as_deref())?;
-
-    if repo.is_some() && config.github.repo_name.is_none() {
-        cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;
-        ui::info(&format!(
-            "Saved '{}' as default GitHub repository in config",
-            effective_repo
-        ));
-    }
+    persist_github_identity(&config_path, Some(&effective_repo))?;
 
     ui::success("Successfully reverted the last pushed commit!");
     Ok(())
+}
+
+async fn cmd_bootstrap(
+    config_path: PathBuf,
+    repo: String,
+    skip_packages: bool,
+    force: bool,
+) -> Result<()> {
+    ui::info(&format!("Bootstrapping this machine from {}...", repo));
+    if config_path.exists() {
+        apply_repo_spec(&config_path, &repo)?;
+    } else {
+        cmd_init(config_path.clone(), force, Some(repo.clone())).await?;
+    }
+
+    cmd_pull(config_path.clone(), false, force, false, Some(repo.clone())).await?;
+
+    let config = cfg::load(&config_path)?;
+    if snapshot_has_encrypted(&config) && !age_key_path(&config).exists() {
+        ui::warn(
+            "This snapshot has encrypted files. Copy ~/.config/age/keys.txt from the source machine before decrypt will work. Do not run `dotdipper secrets init` here — that generates a new key.",
+        );
+    }
+
+    cmd_install(config_path, false, None, skip_packages, force, false).await
 }
 
 async fn cmd_ignore(config_path: PathBuf, subcmd: IgnoreCommands) -> Result<()> {
@@ -838,14 +972,20 @@ async fn cmd_install(
     allow_outside_home: bool,
 ) -> Result<()> {
     ui::info("Generating installation scripts...");
+    install::hydrate_from_compiled(&config_path)
+        .with_context(|| "Failed to restore tracked files/packages from the compiled snapshot")?;
     let mut config = cfg::load(&config_path)?;
 
     let os = target_os.unwrap_or_else(install::detect_os);
-    let _ = install::restore_artifacts_from_compiled();
 
-    // Auto-discover packages if none are configured
-    if config.packages.common.is_empty() {
-        ui::info("No packages configured, discovering from dotfiles...");
+    // Auto-discover portable binaries when none were recorded.
+    // `packages.common` has defaults (git/vim/...) so emptiness of that list
+    // is not a useful signal that the user never configured packages.
+    if config.packages.requirements.is_empty() && !config.general.tracked_files.is_empty() {
+        ui::info("No package requirements recorded. Auto-discovering from tracked files...");
+
+        let mut scan_config = config.clone();
+        scan_config.general.tracked_files = install::paths_for_package_discovery(&config);
 
         let discovery_config = install::DiscoveryConfig {
             target_os: os.clone(),
@@ -854,7 +994,7 @@ async fn cmd_install(
             exclude_patterns: config.exclude_patterns.clone(),
         };
 
-        let result = install::discover::discover_packages(&config, &discovery_config)?;
+        let result = install::discover::discover_packages(&scan_config, &discovery_config)?;
 
         if result.has_packages() {
             ui::info(&format!(
@@ -862,11 +1002,9 @@ async fn cmd_install(
                 result.unique_packages().len()
             ));
 
-            // Add discovered packages to the config for script generation
-            let discovered_packages = result.unique_packages();
-            config.packages.common.extend(discovered_packages);
+            install::discover::update_config_with_packages(&config_path, &result)?;
+            config = cfg::load(&config_path)?;
 
-            // Show what was discovered
             ui::section("Auto-discovered packages:");
             for (binary, package, _) in install::discover::get_package_display_list(&result)
                 .iter()
@@ -1221,7 +1359,10 @@ async fn cmd_config(
         ui::success("Configuration edited");
     } else if show {
         let config = cfg::load(&config_path)?;
-        println!("{}", toml::to_string_pretty(&cfg::portable_config(&config))?);
+        println!(
+            "{}",
+            toml::to_string_pretty(&cfg::portable_config(&config))?
+        );
     } else {
         ui::hint("Use --edit to modify, --show to view, or --set key=value to set a value");
     }

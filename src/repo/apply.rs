@@ -93,7 +93,9 @@ pub fn apply(
                 }
                 Err(e) => {
                     ui::warn(&format!("Failed to decrypt {}: {}", rel_path.display(), e));
-                    ui::hint("Skipping encrypted file. Run 'dotdipper secrets init' if needed.");
+                    ui::hint(
+                        "Copy ~/.config/age/keys.txt from your original machine. Do not run 'secrets init' — that generates a new key that cannot decrypt existing files.",
+                    );
                     pb.inc(1);
                     actions.push(AppliedAction {
                         mode: AppliedMode::Skipped,

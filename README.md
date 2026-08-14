@@ -147,8 +147,8 @@ nix profile install nixpkgs#age
 ### First-Time Setup
 
 ```bash
-# 1. Initialize
-dotdipper init
+# 1. Initialize (optionally pin the GitHub repo that will hold the compiled snapshot)
+dotdipper init --repo you/dotfiles
 
 # 2. Setup secrets (optional)
 dotdipper secrets init
@@ -169,22 +169,43 @@ dotdipper undo
 
 ### New Machine Setup
 
+This is the core workflow: acquire the compiled snapshot, install matching packages, and place your dotfiles.
+
+**Machine A (source)**
+
 ```bash
-# 1. Install dotdipper (see above)
-# 2. Initialize
-dotdipper init
+dotdipper init --repo you/dotfiles
+dotdipper discover --write --packages
+dotdipper snapshot create -m "Initial snapshot"
+dotdipper push -m "Initial commit"
+```
 
-# 3. Pull your compiled repo (dotfiles + bundled install scripts + manifest)
-dotdipper pull
+**Machine B (new box)**
 
-# 4. Review and apply, or run the generated bootstrap:
+```bash
+# 1. Install dotdipper (see above) and authenticate GitHub over HTTPS
+gh auth login
+
+# 2. One-shot: init + pull + install packages + place dotfiles
+dotdipper bootstrap you/dotfiles
+
+# Equivalent step-by-step:
+#   dotdipper init --repo you/dotfiles
+#   dotdipper pull
+#   dotdipper install
+```
+
+If the snapshot includes encrypted `*.age` files, copy `~/.config/age/keys.txt` from Machine A **before** decrypt will work. Do **not** run `dotdipper secrets init` on Machine B — that generates a new key that cannot decrypt existing files.
+
+```bash
+# Optional: review before applying
 dotdipper diff --detailed
 dotdipper apply --interactive          # native engine (decrypts .age)
-# or
-dotdipper install --dry-run            # regenerate scripts
+dotdipper install --dry-run            # regenerate scripts without running
 dotdipper install --skip-packages      # only place dotfiles
-dotdipper install                      # packages + setup_dotfiles.sh
 ```
+
+`bootstrap` / `pull` reconstructs local `tracked_files`, packages, and GitHub identity from the compiled repo so the new machine is a full peer (`status`, `snapshot`, `push` all work). Package names are stored as portable binaries (`packages.requirements`) and mapped to the target OS at install time (for example `fd` → `fd-find` on Ubuntu).
 
 Scripts are written to `~/.config/dotdipper/install/` and copied into `compiled/install/` so they ship with `dotdipper push`. After pull you can also run:
 
@@ -192,7 +213,7 @@ Scripts are written to `~/.config/dotdipper/install/` and copied into `compiled/
 bash ~/.config/dotdipper/compiled/install/install.sh
 ```
 
-`install.sh` detects macOS / Ubuntu / Arch / Fedora at runtime (`DOTDIPPER_TARGET_OS` overrides). Encrypted `*.age` files are decrypted with `age` when a key is available.
+`install.sh` detects macOS / Ubuntu / Arch / Fedora at runtime (`DOTDIPPER_TARGET_OS` overrides).
 
 ---
 
@@ -629,6 +650,7 @@ dotdipper daemon stop               # Stop daemon
 ### GitHub Sync
 
 ```bash
+dotdipper bootstrap owner/repo      # New machine: init + pull + install
 dotdipper push [-m "msg"]           # Push to GitHub
 dotdipper pull [--apply]            # Pull from GitHub
 dotdipper undo [--force]            # Revert the last pushed commit

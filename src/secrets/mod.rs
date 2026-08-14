@@ -242,7 +242,7 @@ fn decrypt_age(config: &Config, input_path: &Path, output_path: Option<&Path>) -
 
     if !key_path.exists() {
         bail!(
-            "Age key not found at {}. Run 'dotdipper secrets init' first",
+            "Age key not found at {}. Copy this file from the machine that encrypted the files. Do not run 'dotdipper secrets init' — that generates a new key that cannot decrypt existing files.",
             key_path.display()
         );
     }
@@ -398,7 +398,10 @@ fn decrypt_age_to_memory(config: &Config, encrypted_path: &Path) -> Result<Vec<u
         });
 
     if !key_path.exists() {
-        bail!("Age key not found at {}", key_path.display());
+        bail!(
+            "Age key not found at {}. Copy this file from the machine that encrypted the files. Do not run 'dotdipper secrets init' — that generates a new key that cannot decrypt existing files.",
+            key_path.display()
+        );
     }
 
     // Decrypt using age to stdout

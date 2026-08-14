@@ -38,20 +38,11 @@ pub fn detect_os() -> String {
 
 const PACKAGE_SCRIPT_OSES: &[&str] = &["macos", "ubuntu", "arch", "fedora", "linux"];
 
+#[derive(Default)]
 pub struct ScriptRunOpts {
     pub skip_packages: bool,
     pub force: bool,
     pub target_os: Option<String>,
-}
-
-impl Default for ScriptRunOpts {
-    fn default() -> Self {
-        Self {
-            skip_packages: false,
-            force: false,
-            target_os: None,
-        }
-    }
 }
 
 pub fn generate_scripts(config: &Config, target_os: &str) -> Result<Vec<InstallScript>> {
@@ -72,7 +63,7 @@ pub fn generate_scripts_with_export(
     scripts.push(generate_dotfiles_script(&config)?);
 
     for os in PACKAGE_SCRIPT_OSES {
-        scripts.push(generate_package_script(&config.packages, os)?);
+        scripts.push(generate_package_script(&config, os)?);
     }
 
     let script_dir = crate::paths::install_dir()?;
@@ -107,38 +98,44 @@ fn is_fresh_init(config: &Config) -> bool {
         && config.packages == PackagesConfig::default()
 }
 
-fn load_bootstrap_config() -> Option<Config> {
-    let path = crate::paths::compiled_dir()
-        .ok()?
-        .join(".dotdipper")
-        .join("bootstrap.toml");
+fn load_bootstrap_config() -> Result<Option<Config>> {
+    let compiled = match crate::paths::compiled_dir() {
+        Ok(p) => p,
+        Err(_) => return Ok(None),
+    };
+    let path = compiled.join(".dotdipper").join("bootstrap.toml");
     if !path.exists() {
-        return None;
+        return Ok(None);
     }
-    let contents = fs::read_to_string(path).ok()?;
-    toml::from_str(&contents).ok()
+    let contents =
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let boot: Config =
+        toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?;
+    Ok(Some(boot))
 }
 
 /// On a freshly inited machine, use the bootstrap.toml that traveled with the compiled repo.
 fn config_for_scripts(local: &Config) -> Config {
-    let Some(boot) = load_bootstrap_config() else {
-        return local.clone();
-    };
-    if !is_fresh_init(local) {
-        return local.clone();
+    match load_bootstrap_config() {
+        Ok(Some(boot)) if is_fresh_init(local) => {
+            let mut merged = local.clone();
+            merged.general.default_mode = boot.general.default_mode;
+            merged.general.backup = boot.general.backup;
+            merged.packages = boot.packages;
+            merged.files = boot.files;
+            merged.secrets = boot.secrets;
+            merged
+        }
+        Ok(_) => local.clone(),
+        Err(e) => {
+            ui::warn(&format!("Could not load bootstrap.toml: {:#}", e));
+            local.clone()
+        }
     }
-    let mut merged = local.clone();
-    merged.general.default_mode = boot.general.default_mode;
-    merged.general.backup = boot.general.backup;
-    merged.packages = boot.packages;
-    merged.files = boot.files;
-    merged.secrets = boot.secrets;
-    merged
 }
 
 fn write_executable(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -163,12 +160,8 @@ pub fn restore_artifacts_from_compiled() -> Result<()> {
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::copy(&bundled, &dest).with_context(|| {
-            format!(
-                "Failed to restore manifest from {}",
-                bundled.display()
-            )
-        })?;
+        fs::copy(&bundled, &dest)
+            .with_context(|| format!("Failed to restore manifest from {}", bundled.display()))?;
     }
 
     let src_install = compiled.join("install");
@@ -193,6 +186,114 @@ pub fn restore_artifacts_from_compiled() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// After pull, reconstruct local config from the bundled bootstrap + manifest
+/// so machine B is a full peer (status/snapshot/push/install all work).
+pub fn hydrate_from_compiled(config_path: &Path) -> Result<bool> {
+    restore_artifacts_from_compiled()?;
+    let mut config = crate::cfg::load(config_path)?;
+    let mut changed = false;
+    let had_no_tracked = config.general.tracked_files.is_empty();
+
+    if let Some(boot) = load_bootstrap_config()? {
+        if config.general.tracked_files.is_empty() && !boot.general.tracked_files.is_empty() {
+            config.general.tracked_files = boot.general.tracked_files.clone();
+            changed = true;
+        }
+        if config.files.is_empty() && !boot.files.is_empty() {
+            config.files = boot.files.clone();
+            changed = true;
+        }
+        if config.packages == PackagesConfig::default()
+            && boot.packages != PackagesConfig::default()
+        {
+            config.packages = boot.packages.clone();
+            changed = true;
+        }
+        if config.packages.requirements.is_empty() && !boot.packages.requirements.is_empty() {
+            config.packages.requirements = boot.packages.requirements.clone();
+            changed = true;
+        }
+        if config.secrets.is_none() && boot.secrets.is_some() {
+            config.secrets = boot.secrets.clone();
+            changed = true;
+        }
+        if config.github.username.is_none() && boot.github.username.is_some() {
+            config.github.username = boot.github.username.clone();
+            changed = true;
+        }
+        if config.github.repo_name.is_none() && boot.github.repo_name.is_some() {
+            config.github.repo_name = boot.github.repo_name.clone();
+            changed = true;
+        }
+        if had_no_tracked {
+            config.general.default_mode = boot.general.default_mode;
+            config.general.backup = boot.general.backup;
+            changed = true;
+        }
+    }
+
+    if config.general.tracked_files.is_empty() {
+        let candidates = [
+            crate::paths::manifest_file().ok(),
+            crate::paths::compiled_bundled_manifest().ok(),
+        ];
+        for path in candidates.into_iter().flatten() {
+            if !path.exists() {
+                continue;
+            }
+            if let Ok(manifest) = crate::hash::Manifest::load(&path) {
+                if !manifest.files.is_empty() {
+                    let mut files: Vec<PathBuf> = manifest
+                        .files
+                        .keys()
+                        .map(|rel| PathBuf::from(format!("~/{}", rel.display())))
+                        .collect();
+                    files.sort();
+                    config.general.tracked_files = files;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if changed {
+        crate::cfg::save(config_path, &config)?;
+        ui::info("Restored tracked files, packages, and GitHub identity from the pulled repo");
+    }
+    Ok(changed)
+}
+
+/// Resolve tracked paths to files that can be analyzed for package discovery.
+/// Missing home copies fall back to the compiled snapshot so Machine B can
+/// discover packages before `setup_dotfiles.sh` has run.
+pub fn paths_for_package_discovery(config: &Config) -> Vec<PathBuf> {
+    let home = dirs::home_dir();
+    let compiled = crate::paths::compiled_dir().ok();
+    config
+        .general
+        .tracked_files
+        .iter()
+        .map(|tracked| {
+            let abs = match &home {
+                Some(h) => crate::cfg::expand_tracked_path(tracked, h),
+                None => tracked.clone(),
+            };
+            if abs.exists() {
+                return abs;
+            }
+            if let (Some(h), Some(c)) = (&home, &compiled) {
+                let rel = crate::cfg::home_relative_path(&abs, h).unwrap_or_else(|| abs.clone());
+                let compiled_copy = c.join(rel);
+                if compiled_copy.exists() {
+                    return compiled_copy;
+                }
+            }
+            abs
+        })
+        .collect()
 }
 
 fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScript> {
@@ -274,12 +375,14 @@ if ! command -v git >/dev/null 2>&1; then
     log_warn "Git is not installed; package recipes that need it may fail"
 fi
 
+pkg_status=0
 if [[ "${{DOTDIPPER_SKIP_PACKAGES:-0}}" == "1" ]]; then
     log_info "Skipping package installation"
 elif [[ -f "$INSTALL_DIR/install_${{TARGET_OS}}.sh" ]]; then
     log_info "Installing packages..."
     if ! bash "$INSTALL_DIR/install_${{TARGET_OS}}.sh"; then
-        log_warn "Package installation failed or package manager missing; continuing with dotfiles"
+        log_warn "Package installation failed; continuing with dotfiles"
+        pkg_status=1
     fi
 else
     log_warn "Package installation script not found for $TARGET_OS"
@@ -290,6 +393,11 @@ if [[ -f "$INSTALL_DIR/setup_dotfiles.sh" ]]; then
     DOTDIPPER_COMPILED="$COMPILED_DIR" bash "$INSTALL_DIR/setup_dotfiles.sh"
 else
     log_warn "Dotfiles setup script not found"
+fi
+
+if [[ "$pkg_status" -ne 0 ]]; then
+    log_error "Dotfiles were applied, but package installation did not fully succeed"
+    exit 1
 fi
 
 log_info "Installation complete!"
@@ -306,7 +414,7 @@ log_info "Run 'dotdipper status' to check your dotfiles"
     })
 }
 
-fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result<InstallScript> {
+fn generate_package_script(config: &Config, target_os: &str) -> Result<InstallScript> {
     let (package_manager, install_cmd, update_cmd) = match target_os {
         "macos" => ("brew", "brew install", "brew update"),
         "ubuntu" | "debian" => ("apt", "sudo apt install -y", "sudo apt update"),
@@ -315,7 +423,24 @@ fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result
         _ => ("apt", "sudo apt install -y", "sudo apt update"),
     };
 
-    let mut all_packages = packages.common.clone();
+    let packages = &config.packages;
+    let mut all_packages = Vec::new();
+    let mapper = package_map::PackageMapper::new(target_os).ok();
+    let mut push_mapped = |name: &str| {
+        if let Some(mapper) = &mapper {
+            if let Some(pkg) = mapper.map_binary(name) {
+                all_packages.push(pkg);
+                return;
+            }
+        }
+        all_packages.push(name.to_string());
+    };
+    for name in &packages.common {
+        push_mapped(name);
+    }
+    for name in &packages.requirements {
+        push_mapped(name);
+    }
 
     match target_os {
         "macos" => all_packages.extend(packages.macos.clone()),
@@ -327,10 +452,20 @@ fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result
             all_packages.extend(packages.linux.clone());
             all_packages.extend(packages.arch.clone());
         }
+        "fedora" | "redhat" => {
+            all_packages.extend(packages.linux.clone());
+            all_packages.extend(packages.fedora.clone());
+        }
         _ => all_packages.extend(packages.linux.clone()),
     }
 
-    // Remove duplicates
+    if resolve_install_entries(config)
+        .map(|e| e.iter().any(|x| x.encrypted))
+        .unwrap_or(false)
+    {
+        all_packages.push("age".to_string());
+    }
+
     all_packages.sort();
     all_packages.dedup();
 
@@ -384,8 +519,8 @@ is_installed() {{
 
 # Check if package manager exists
 if ! command -v {} &> /dev/null; then
-    log_warn "Package manager '{}' not found; skipping package install"
-    exit 0
+    log_error "Package manager '{}' not found"
+    exit 1
 fi
 
 # Update package lists
@@ -397,7 +532,7 @@ packages=(
 {}
 )
 
-# Install packages
+failed=0
 for package in "${{packages[@]}}"; do
     if is_installed "$package"; then
         log_info "Already installed: $package"
@@ -407,8 +542,14 @@ for package in "${{packages[@]}}"; do
         log_info "Installed $package"
     else
         log_error "Failed to install $package"
+        failed=$((failed + 1))
     fi
 done
+
+if [[ "$failed" -ne 0 ]]; then
+    log_error "$failed package(s) failed to install"
+    exit 1
+fi
 
 log_info "Package installation complete"
 "#,
@@ -741,6 +882,7 @@ copied=0
 decrypted=0
 missing=0
 skipped=0
+decrypt_failed=0
 
 while IFS=$'\t' read -r rel mode; do
   [[ -z "$rel" ]] && continue
@@ -787,13 +929,13 @@ while IFS=$'\t' read -r rel mode; do
       ;;
     decrypt)
       if ! command -v age >/dev/null 2>&1; then
-        log_warn "Skipping encrypted $rel (age not installed)"
-        skipped=$((skipped + 1))
+        log_error "Cannot decrypt $rel: 'age' is not installed"
+        decrypt_failed=$((decrypt_failed + 1))
         continue
       fi
       if [[ ! -f "$AGE_KEY" ]]; then
-        log_warn "Skipping encrypted $rel (no age key at $AGE_KEY)"
-        skipped=$((skipped + 1))
+        log_error "Cannot decrypt $rel: copy your original age identity to $AGE_KEY (do not run 'secrets init' — that creates a new key)"
+        decrypt_failed=$((decrypt_failed + 1))
         continue
       fi
       if [[ -e "$target_file" || -L "$target_file" ]]; then
@@ -802,7 +944,7 @@ while IFS=$'\t' read -r rel mode; do
       fi
       if ! age -d -i "$AGE_KEY" -o "$target_file" "$source_file"; then
         log_error "Failed to decrypt $rel"
-        skipped=$((skipped + 1))
+        decrypt_failed=$((decrypt_failed + 1))
         continue
       fi
       log_info "Decrypted $target_rel"
@@ -826,7 +968,11 @@ done <<'DOTDIPPER_MANIFEST_EOF'"#
     }
     lines.push("DOTDIPPER_MANIFEST_EOF".to_string());
     lines.push(
-        r#"log_info "Summary: linked=$linked copied=$copied decrypted=$decrypted skipped=$skipped missing=$missing""#
+        r#"log_info "Summary: linked=$linked copied=$copied decrypted=$decrypted skipped=$skipped missing=$missing decrypt_failed=$decrypt_failed"
+if [[ "$decrypt_failed" -ne 0 ]]; then
+  log_error "$decrypt_failed encrypted file(s) were not restored. Copy ~/.config/age/keys.txt from your old machine, then re-run install."
+  exit 1
+fi"#
             .to_string(),
     );
     lines.join("\n")
@@ -1127,7 +1273,11 @@ common = ["ripgrep-from-bootstrap"]
 
         let installed = home.join(".vimrc");
         assert!(installed.exists());
-        assert!(installed.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(installed
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert_eq!(fs::read_to_string(&installed).unwrap(), "set nocompatible");
     }
 
@@ -1147,5 +1297,167 @@ common = ["ripgrep-from-bootstrap"]
 
         assert!(dd.join("manifest.lock").exists());
         assert!(dd.join("install/install.sh").exists());
+    }
+
+    fn copy_tree(src: &Path, dst: &Path) {
+        fs::create_dir_all(dst).unwrap();
+        for entry in fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let to = dst.join(entry.file_name());
+            if entry.path().is_dir() {
+                copy_tree(&entry.path(), &to);
+            } else {
+                fs::copy(entry.path(), to).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn machine_b_hydrates_from_machine_a_snapshot() {
+        let tmp = TempDir::new().unwrap();
+        let bundle = tmp.path().join("compiled-bundle");
+
+        {
+            let (_guard, home, dd) = EnvGuard::isolate(&tmp.path().join("machine-a"));
+            fs::write(home.join(".vimrc"), b"set number").unwrap();
+            fs::write(home.join(".zshrc"), b"export FOO=1").unwrap();
+
+            let config_path = dd.join("config.toml");
+            let mut config = Config::default();
+            config.github.username = Some("alice".into());
+            config.github.repo_name = Some("dotfiles".into());
+            config.packages.requirements = vec!["ripgrep".into(), "fd".into()];
+            config.general.tracked_files = vec![home.join(".vimrc"), home.join(".zshrc")];
+            crate::cfg::save(&config_path, &config).unwrap();
+            fs::create_dir_all(dd.join("compiled")).unwrap();
+            let config = crate::cfg::load(&config_path).unwrap();
+            crate::repo::snapshot(&config, true).unwrap();
+            copy_tree(&dd.join("compiled"), &bundle);
+        }
+
+        {
+            let (_guard, home, dd) = EnvGuard::isolate(&tmp.path().join("machine-b"));
+            let config_path = dd.join("config.toml");
+            crate::cfg::init(config_path.clone(), true).unwrap();
+            copy_tree(&bundle, &dd.join("compiled"));
+
+            let changed = hydrate_from_compiled(&config_path).unwrap();
+            assert!(
+                changed,
+                "fresh machine should hydrate from compiled snapshot"
+            );
+
+            let config = crate::cfg::load(&config_path).unwrap();
+            assert!(
+                config
+                    .general
+                    .tracked_files
+                    .iter()
+                    .any(|p| p.ends_with(".vimrc")),
+                "tracked_files should include .vimrc, got {:?}",
+                config.general.tracked_files
+            );
+            assert_eq!(config.github.username.as_deref(), Some("alice"));
+            assert_eq!(config.github.repo_name.as_deref(), Some("dotfiles"));
+            assert!(config
+                .packages
+                .requirements
+                .contains(&"ripgrep".to_string()));
+            assert!(config.packages.requirements.contains(&"fd".to_string()));
+
+            fs::write(home.join(".vimrc"), b"local only").unwrap();
+            let kept = crate::repo::snapshot(&config, true).unwrap();
+            assert!(
+                kept.file_count >= 2,
+                "partial local files must not drop missing tracked paths"
+            );
+            let manifest = Manifest::load(&dd.join("manifest.lock")).unwrap();
+            assert!(
+                manifest.files.keys().any(|p| p.ends_with(".zshrc")),
+                "missing .zshrc must be carried forward, got {:?}",
+                manifest.files.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(
+                fs::read_to_string(dd.join("compiled/.zshrc")).unwrap(),
+                "export FOO=1",
+                "compiled copy of a missing home file must be left intact"
+            );
+
+            let scripts = generate_scripts_with_export(&config, "ubuntu", false).unwrap();
+            let ubuntu = scripts
+                .iter()
+                .find(|s| s.name == "install_ubuntu.sh")
+                .unwrap();
+            assert!(
+                ubuntu.content.contains("fd-find"),
+                "ubuntu script should map portable fd -> fd-find"
+            );
+            assert!(ubuntu.content.contains("ripgrep") || ubuntu.content.contains("rg"));
+
+            let setup = scripts
+                .iter()
+                .find(|s| s.name == "setup_dotfiles.sh")
+                .unwrap();
+            let status = std::process::Command::new("bash")
+                .arg(&setup.path)
+                .env("HOME", &home)
+                .env("DOTDIPPER_HOME", &dd)
+                .env("DOTDIPPER_COMPILED", dd.join("compiled"))
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "setup_dotfiles.sh should succeed on machine B"
+            );
+            assert!(home.join(".zshrc").exists());
+            assert_eq!(
+                fs::read_to_string(home.join(".zshrc")).unwrap(),
+                "export FOO=1"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn setup_script_fails_closed_without_age_key_but_still_links_plaintext() {
+        let tmp = TempDir::new().unwrap();
+        let (_guard, home, dd) = EnvGuard::isolate(tmp.path());
+
+        let compiled = dd.join("compiled");
+        fs::create_dir_all(compiled.join(".config")).unwrap();
+        fs::write(compiled.join(".vimrc"), b"set number").unwrap();
+        fs::write(compiled.join(".config/secret.age"), b"ENC").unwrap();
+
+        let mut manifest = Manifest::new();
+        manifest.add_file(file_hash(".vimrc"));
+        manifest.add_file(file_hash(".config/secret.age"));
+        manifest.save(&dd.join("manifest.lock")).unwrap();
+
+        let config = Config::default();
+        let script = generate_dotfiles_script(&config).unwrap();
+        let script_path = tmp.path().join("setup_dotfiles.sh");
+        fs::write(&script_path, &script.content).unwrap();
+
+        let status = std::process::Command::new("bash")
+            .arg(&script_path)
+            .env("HOME", &home)
+            .env("DOTDIPPER_HOME", &dd)
+            .env("DOTDIPPER_COMPILED", &compiled)
+            .env("PATH", "/usr/bin:/bin")
+            .status()
+            .unwrap();
+        assert!(
+            !status.success(),
+            "missing age key must fail the setup script"
+        );
+        assert!(
+            home.join(".vimrc").exists(),
+            "plaintext files should still be linked"
+        );
+        assert!(
+            script.content.contains("do not run 'secrets init'"),
+            "script must warn against generating a new age key"
+        );
     }
 }

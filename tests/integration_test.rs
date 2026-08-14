@@ -28,8 +28,23 @@ fn test_version_command() {
 #[test]
 fn test_all_subcommands_have_help() {
     let subcommands = [
-        "init", "discover", "status", "diff", "apply", "secrets", "snapshot", "profile", "remote",
-        "daemon", "push", "pull", "undo", "install", "doctor", "config",
+        "init",
+        "discover",
+        "status",
+        "diff",
+        "apply",
+        "secrets",
+        "snapshot",
+        "profile",
+        "remote",
+        "daemon",
+        "push",
+        "pull",
+        "undo",
+        "install",
+        "bootstrap",
+        "doctor",
+        "config",
     ];
 
     for subcmd in subcommands {
@@ -47,6 +62,18 @@ fn test_undo_help_describes_revert_behavior() {
         .success()
         .stdout(predicate::str::contains("revert"))
         .stdout(predicate::str::contains("--force"));
+}
+
+#[test]
+fn test_bootstrap_help_describes_new_machine_flow() {
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.arg("bootstrap")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("init"))
+        .stdout(predicate::str::contains("pull"))
+        .stdout(predicate::str::contains("install"));
 }
 
 // ============================================

@@ -80,7 +80,8 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
         }
 
         if !has_changes {
-            ui::info("No changes detected, skipping snapshot");
+            ui::info("No file content changes; refreshing bootstrap artifacts");
+            refresh_shipped_artifacts(config, &current_manifest)?;
             return Ok(Snapshot {
                 file_count: current_manifest.files.len(),
             });
@@ -91,6 +92,18 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     let mut manifest = Manifest::new();
     // Hash all tracked files (directories are expanded)
     let hashes = hash_files(&crate::cfg::existing_tracked_files(config)?, true)?;
+    if hashes.is_empty() && manifest_path.exists() {
+        let current = Manifest::load(&manifest_path)?;
+        if !current.files.is_empty() {
+            ui::warn(
+                "No tracked files present on this machine; keeping the existing snapshot instead of wiping it",
+            );
+            refresh_shipped_artifacts(config, &current)?;
+            return Ok(Snapshot {
+                file_count: current.files.len(),
+            });
+        }
+    }
 
     // Copy files to repo and add to manifest
     let repo_path = get_compiled_path()?;
@@ -124,28 +137,99 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
     pb.finish_with_message("Snapshot created");
 
-    // Save manifest (local + bundled copy that travels with the compiled git repo)
-    manifest.save(&manifest_path)?;
-    let bundled_dir = repo_path.join(".dotdipper");
-    fs::create_dir_all(&bundled_dir)?;
-    manifest.save(&bundled_dir.join("manifest.lock"))?;
-    if let Err(e) = write_bootstrap_toml(&bundled_dir, config) {
-        ui::warn(&format!("Could not write bootstrap.toml: {:#}", e));
-    }
+    carry_forward_missing_entries(&mut manifest, config, &repo_path)?;
 
-    write_push_gitignore(&repo_path, config)?;
-
-    // Keep bootstrap scripts in the compiled repo so `push` ships them.
-    if let Err(e) = crate::install::generate_scripts(config, &crate::install::detect_os()) {
-        ui::warn(&format!(
-            "Could not refresh install scripts after snapshot: {:#}",
-            e
-        ));
-    }
+    refresh_shipped_artifacts(config, &manifest)?;
 
     Ok(Snapshot {
         file_count: manifest.files.len(),
     })
+}
+
+fn refresh_shipped_artifacts(config: &Config, manifest: &Manifest) -> Result<()> {
+    let repo_path = get_compiled_path()?;
+    fs::create_dir_all(&repo_path)?;
+    let manifest_path = get_manifest_path()?;
+    manifest.save(&manifest_path)?;
+    let bundled_dir = repo_path.join(".dotdipper");
+    fs::create_dir_all(&bundled_dir)?;
+    manifest.save(&bundled_dir.join("manifest.lock"))?;
+    write_bootstrap_toml(&bundled_dir, config)?;
+
+    write_push_gitignore(&repo_path, config)?;
+
+    crate::install::generate_scripts(config, &crate::install::detect_os())?;
+    Ok(())
+}
+
+fn load_previous_manifest() -> Option<Manifest> {
+    let candidates = [
+        get_manifest_path().ok(),
+        crate::paths::compiled_bundled_manifest().ok(),
+    ];
+    for path in candidates.into_iter().flatten() {
+        if path.exists() {
+            if let Ok(manifest) = Manifest::load(&path) {
+                if !manifest.files.is_empty() {
+                    return Some(manifest);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_tracked_rel(rel: &Path, config: &Config, home: &Path) -> bool {
+    for tracked in &config.general.tracked_files {
+        let abs = crate::cfg::expand_tracked_path(tracked, home);
+        if let Some(tracked_rel) = crate::cfg::home_relative_path(&abs, home) {
+            if rel == tracked_rel.as_path() || rel.starts_with(&tracked_rel) {
+                return true;
+            }
+        }
+        let fallback = abs.strip_prefix(home).unwrap_or(abs.as_path());
+        if rel == fallback || rel.starts_with(fallback) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Keep compiled copies of still-tracked files that are missing from $HOME
+/// (fresh machine before install, or `.age` after decrypt-to-plaintext).
+fn carry_forward_missing_entries(
+    manifest: &mut Manifest,
+    config: &Config,
+    compiled: &Path,
+) -> Result<()> {
+    let Some(old) = load_previous_manifest() else {
+        return Ok(());
+    };
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let mut kept = 0usize;
+    for (rel, file_hash) in &old.files {
+        if manifest.has_file(rel) {
+            continue;
+        }
+        if !is_tracked_rel(rel, config, &home) {
+            continue;
+        }
+        if compiled.join(rel).is_file() {
+            ui::warn(&format!(
+                "Keeping compiled copy of {} (not present in $HOME)",
+                rel.display()
+            ));
+            manifest.add_file(file_hash.clone());
+            kept += 1;
+        }
+    }
+    if kept > 0 {
+        ui::info(&format!(
+            "Preserved {} tracked file(s) from the existing snapshot",
+            kept
+        ));
+    }
+    Ok(())
 }
 
 pub fn status(config: &Config) -> Result<Status> {
@@ -271,8 +355,6 @@ fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
 
 fn write_bootstrap_toml(bundled_dir: &Path, config: &Config) -> Result<()> {
     let mut boot = crate::cfg::portable_config(config);
-    boot.github = crate::cfg::GitHubConfig::default();
-    boot.general.tracked_files.clear();
     boot.general.active_profile = None;
     boot.hooks = None;
     boot.daemon = None;

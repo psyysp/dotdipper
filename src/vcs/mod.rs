@@ -76,8 +76,7 @@ pub fn push(
     repo_override: Option<&str>,
 ) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let (username, repo_name) = resolve_identity(config, repo_override)?;
 
     // Ensure git is initialized
     init_repo(&repo_path)?;
@@ -107,6 +106,7 @@ pub fn push(
     if status_output.stdout.is_empty() {
         ui::info("No changes to commit");
     } else {
+        ensure_git_identity(&repo_path)?;
         // Commit changes
         let commit_message = message.unwrap_or_else(|| {
             format!(
@@ -157,9 +157,12 @@ pub fn push(
     }
 
     if let Err(e) = ensure_github_repo(config, &repo_path, &username, &repo_name) {
-        ui::warn(&format!("Could not create GitHub repo: {}", e));
-        ui::hint("Create a GitHub repository manually and add it as a remote");
-        return Ok(repo_name);
+        anyhow::bail!(
+            "Could not create or access GitHub repo {}/{}: {:#}. Create it with `gh repo create` or check `gh auth login`.",
+            username,
+            repo_name,
+            e
+        );
     }
 
     // Push to remote
@@ -242,8 +245,7 @@ pub fn push(
 
 pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let (username, repo_name) = resolve_identity(config, repo_override)?;
 
     // If repo doesn't exist, clone it
     if !repo_path.join(".git").exists() {
@@ -307,8 +309,7 @@ pub fn pull(config: &Config, repo_override: Option<&str>) -> Result<String> {
 
 pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
-    let repo_name = resolve_repo_name(config, repo_override);
-    let username = resolve_github_username(config)?;
+    let (username, repo_name) = resolve_identity(config, repo_override)?;
 
     if !repo_path.join(".git").exists() {
         clone_repo(&username, &repo_name, &repo_path)?;
@@ -589,8 +590,60 @@ fn ensure_github_repo(
     Ok(())
 }
 
+fn github_remote_url(username: &str, repo_name: &str) -> String {
+    match git_protocol() {
+        GitProtocol::Ssh => format!("git@github.com:{}/{}.git", username, repo_name),
+        GitProtocol::Https => format!("https://github.com/{}/{}.git", username, repo_name),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitProtocol {
+    Https,
+    Ssh,
+}
+
+fn git_protocol() -> GitProtocol {
+    if let Ok(output) = Command::new("gh")
+        .args(["config", "get", "git_protocol"])
+        .output()
+    {
+        if output.status.success() {
+            let proto = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_ascii_lowercase();
+            if proto == "ssh" {
+                return GitProtocol::Ssh;
+            }
+            if proto == "https" {
+                return GitProtocol::Https;
+            }
+        }
+    }
+    // New machines almost always have `gh auth login` (HTTPS) before SSH keys.
+    GitProtocol::Https
+}
+
+/// Parse `owner/repo`, a repo name, or a GitHub URL into (optional owner, name).
+pub fn parse_github_repo(spec: &str) -> (Option<String>, String) {
+    let spec = spec.trim();
+    let spec = spec.trim_end_matches(".git");
+    let spec = spec
+        .trim_start_matches("https://github.com/")
+        .trim_start_matches("http://github.com/")
+        .trim_start_matches("git@github.com:");
+    if let Some((owner, name)) = spec.split_once('/') {
+        let owner = owner.trim();
+        let name = name.trim();
+        if !owner.is_empty() && !name.is_empty() {
+            return (Some(owner.to_string()), name.to_string());
+        }
+    }
+    (None, spec.to_string())
+}
+
 fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
-    let remote_url = format!("git@github.com:{}/{}.git", username, repo_name);
+    let remote_url = github_remote_url(username, repo_name);
 
     let output = Command::new("git")
         .args(["remote", "add", "origin", remote_url.as_str()])
@@ -601,7 +654,6 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("already exists") {
-            // Update existing remote
             let output = Command::new("git")
                 .args(["remote", "set-url", "origin", remote_url.as_str()])
                 .current_dir(repo_path)
@@ -623,28 +675,125 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
 }
 
 fn clone_repo(username: &str, repo_name: &str, dest_path: &Path) -> Result<()> {
-    let repo_url = format!("git@github.com:{}/{}.git", username, repo_name);
-
-    ui::info(&format!("Cloning repository from {}", repo_url));
-
-    // Create parent directory
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let output = Command::new("git")
-        .args(["clone", repo_url.as_str(), dest_path.to_str().unwrap()])
+    let spec = format!("{}/{}", username, repo_name);
+    ui::info(&format!("Cloning {}", spec));
+
+    // Prefer `gh repo clone` — uses the user's authenticated protocol (HTTPS or SSH).
+    if Command::new("gh")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let dest = dest_path.to_str().context("Invalid destination path")?;
+        let output = Command::new("gh")
+            .args(["repo", "clone", spec.as_str(), dest])
+            .output()
+            .context("Failed to clone repository with gh")?;
+        if output.status.success() {
+            ui::success("Repository cloned successfully");
+            return Ok(());
+        }
+        ui::warn(&format!(
+            "gh repo clone failed ({}); trying git clone",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let https_url = format!("https://github.com/{}/{}.git", username, repo_name);
+    let ssh_url = format!("git@github.com:{}/{}.git", username, repo_name);
+    let dest = dest_path.to_str().context("Invalid destination path")?;
+
+    let https = Command::new("git")
+        .args(["clone", https_url.as_str(), dest])
         .output()
         .context("Failed to clone repository")?;
+    if https.status.success() {
+        ui::success("Repository cloned successfully");
+        return Ok(());
+    }
 
+    ui::warn("HTTPS clone failed; trying SSH");
+    let ssh = Command::new("git")
+        .args(["clone", ssh_url.as_str(), dest])
+        .output()
+        .context("Failed to clone repository")?;
+    if ssh.status.success() {
+        ui::success("Repository cloned successfully");
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "Failed to clone {}/{}. Authenticate with `gh auth login` (HTTPS) or set up an SSH key.\nHTTPS: {}\nSSH: {}",
+        username,
+        repo_name,
+        String::from_utf8_lossy(&https.stderr).trim(),
+        String::from_utf8_lossy(&ssh.stderr).trim()
+    );
+}
+
+fn git_config_value(repo_path: &Path, key: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", key])
+        .current_dir(repo_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn set_git_config(repo_path: &Path, key: &str, value: &str) -> Result<()> {
+    let output = Command::new("git")
+        .args(["config", key, value])
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("Failed to set git config {}", key))?;
     if !output.status.success() {
         anyhow::bail!(
-            "Failed to clone: {}",
+            "Failed to set git config {}: {}",
+            key,
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    Ok(())
+}
 
-    ui::success("Repository cloned successfully");
+/// New machines often have `gh auth login` but no `user.name`/`user.email`.
+fn ensure_git_identity(repo_path: &Path) -> Result<()> {
+    let mut name = git_config_value(repo_path, "user.name");
+    let mut email = git_config_value(repo_path, "user.email");
+    if name.is_some() && email.is_some() {
+        return Ok(());
+    }
+
+    if let Ok(login) = get_github_username() {
+        if name.is_none() {
+            set_git_config(repo_path, "user.name", &login)?;
+            name = Some(login.clone());
+        }
+        if email.is_none() {
+            let generated = format!("{}@users.noreply.github.com", login);
+            set_git_config(repo_path, "user.email", &generated)?;
+            email = Some(generated);
+        }
+    }
+
+    if name.is_none() || email.is_none() {
+        anyhow::bail!(
+            "Git user.name and user.email must be set to commit. Run `git config --global user.name \"Your Name\"` and `git config --global user.email you@example.com`, or authenticate with `gh auth login`."
+        );
+    }
     Ok(())
 }
 
@@ -668,6 +817,19 @@ fn resolve_repo_name(config: &Config, repo_override: Option<&str>) -> String {
         .map(ToOwned::to_owned)
         .or_else(|| config.github.repo_name.clone())
         .unwrap_or_else(|| "dotfiles".to_string())
+}
+
+pub fn resolve_identity(config: &Config, repo_override: Option<&str>) -> Result<(String, String)> {
+    let parsed = repo_override.map(parse_github_repo);
+    let username = match parsed.as_ref().and_then(|(owner, _)| owner.clone()) {
+        Some(owner) => owner,
+        None => resolve_github_username(config)?,
+    };
+    let repo_name = match parsed {
+        Some((_, name)) if !name.is_empty() => name,
+        _ => resolve_repo_name(config, None),
+    };
+    Ok((username, repo_name))
 }
 
 fn resolve_github_username(config: &Config) -> Result<String> {
@@ -919,5 +1081,26 @@ mod tests {
 
         let err = ensure_head_is_not_merge_commit(temp_dir.path()).unwrap_err();
         assert!(err.to_string().contains("merge commit"));
+    }
+
+    #[test]
+    fn parse_github_repo_accepts_owner_name_and_urls() {
+        assert_eq!(
+            parse_github_repo("alice/dotfiles"),
+            (Some("alice".into()), "dotfiles".into())
+        );
+        assert_eq!(
+            parse_github_repo("https://github.com/alice/dotfiles.git"),
+            (Some("alice".into()), "dotfiles".into())
+        );
+        assert_eq!(
+            parse_github_repo("git@github.com:alice/dotfiles.git"),
+            (Some("alice".into()), "dotfiles".into())
+        );
+        assert_eq!(parse_github_repo("dotfiles"), (None, "dotfiles".into()));
+        assert_eq!(
+            parse_github_repo("  bob/my-dots  "),
+            (Some("bob".into()), "my-dots".into())
+        );
     }
 }

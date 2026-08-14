@@ -111,6 +111,10 @@ pub struct GitHubConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackagesConfig {
+    /// Portable tool/binary names (mapped to the target OS at install time).
+    #[serde(default)]
+    pub requirements: Vec<String>,
+
     #[serde(default)]
     pub common: Vec<String>,
 
@@ -125,6 +129,9 @@ pub struct PackagesConfig {
 
     #[serde(default)]
     pub arch: Vec<String>,
+
+    #[serde(default)]
+    pub fedora: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,6 +263,7 @@ impl Default for GitHubConfig {
 impl Default for PackagesConfig {
     fn default() -> Self {
         PackagesConfig {
+            requirements: vec![],
             common: vec![
                 "git".to_string(),
                 "vim".to_string(),
@@ -267,6 +275,7 @@ impl Default for PackagesConfig {
             linux: vec![],
             ubuntu: vec![],
             arch: vec![],
+            fedora: vec![],
         }
     }
 }
@@ -301,6 +310,8 @@ pub const DEFAULT_IGNORE_CONTENTS: &str = "\
 # Patterns prefixed with ~/ are anchored to $HOME.
 
 # --- Dotdipper internal (generated / runtime) ---
+~/.config/dotdipper/config.toml
+~/.config/dotdipper/.dotdipperignore
 ~/.config/dotdipper/compiled/**
 ~/.config/dotdipper/cache/**
 ~/.config/dotdipper/install/**
