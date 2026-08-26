@@ -19,9 +19,10 @@ pub fn discover(config: &Config, show_all: bool) -> Result<Vec<PathBuf>> {
         discover_pattern(&expanded, &excluder, &mut discovered, show_all, is_glob)?;
     }
 
-    // Re-add already tracked files (they were explicitly chosen)
+    // Re-add already tracked files (they were explicitly chosen).
+    // Only regular files: sockets/fifos from older discover runs must not survive.
     for file in &config.general.tracked_files {
-        if file.exists()
+        if file.is_file()
             && !discovered.contains(file)
             && should_readd_tracked_file(file, &config.include_patterns, &excluder, &home, show_all)
         {
@@ -77,8 +78,8 @@ fn discover_pattern(
         {
             let path = entry.path();
 
-            // Only track files, not bare directories
-            if path.is_dir() {
+            // Only track regular files (skip directories, sockets, fifos, devices)
+            if !entry.file_type().is_file() {
                 continue;
             }
 

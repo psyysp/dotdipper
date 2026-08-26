@@ -251,9 +251,11 @@ pub fn push(
     }
 
     if let Err(e) = ensure_github_repo(config, &repo_path, &target.username, &target.repo_name) {
-        ui::warn(&format!("Could not create GitHub repo: {}", e));
         ui::hint("Create a GitHub repository manually and add it as a remote");
-        return Ok(target.repo_name);
+        anyhow::bail!(
+            "Changes were committed locally but NOT pushed: could not prepare GitHub repo/remote: {:#}",
+            e
+        );
     }
 
     // Push to remote
@@ -782,6 +784,10 @@ fn ensure_github_repo(
             &format!("Create private GitHub repository '{}'?", repo_name),
             true,
         ) {
+            // Create the repo standalone (no --source): gh's --source flag tries
+            // to add an "origin" remote itself and fails if one already exists
+            // (e.g. after changing github.repo_name). add_remote below handles
+            // wiring/retargeting origin idempotently.
             let mut create_args = vec!["repo", "create", repo_name];
 
             if config.github.private {
@@ -789,9 +795,6 @@ fn ensure_github_repo(
             } else {
                 create_args.push("--public");
             }
-
-            create_args.push("--source");
-            create_args.push(".");
 
             let output = Command::new("gh")
                 .args(&create_args)

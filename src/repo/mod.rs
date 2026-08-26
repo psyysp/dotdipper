@@ -111,6 +111,16 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     for path in tracked_files {
         let rel = path.strip_prefix(&home).unwrap_or(path);
         if path.exists() {
+            // Skip non-regular files (sockets, fifos, devices) that can appear
+            // in tracked lists written by older discover runs.
+            if !path.is_file() {
+                ui::warn(&format!(
+                    "Skipping non-regular file {} (socket/fifo/device)",
+                    path.display()
+                ));
+                pb_hash.inc(1);
+                continue;
+            }
             // Never snapshot decrypted plaintext over an encrypted store entry
             if compiled_has_encrypted_for_plain(&repo_path, rel) {
                 ui::warn(&format!(
