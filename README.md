@@ -853,6 +853,16 @@ cargo build --release
 ./target/release/dotdipper --help
 ```
 
+### Container E2E tests
+
+Linux pull-on-a-fresh-machine coverage, run via Docker (`rust:1-bookworm`, linux/arm64):
+
+```bash
+./scripts/container-test.sh
+```
+
+The suite builds a debug binary inside the container (host `target/` is not used), then exercises `init` → `discover --write` → `push` on machine A against a local bare git remote, and `init` → `pull --apply --force` on a completely fresh machine B. It asserts byte-identical fixture files (including nested `nvim/lua` paths), a clean `status` on B, a round-trip update, that `apps` is absent on Linux, and that generated install scripts have valid bash syntax with no Brewfile/Homebrew/mas logic. Named volumes `dotdipper-e2e-build` and `dotdipper-e2e-cargo` cache the cargo target dir and registry so reruns are fast. Requires a running Docker daemon.
+
 ---
 
 ## 🤝 Contributing
