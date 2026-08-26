@@ -139,10 +139,10 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
             .map(|name| CaskEntry { name })
             .collect();
     }
-    casks.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    casks.sort_by_key(|a| a.name.to_lowercase());
 
     let mut mas_apps = mas_apps;
-    mas_apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    mas_apps.sort_by_key(|a| a.name.to_lowercase());
 
     let manifest = AppsManifest {
         meta: ManifestMeta {
