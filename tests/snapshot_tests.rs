@@ -73,6 +73,10 @@ fn test_snapshot_list_empty() {
     // Set HOME to temp dir so dotdipper looks in the right place
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -108,6 +112,10 @@ fn test_snapshot_list_with_snapshots() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -126,6 +134,10 @@ fn test_snapshot_delete_nonexistent() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -158,6 +170,10 @@ fn test_snapshot_delete_existing() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -178,6 +194,10 @@ fn test_snapshot_rollback_nonexistent() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -207,6 +227,10 @@ fn test_snapshot_prune_no_criteria() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -256,6 +280,10 @@ fn test_snapshot_prune_keep_count_dry_run() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -313,6 +341,10 @@ fn test_snapshot_prune_keep_count() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
@@ -336,6 +368,10 @@ fn test_snapshot_prune_no_snapshots() {
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
     cmd.env("HOME", temp_dir.path())
+        // CI runners export XDG_CONFIG_HOME, which outranks HOME in
+        // paths::base_dir(); pin the store to this test's temp dir.
+        .env("DOTDIPPER_HOME", temp_dir.path().join(".config/dotdipper"))
+        .env_remove("XDG_CONFIG_HOME")
         .arg("--config")
         .arg(&config_path)
         .arg("snapshot")
