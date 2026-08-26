@@ -23,6 +23,15 @@ use std::path::{Path, PathBuf};
 use crate::cfg::Config;
 use crate::ui;
 
+/// Removes a temp bundle file when dropped (success, error, or dry-run).
+struct TempBundle(PathBuf);
+
+impl Drop for TempBundle {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Remote backend trait
 #[async_trait]
 pub trait Remote: Send + Sync {
@@ -92,21 +101,51 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
             }
         }
         RemoteKind::S3 => {
-            if !opts.contains_key("bucket") {
+            #[cfg(not(feature = "s3"))]
+            {
                 bail!(
-                    "S3 remote requires --bucket.\n\
-                       Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1"
+                    "S3 remote support is not included in this build.\n\
+                     Official release binaries include S3 by default.\n\
+                     Rebuild from source with: cargo install --path . --features s3"
                 );
+            }
+            #[cfg(feature = "s3")]
+            {
+                if !opts.contains_key("bucket") {
+                    bail!(
+                        "S3 remote requires --bucket.\n\
+                           Example: dotdipper remote set s3 --bucket my-dotfiles --region us-east-1"
+                    );
+                }
             }
         }
         RemoteKind::WebDAV => {
-            if endpoint.is_none() {
-                bail!("WebDAV remote requires --endpoint (URL).\n\
-                       Example: dotdipper remote set webdav --endpoint https://dav.example.com/dotfiles");
+            #[cfg(not(feature = "webdav"))]
+            {
+                bail!(
+                    "WebDAV remote support is not included in this build.\n\
+                     Official release binaries include WebDAV by default.\n\
+                     Rebuild from source with: cargo install --path . --features webdav"
+                );
+            }
+            #[cfg(feature = "webdav")]
+            {
+                if endpoint.is_none() {
+                    bail!(
+                        "WebDAV remote requires --endpoint (URL).\n\
+                           Example: dotdipper remote set webdav --endpoint https://dav.example.com/dotfiles"
+                    );
+                }
             }
         }
-        RemoteKind::GitHub | RemoteKind::GCS => {
-            // GitHub uses vcs module, GCS may have different requirements
+        RemoteKind::GitHub => {
+            bail!(
+                "Use 'dotdipper push' / 'dotdipper pull' for GitHub sync.\n\
+                 The 'remote' command is for LocalFS / S3 / WebDAV bundle backups."
+            );
+        }
+        RemoteKind::GCS => {
+            bail!("GCS remotes are not implemented yet. Use s3, webdav, or localfs instead.");
         }
     }
 
@@ -114,7 +153,7 @@ pub fn set(_config: &Config, kind_str: &str, options: Vec<(String, String)>) -> 
     let dotdipper_dir = get_dotdipper_dir()?;
     let config_path = dotdipper_dir.join("config.toml");
     let mut cfg = if config_path.exists() {
-        crate::cfg::load(&config_path)?
+        crate::cfg::load_file(&config_path)?
     } else {
         Config::default()
     };
@@ -194,8 +233,8 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     ui::info(&format!("Pushing to remote: {}", remote.name()));
 
-    // Get active profile
-    let profile_name = crate::profiles::active_profile_name()?;
+    // Get active profile (honors DOTDIPPER_PROFILE)
+    let profile_name = crate::profiles::resolve_active_profile_name()?;
     let profile_paths = crate::profiles::profile_paths(&profile_name)?;
 
     if !profile_paths.compiled.exists() {
@@ -204,20 +243,21 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     // Create bundle
     let dotdipper_dir = get_dotdipper_dir()?;
-    let bundle_path = dotdipper_dir.join("bundle.tar.zst");
+    let temp_bundle = TempBundle(dotdipper_dir.join("bundle.tar.zst"));
 
     ui::info("Creating bundle...");
     let meta = bundle::pack(
         &profile_paths.compiled,
         &profile_paths.manifest,
-        &bundle_path,
+        &temp_bundle.0,
         &profile_name,
+        &crate::cfg::resolve_push_ignored_paths(config).unwrap_or_default(),
     )?;
 
     let size_str = humansize::format_size(meta.size_bytes, humansize::DECIMAL);
     ui::success(&format!(
         "Bundle created: {} ({} files, {})",
-        bundle_path.display(),
+        temp_bundle.0.display(),
         meta.file_count,
         size_str
     ));
@@ -229,16 +269,13 @@ pub async fn push(config: &Config, dry_run: bool) -> Result<()> {
 
     // Push bundle
     ui::info("Uploading bundle...");
-    let obj = remote.push_bundle(&bundle_path).await?;
+    let obj = remote.push_bundle(&temp_bundle.0).await?;
 
     let uploaded_size = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!(
         "Pushed to remote: {} ({})",
         obj.etag_or_rev, uploaded_size
     ));
-
-    // Clean up bundle
-    std::fs::remove_file(&bundle_path)?;
 
     Ok(())
 }
@@ -253,27 +290,36 @@ pub async fn pull(config: &Config) -> Result<()> {
 
     // Download bundle
     let dotdipper_dir = get_dotdipper_dir()?;
-    let bundle_path = dotdipper_dir.join("bundle_download.tar.zst");
+    let temp_bundle = TempBundle(dotdipper_dir.join("bundle_download.tar.zst"));
 
     ui::info("Downloading bundle...");
-    let obj = remote.pull_latest(&bundle_path).await?;
+    let obj = remote.pull_latest(&temp_bundle.0).await?;
 
     let size_str = humansize::format_size(obj.size_bytes, humansize::DECIMAL);
     ui::success(&format!("Downloaded: {} ({})", obj.etag_or_rev, size_str));
 
     // Extract bundle
     ui::info("Extracting bundle...");
-    let extracted_meta = bundle::unpack(&bundle_path, &dotdipper_dir)?;
+    let extracted_meta = bundle::unpack(&temp_bundle.0, &dotdipper_dir)?;
 
     ui::success(&format!(
         "Extracted {} files to profile: {}",
         extracted_meta.file_count, extracted_meta.profile_name
     ));
 
-    // Clean up bundle
-    std::fs::remove_file(&bundle_path)?;
-
-    ui::hint("Apply changes with: dotdipper apply");
+    let active =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    if active != extracted_meta.profile_name {
+        ui::hint(&format!(
+            "Bundle restored profile '{}', but active profile is '{}'. Switch with: \
+             dotdipper profile switch {}",
+            extracted_meta.profile_name, active, extracted_meta.profile_name
+        ));
+    }
+    ui::hint(&format!(
+        "Apply with: DOTDIPPER_PROFILE={} dotdipper apply   (or switch first)",
+        extracted_meta.profile_name
+    ));
 
     Ok(())
 }
@@ -299,6 +345,15 @@ fn create_remote(remote_cfg: &crate::cfg::RemoteConfig) -> Result<Box<dyn Remote
                 bucket, region, prefix,
             )?))
         }
+        #[cfg(not(feature = "s3"))]
+        "s3" => {
+            bail!(
+                "S3 remote support is not included in this build.\n\
+                 Official release binaries include S3 by default.\n\
+                 If you built from source, rebuild with: cargo install --path . --features s3\n\
+                 (or use default features, which already enable s3 + webdav)."
+            );
+        }
         #[cfg(feature = "webdav")]
         "webdav" => {
             let endpoint = remote_cfg
@@ -307,10 +362,28 @@ fn create_remote(remote_cfg: &crate::cfg::RemoteConfig) -> Result<Box<dyn Remote
                 .context("WebDAV remote requires 'endpoint' URL")?;
             Ok(Box::new(webdav_backend::WebDavRemote::new(endpoint)?))
         }
-        _ => {
+        #[cfg(not(feature = "webdav"))]
+        "webdav" => {
             bail!(
-                "Remote kind '{}' not supported or feature not enabled",
-                remote_cfg.kind
+                "WebDAV remote support is not included in this build.\n\
+                 Official release binaries include WebDAV by default.\n\
+                 If you built from source, rebuild with: cargo install --path . --features webdav\n\
+                 (or use default features, which already enable s3 + webdav)."
+            );
+        }
+        "gcs" => {
+            bail!("GCS remotes are not implemented yet. Use s3, webdav, or localfs instead.");
+        }
+        "github" => {
+            bail!(
+                "Use 'dotdipper push' / 'dotdipper pull' for GitHub sync.\n\
+                 The 'remote' command is for LocalFS / S3 / WebDAV bundle backups."
+            );
+        }
+        other => {
+            bail!(
+                "Unknown remote kind '{}'. Supported: localfs, s3, webdav.",
+                other
             );
         }
     }

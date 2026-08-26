@@ -2,6 +2,57 @@
 
 All notable changes to dotdipper are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **SOPS secrets provider:** encrypt / decrypt / edit via the `sops` CLI with an age backend; apply decrypts `.sops.*` (and common `.enc.*`) names in-memory like `.age`.
+- **Profile selection:** active profile drives `compiled/`, `manifest.lock`, and `snapshots/` under `profiles/<name>/`; `DOTDIPPER_PROFILE` overrides config; legacy top-level stores migrate into `profiles/default/`; compatibility symlinks keep `~/.config/dotdipper/compiled` working.
+- **Per-profile config overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). New profiles get a comments-only overlay so they inherit the global file.
+- **Per-profile GitHub target:** push/pull/undo/clone use branch `main` for `default` and `dotdipper/<name>` otherwise. Overlay or global `[github].repo_name` can select a dedicated repository; `[github].branch` overrides the default. Branch and repo are independent.
+- **`[secrets].recipients`:** multi-machine SOPS age recipients; encrypt also honors `SOPS_AGE_RECIPIENTS` / `.sops.yaml` without forcing a single local `--age`.
+
+### Changed
+
+- `dotdipper init` scaffolds `profiles/default` and sets `active_profile = "default"`.
+- `doctor` checks for `sops` when `[secrets].provider = "sops"`.
+- Discover always skips the dotdipper base dir; default ignore covers all of `profiles/**`.
+- Pull→apply no longer puts encrypted store names into `tracked_files`; snapshot preserves encrypted compiled blobs so consumer machines can push.
+- Profile names are validated (blocks path traversal); non-default profiles are not auto-created from env typos.
+- Remote push honors `DOTDIPPER_PROFILE`; remote pull uses timestamped backups and clearer profile-switch hints.
+- Remote bundles omit `.git` / `.gitignore` and honor `push_ignore` / `local_only`.
+- Config writes are atomic (temp file + rename). Discover writes `tracked_files` / packages to the active profile overlay.
+- `dotdipper config --set` / `--edit` and `profile switch` write the global config only (overlays are not flattened).
+- Dependency bumps: `tar` 0.4.46, `rust-s3` 0.37, `rustls-webpki` 0.103.14, `anyhow` 1.0.104 (cargo-audit).
+
+### Fixed
+
+- Apply/diff tests no longer share the runner `XDG_CONFIG_HOME` store (CI false-success / false-failure).
+
+## [0.7.4] - 2026-07-29
+
+### Fixed
+
+- **Critical — pull → apply on a new machine:** `manifest.lock` is now written into `compiled/` (the git store) on every snapshot/push, and restored after `pull`.
+- **Install** uses Rust `apply` (excludes/backups/manifest) instead of blindly linking every file under `compiled/`.
+- **Snapshot rollback:** safety snapshot first; preserves `compiled/.git`; unique snapshot IDs with milliseconds.
+- **Pull `--force`:** stashes then hard-resets the compiled store only (`$HOME` untouched unless `--apply`).
+- **Prune:** `keep_age` OR-semantics fixed; `keep_size`-only no longer deletes everything.
+- **Apply path traversal** rejected; encrypted apply always copies (never symlinks deleted temps).
+- **Tracked file hashing** fails loudly; config expands `~`.
+- **`apply` / `diff` / `pull --apply` / `install` apply** return non-zero when the manifest is missing (scripts can detect failure).
+- **doctor --fix** no longer pretends to auto-repair.
+
+### Changed
+
+- **Default features** now include `s3` and `webdav` so release/Homebrew/AUR/Nix binaries ship remotes. Minimal builds: `--no-default-features`.
+- Clear errors when S3/WebDAV are unavailable, or when `github`/`gcs` remotes are requested.
+- Packaging metadata bumped to **0.7.4** (AUR, Nix, Scoop, root flake). Source/binary checksums for published artifacts still need updating when the GitHub release is cut.
+
+### Tests
+
+- Full e2e coverage in `tests/e2e_full_sync_test.rs` + `tests/safety_sync_test.rs`.
+
 ## [0.7.3] - 2026-03-14
 
 ### Fixed

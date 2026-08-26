@@ -1,11 +1,11 @@
 {
-    "version": "0.3.1",
+    "version": "0.7.4",
     "description": "A safe, deterministic, and feature-rich dotfiles manager built in Rust",
     "homepage": "https://github.com/psyysp/dotdipper",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/psyysp/dotdipper/releases/download/v0.3.1/dotdipper-x86_64-pc-windows-msvc.zip",
+            "url": "https://github.com/psyysp/dotdipper/releases/download/v0.7.4/dotdipper-x86_64-pc-windows-msvc.zip",
             "hash": "WINDOWS_X86_64_SHA256_PLACEHOLDER"
         }
     },
@@ -22,5 +22,9 @@
     },
     "suggest": {
         "age": "main/age"
-    }
+    },
+    "notes": [
+        "Windows is not fully supported yet (symlink apply is Unix-oriented).",
+        "Prefer macOS/Linux packages or cargo install when possible."
+    ]
 }

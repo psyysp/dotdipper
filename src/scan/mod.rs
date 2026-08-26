@@ -82,6 +82,10 @@ fn discover_pattern(
                 continue;
             }
 
+            if is_under_dotdipper_base(path) {
+                continue;
+            }
+
             if !show_all && excluder.matched(path, false).is_ignore() {
                 continue;
             }
@@ -102,6 +106,9 @@ fn discover_pattern(
                     let entry_path = entry.path();
 
                     if entry_path.is_file() {
+                        if is_under_dotdipper_base(entry_path) {
+                            continue;
+                        }
                         if !show_all && excluder.matched(entry_path, false).is_ignore() {
                             continue;
                         }
@@ -111,8 +118,10 @@ fn discover_pattern(
             } else if path.is_file() {
                 // Direct file include patterns bypass exclusions — the user
                 // explicitly asked for this file (e.g. ~/.ssh/config despite
-                // ~/.ssh/** being excluded).
-                if !is_glob || show_all || !excluder.matched(&path, false).is_ignore() {
+                // ~/.ssh/** being excluded). Still never track our own store.
+                if is_under_dotdipper_base(&path) {
+                    // skip
+                } else if !is_glob || show_all || !excluder.matched(&path, false).is_ignore() {
                     discovered.push(path);
                 }
             }
@@ -187,6 +196,21 @@ fn get_base_dir_from_pattern(pattern: &str, home: &Path) -> PathBuf {
     } else {
         PathBuf::from(base_parts.join("/"))
     }
+}
+
+/// Never discover files inside the active dotdipper base dir (store, snapshots, cache).
+fn is_under_dotdipper_base(path: &Path) -> bool {
+    let Ok(base) = crate::paths::base_dir() else {
+        return false;
+    };
+    path.canonicalize()
+        .ok()
+        .or_else(|| Some(path.to_path_buf()))
+        .map(|p| {
+            let base_cmp = base.canonicalize().unwrap_or_else(|_| base.clone());
+            p.starts_with(&base_cmp) || p.starts_with(&base)
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -174,18 +174,20 @@ dotdipper undo
 # 2. Initialize
 dotdipper init
 
-# 3. Pull your dotfiles
+# 3. Pull your dotfiles (restores compiled/ + manifest.lock from git)
 dotdipper pull
 
-# 4. Review changes
+# 4. Preview what would change in $HOME
 dotdipper diff --detailed
 
-# 5. Apply selectively
+# 5. Apply selectively (creates .bak backups by default)
 dotdipper apply --interactive
 
-# 6. Install packages
+# 6. Install discovered packages, then place dotfiles safely
 dotdipper install
 ```
+
+`pull` only updates the local compiled store. Your live `$HOME` files are unchanged until you `apply` (or `pull --apply` / `install`). Keep `general.backup = true` so existing files are copied to `.bak.<timestamp>` before overwrite.
 
 ---
 
@@ -193,28 +195,37 @@ dotdipper install
 
 ### 🔐 Secrets Management
 
-Securely manage sensitive dotfiles with age encryption:
+Securely manage sensitive dotfiles with **age** or **SOPS** (age backend):
 
 ```bash
-# Initialize encryption
+# Initialize encryption (reads [secrets].provider; default: age)
 dotdipper secrets init
 
 # Encrypt files
 dotdipper secrets encrypt ~/.aws/credentials
-# Creates: ~/.aws/credentials.age
+# age  → ~/.aws/credentials.age
+# sops → ~/.aws/credentials.sops (or secrets.sops.yaml for .yaml inputs)
 
 # Edit encrypted files seamlessly
 dotdipper secrets edit ~/.ssh/config.age
 
-# Auto-decrypts during apply (in-memory only)
+# Auto-decrypts during apply (in-memory only; .age and .sops.* names)
 dotdipper apply
 ```
 
+```toml
+[secrets]
+provider = "age"   # or "sops"
+key_path = "~/.config/age/keys.txt"
+```
+
+For SOPS, install the `sops` CLI and reuse the same age identity file. Dotdipper passes `--age <recipient>` on encrypt and sets `SOPS_AGE_KEY_FILE` for decrypt/edit.
+
 **Security Features:**
 
-- Age encryption with public/private keys
-- In-memory decryption (never writes plaintext to repo)
-- Seamless edit workflow (decrypt → edit → re-encrypt)
+- Age encryption with public/private keys (native age or SOPS+age)
+- In-memory decryption on apply (never writes plaintext into the git store)
+- Seamless edit workflow (decrypt → edit → re-encrypt; native `sops` edit for SOPS)
 - 0600 permissions on key files
 
 ### 🎯 Selective Apply & Diff
@@ -280,29 +291,48 @@ Any combination of criteria can be used. Snapshots are kept if they match ANY cr
 
 ### 👤 Multiple Profiles
 
-Manage different dotfile sets for different contexts:
+Manage different compiled stores for work / personal / CI contexts:
 
 ```bash
 # Create profiles
 dotdipper profile create work
 dotdipper profile create personal
 
-# Switch profiles
+# Switch profiles (updates config + compat links)
 dotdipper profile switch work
 
 # List profiles
 dotdipper profile list
 
+# One-off override without editing config
+DOTDIPPER_PROFILE=work dotdipper status
+
 # Remove profile
 dotdipper profile remove work
 ```
 
+**Layout:**
+
+```text
+~/.config/dotdipper/
+  config.toml                 # active_profile = "work"
+  profiles/default/compiled/  # default store (git push/pull target)
+  profiles/work/compiled/
+  compiled -> profiles/work/compiled   # compatibility symlink
+```
+
+Legacy top-level `compiled/` is migrated into `profiles/default/` on first use. Snapshot, apply, push, pull, status, diff, install, and remote bundles all use the **active** profile store.
+
+**Per-profile overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). Leave it comments-only to inherit everything. `dotdipper config --set` / `--edit` still write the global file; `profile switch` only updates `active_profile` there.
+
+**GitHub sync:** each profile pushes to its own branch by default (`main` for `default`, `dotdipper/<name>` otherwise). Set `[github].repo_name` in the overlay for a dedicated repository. Branch and repo are independent; set `[github].branch` to override the default.
+
 **Features:**
 
-- Base + overlay config merging
-- Per-profile manifests and compiled directories
-- Profile-specific configurations
-- Legacy migration support
+- Per-profile `compiled/`, `manifest.lock`, `snapshots/`, and overlay `config.toml`
+- `DOTDIPPER_PROFILE` env override
+- Compatibility symlinks so older scripts still see `~/.config/dotdipper/compiled`
+- Legacy store migration support
 
 ### ☁️ Cloud Backups
 
@@ -312,7 +342,7 @@ Push/pull dotfiles to remote storage:
 # Configure LocalFS remote
 dotdipper remote set localfs --endpoint ~/dotfiles-backup
 
-# Configure S3 remote (requires --features s3)
+# Configure S3 remote (included in official release binaries / default cargo features)
 dotdipper remote set s3 --bucket my-dotfiles --region us-east-1
 # Set credentials via environment:
 export AWS_ACCESS_KEY_ID=your-key
@@ -320,7 +350,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret
 # Or use custom S3-compatible endpoint (MinIO, DigitalOcean Spaces):
 export AWS_ENDPOINT_URL=https://nyc3.digitaloceanspaces.com
 
-# Configure WebDAV remote (requires --features webdav)
+# Configure WebDAV remote (included in official release binaries / default cargo features)
 dotdipper remote set webdav --endpoint https://cloud.example.com/remote.php/webdav
 # Set credentials via environment:
 export WEBDAV_USERNAME=your-username
@@ -339,8 +369,10 @@ dotdipper remote pull
 **Supported Backends:**
 
 - ✅ LocalFS (fully implemented)
-- ✅ S3 (fully implemented, feature-gated)
-- ✅ WebDAV (fully implemented, feature-gated)
+- ✅ S3 (fully implemented; shipped in default/release builds)
+- ✅ WebDAV (fully implemented; shipped in default/release builds)
+
+Official packages and `cargo build --release` include S3 + WebDAV by default. For a minimal binary: `cargo build --release --no-default-features`. If you use a minimal build and run `remote set s3` / `webdav`, Dotdipper prints a clear rebuild message (`--features s3,webdav`).
 
 **Features:**
 
@@ -380,7 +412,7 @@ dotdipper undo                      # Revert the last pushed commit
 dotdipper pull --apply
 ```
 
-**Git repo location:** Push/pull use a git repository inside your dotdipper directory (e.g. `~/.config/dotdipper/compiled/`). Don’t run `git pull` or `git push` from `~/.config`; use `dotdipper pull` and `dotdipper push` from any directory. If the remote already has commits (e.g. a new repo with a README), `dotdipper push` will fetch, rebase your changes on top, and push automatically.
+**Git repo location:** Push/pull use a git repository inside your dotdipper directory (e.g. `~/.config/dotdipper/compiled/`). The `manifest.lock` is stored inside that repo so a fresh `pull` can apply files correctly. Don’t run `git pull` or `git push` from `~/.config`; use `dotdipper pull` and `dotdipper push` from any directory. If the remote already has commits (e.g. a new repo with a README), `dotdipper push` will fetch, rebase your changes on top, and push automatically. `pull --force` discards uncommitted changes in `compiled/` only (after stashing); it does not touch `$HOME` unless you also pass `--apply`.
 
 **Use Remote Backends when you want:**
 
@@ -491,10 +523,11 @@ tracked_files = [
 [github]
 username = "psyysp"
 repo_name = "dotfiles"
+# branch = "main"  # optional; default is "main" for the default profile, else "dotdipper/<name>"
 private = true
 
 [secrets]
-provider = "age"
+provider = "age"  # or "sops" (requires sops CLI; uses age keys)
 key_path = "~/.config/age/keys.txt"
 
 [hooks]
@@ -700,11 +733,20 @@ dotdipper apply --interactive
 # Create work profile
 dotdipper profile create work
 
+# Optional: dedicated repo and/or branch in the profile overlay
+# ~/.config/dotdipper/profiles/work/config.toml
+# [github]
+# repo_name = "dotfiles-work"
+# branch = "main"
+
 # Switch to work
 dotdipper profile switch work
 
 # Work-specific snapshot
 dotdipper snapshot create -m "Work dotfiles"
+
+# Push uses branch dotdipper/work (or overlay github.branch / github.repo_name)
+dotdipper push -m "Work dotfiles"
 
 # Switch back to personal
 dotdipper profile switch default
@@ -734,10 +776,12 @@ dotdipper profile switch default
 Dotdipper is designed with safety as a core principle:
 
 - **HOME Boundary Enforcement** - Refuses operations outside `$HOME`
-- **Backup Creation** - Creates `.bak.<timestamp>` backups
-- **Confirmation Prompts** - Interactive confirmations
+- **Backup Creation** - Creates `.bak.<timestamp>` backups (warns if disabled)
+- **Confirmation Prompts** - Interactive confirmations unless `--force`
 - **Hash-Based Detection** - BLAKE3 hashing
-- **Deterministic Behavior** - Sorted manifests
+- **Deterministic Behavior** - Sorted manifests synced with the git store
+- **Safe Rollback** - Pre-rollback safety snapshot; preserves `compiled/.git`
+- **Safe Install** - Package install + Rust apply (respects excludes/manifest)
 - **No Plaintext Secrets** - In-memory decryption only
 
 ---

@@ -134,8 +134,13 @@ else
 fi
 
 # Set up dotfiles
+# Prefer the Rust apply path when available so excludes/backups are honored.
 log_info "Setting up dotfiles..."
-if [[ -f "$INSTALL_DIR/setup_dotfiles.sh" ]]; then
+if command -v dotdipper >/dev/null 2>&1; then
+    log_info "Using 'dotdipper apply' for safe dotfile placement"
+    dotdipper apply || log_warn "dotdipper apply reported issues"
+elif [[ -f "$INSTALL_DIR/setup_dotfiles.sh" ]]; then
+    log_warn "dotdipper binary not on PATH; falling back to setup_dotfiles.sh"
     bash "$INSTALL_DIR/setup_dotfiles.sh"
 else
     log_warn "Dotfiles setup script not found"
@@ -421,17 +426,48 @@ log_info "Package installation complete"
 }
 
 fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let use_symlinks = config
+    let use_symlinks = matches!(
+        config.general.default_mode,
+        crate::cfg::RestoreMode::Symlink
+    ) || config
         .dotfiles
         .as_ref()
         .map(|d| d.use_symlinks)
         .unwrap_or(false);
+
+    // Prefer an explicit file list from the manifest so we never link .git, excludes, etc.
+    let mut file_list: Vec<String> = Vec::new();
+    if let Ok(manifest) = crate::repo::load_manifest() {
+        for rel in manifest.files.keys() {
+            let path_str = format!("~/{}", rel.display());
+            if config.files.get(&path_str).is_some_and(|o| o.exclude) {
+                continue;
+            }
+            file_list.push(rel.display().to_string());
+        }
+        file_list.sort();
+    }
+
+    let file_list_bash = if file_list.is_empty() {
+        String::from(
+            r#"# No manifest available at generation time — walk compiled/ but skip metadata
+mapfile -t DOTFILES < <(find "$COMPILED_DIR" -type f ! -path '*/.git/*' ! -name 'manifest.lock' ! -name '.gitignore' -printf '%P\n' | sort)"#,
+        )
+    } else {
+        let entries = file_list
+            .iter()
+            .map(|p| format!("    \"{}\"", p))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("DOTFILES=(\n{}\n)", entries)
+    };
 
     let content = format!(
         r#"#!/usr/bin/env bash
 #
 # Dotfiles Setup Script
 # Method: {}
+# NOTE: Prefer `dotdipper apply` — this script is a fallback for bootstrap without the binary.
 #
 
 set -euo pipefail
@@ -486,9 +522,12 @@ ensure_parent_dir() {{
 
 {}
 
+{}
+
 log_info "Dotfiles setup complete"
 "#,
         if use_symlinks { "symlinks" } else { "copies" },
+        file_list_bash,
         if use_symlinks {
             generate_symlink_setup()
         } else {
@@ -504,33 +543,31 @@ log_info "Dotfiles setup complete"
 }
 
 fn generate_symlink_setup() -> String {
-    r#"# Find all files in compiled directory and create symlinks
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
+    r#"# Apply only the listed dotfiles (never walk .git blindly)
+for rel_path in "${DOTFILES[@]}"; do
+    # Skip store metadata just in case
+    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]]; then
         continue
     fi
-    
-    # Target file in home
+
+    source_file="$COMPILED_DIR/$rel_path"
     target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
+
+    if [[ ! -e "$source_file" ]]; then
+        log_warn "Missing source: $rel_path"
+        continue
+    fi
+
     ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
+
     if [[ -e "$target_file" ]] && [[ ! -L "$target_file" ]]; then
         backup_file "$target_file"
     fi
-    
-    # Remove existing symlink if it exists
+
     if [[ -L "$target_file" ]]; then
         rm "$target_file"
     fi
-    
-    # Create symlink
+
     ln -s "$source_file" "$target_file"
     log_info "Linked $rel_path"
 done"#
@@ -538,26 +575,23 @@ done"#
 }
 
 fn generate_copy_setup() -> String {
-    r#"# Find all files in compiled directory and copy them
-find "$COMPILED_DIR" -type f | while read -r source_file; do
-    # Get relative path from compiled directory
-    rel_path="${source_file#$COMPILED_DIR/}"
-    
-    # Skip git files
-    if [[ "$rel_path" == .git/* ]]; then
+    r#"# Apply only the listed dotfiles (never walk .git blindly)
+for rel_path in "${DOTFILES[@]}"; do
+    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]]; then
         continue
     fi
-    
-    # Target file in home
+
+    source_file="$COMPILED_DIR/$rel_path"
     target_file="$HOME_DIR/$rel_path"
-    
-    # Ensure parent directory exists
+
+    if [[ ! -e "$source_file" ]]; then
+        log_warn "Missing source: $rel_path"
+        continue
+    fi
+
     ensure_parent_dir "$target_file"
-    
-    # Backup existing file if needed
     backup_file "$target_file"
-    
-    # Copy file with permissions
+
     cp -p "$source_file" "$target_file"
     log_info "Copied $rel_path"
 done"#

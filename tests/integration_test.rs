@@ -133,6 +133,11 @@ fn test_init_creates_directories() {
     // Check directories were created
     assert!(dotdipper_dir.exists());
     assert!(dotdipper_dir.join("compiled").exists());
+    assert!(dotdipper_dir
+        .join("profiles")
+        .join("default")
+        .join("compiled")
+        .exists());
 }
 
 // ============================================
@@ -439,7 +444,7 @@ tracked_files = []
         .arg(&config_path)
         .arg("diff")
         .assert()
-        .success();
+        .failure();
 }
 
 // ============================================
@@ -471,7 +476,7 @@ tracked_files = []
         .arg("apply")
         .arg("--force")
         .assert()
-        .success();
+        .failure();
 }
 
 // ============================================

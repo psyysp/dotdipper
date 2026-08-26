@@ -112,8 +112,19 @@ pub fn hash_files(paths: &[PathBuf], progress: bool) -> Result<Vec<FileHash>> {
     };
 
     for path in paths {
-        if let Ok(hash) = hash_file(path) {
-            hashes.push(hash);
+        match hash_file(path) {
+            Ok(hash) => hashes.push(hash),
+            Err(e) => {
+                if let Some(pb) = pb {
+                    pb.finish_and_clear();
+                }
+                anyhow::bail!(
+                    "Failed to hash tracked file {}: {}. \
+                     Check that the path exists and is readable (expand ~ if needed).",
+                    path.display(),
+                    e
+                );
+            }
         }
         if let Some(ref pb) = pb {
             pb.inc(1);

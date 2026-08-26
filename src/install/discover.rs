@@ -140,10 +140,12 @@ pub fn discover_packages(
         mapper.add_custom_mapping(binary.clone(), package.clone());
     }
 
+    let skip = SkipMatcher::new(&discovery_config.exclude_patterns);
+
     // Analyze each tracked file
     for file_path in tracked_files {
         // Skip files matching exclude patterns
-        if should_skip_file(file_path, &discovery_config.exclude_patterns) {
+        if skip.should_skip(file_path) {
             continue;
         }
 
@@ -188,38 +190,45 @@ pub fn discover_packages(
     Ok(result)
 }
 
-/// Check if a file should be skipped based on exclude patterns
-fn should_skip_file(file_path: &Path, exclude_patterns: &[String]) -> bool {
-    let path_str = file_path.to_string_lossy();
+/// Compiled skip patterns so glob-to-regex conversion happens once per discover run.
+struct SkipMatcher {
+    regexes: Vec<regex::Regex>,
+    literals: Vec<String>,
+}
 
-    for pattern in exclude_patterns {
-        // Simple glob-style matching
-        if pattern.contains('*') {
-            // Convert glob to regex-like pattern
-            let regex_pattern = pattern
-                .replace('.', "\\.")
-                .replace('*', ".*")
-                .replace('?', ".");
-
-            if let Ok(re) = regex::Regex::new(&regex_pattern) {
-                if re.is_match(&path_str) {
-                    return true;
+impl SkipMatcher {
+    fn new(exclude_patterns: &[String]) -> Self {
+        let mut regexes = Vec::new();
+        let mut literals = Vec::new();
+        for pattern in exclude_patterns {
+            if pattern.contains('*') {
+                let regex_pattern = pattern
+                    .replace('.', "\\.")
+                    .replace('*', ".*")
+                    .replace('?', ".");
+                if let Ok(re) = regex::Regex::new(&regex_pattern) {
+                    regexes.push(re);
                 }
-            }
-        } else {
-            // Exact match or contains
-            if path_str.contains(pattern) {
-                return true;
+            } else {
+                literals.push(pattern.clone());
             }
         }
+        Self { regexes, literals }
     }
 
-    false
+    fn should_skip(&self, file_path: &Path) -> bool {
+        let path_str = file_path.to_string_lossy();
+        self.regexes.iter().any(|re| re.is_match(&path_str))
+            || self
+                .literals
+                .iter()
+                .any(|pattern| path_str.contains(pattern.as_str()))
+    }
 }
 
 /// Update configuration with discovered packages
 pub fn update_config_with_packages(config_path: &Path, result: &DiscoveryResult) -> Result<()> {
-    let mut config = crate::cfg::load(config_path)?;
+    let config = crate::cfg::load(config_path)?;
 
     // Merge discovered packages with existing common packages
     let mut packages = config.packages.common.clone();
@@ -234,9 +243,7 @@ pub fn update_config_with_packages(config_path: &Path, result: &DiscoveryResult)
     packages.sort();
     packages.dedup();
 
-    config.packages.common = packages;
-
-    crate::cfg::save(config_path, &config)?;
+    crate::cfg::update_packages_common(config_path, packages)?;
 
     Ok(())
 }
@@ -322,17 +329,11 @@ mod tests {
 
     #[test]
     fn test_should_skip_file() {
-        let patterns = vec!["*.bak".to_string(), "/tmp/".to_string()];
+        let skip = SkipMatcher::new(&["*.bak".to_string(), "/tmp/".to_string()]);
 
-        assert!(should_skip_file(
-            &PathBuf::from("/home/user/file.bak"),
-            &patterns
-        ));
-        assert!(should_skip_file(&PathBuf::from("/tmp/test.txt"), &patterns));
-        assert!(!should_skip_file(
-            &PathBuf::from("/home/user/.zshrc"),
-            &patterns
-        ));
+        assert!(skip.should_skip(&PathBuf::from("/home/user/file.bak")));
+        assert!(skip.should_skip(&PathBuf::from("/tmp/test.txt")));
+        assert!(!skip.should_skip(&PathBuf::from("/home/user/.zshrc")));
     }
 
     #[test]

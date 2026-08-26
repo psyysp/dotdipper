@@ -4,7 +4,7 @@
 [general]
 default_mode = "symlink"  # Default restoration mode: "symlink" or "copy"
 backup = true             # Create backups before overwriting files
-active_profile = "default"  # Active profile (Milestone 4)
+active_profile = "default"  # Active profile store under profiles/<name>/
 tracked_files = [
     "~/.zshrc",
     "~/.bashrc", 
@@ -17,6 +17,8 @@ tracked_files = [
 [github]
 username = "your-github-username"
 repo_name = "dotfiles"
+# Optional branch override. Unset: "main" for the default profile, else "dotdipper/<name>".
+# branch = "main"
 private = true
 
 [packages]
@@ -45,10 +47,11 @@ exclude = true  # Don't restore SSH config (too sensitive)
 [files."~/.gitconfig"]
 mode = "copy"  # Copy git config to allow local modifications
 
-# Secrets encryption (Milestone 1)
+# Secrets encryption (age or SOPS+age)
 [secrets]
-provider = "age"  # "age" or "sops"
+provider = "age"  # "age" or "sops" (sops CLI required for sops)
 key_path = "~/.config/age/keys.txt"
+# recipients = ["age1qq..."]  # optional multi-machine SOPS recipients
 
 # Hooks (run scripts at specific points)
 [hooks]
@@ -123,3 +126,14 @@ exclude_patterns = [
     "**/Cache/**",
     "~/.Trash/**",
 ]
+
+# Per-profile overlay lives at profiles/<name>/config.toml
+# Overlay keys win over this file. Example:
+#
+# [github]
+# repo_name = "dotfiles-work"
+# branch = "dotdipper/work"
+#
+# [general]
+# tracked_files = ["~/.zshrc"]
+

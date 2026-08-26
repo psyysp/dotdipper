@@ -1,0 +1,11 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# rust-s3 0.37 / aws-creds pin quick-xml ^0.38. 0.41 is a breaking bump those
+# crates have not adopted. S3 XML is parsed from AWS/MinIO responses, not
+# untrusted user files. Revisit when rust-s3 allows quick-xml >= 0.41.
+ignore = [
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]

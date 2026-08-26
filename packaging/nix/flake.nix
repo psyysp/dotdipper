@@ -22,7 +22,7 @@
         
         dotdipper = pkgs.rustPlatform.buildRustPackage {
           pname = "dotdipper";
-          version = "0.3.1";
+          version = "0.7.4";
           
           src = ./../..;
           
@@ -32,6 +32,7 @@
           
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.openssl ];
+          buildFeatures = [ "s3" "webdav" ];
           
           meta = with pkgs.lib; {
             description = "A safe, deterministic, and feature-rich dotfiles manager built in Rust";
