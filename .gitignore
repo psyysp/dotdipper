@@ -1,5 +1,11 @@
 # Rust build artifacts
 /target/
+
+# Local release build artifacts (published to GitHub Releases)
+release-v*/
+
+# Nix build output symlink
+/result
 **/*.rs.bk
 *.pdb
 
@@ -23,7 +29,6 @@ Thumbs.db
 homebrew-tap/
 
 # Test directories and files
-tests/
 test_output/
 test_temp/
 test_fixtures/
