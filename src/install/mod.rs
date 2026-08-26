@@ -308,7 +308,7 @@ log_warn() {{
     echo -e "${{YELLOW}}[WARN]${{NC}} $1"
 }}
 
-COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}}}/dotdipper/compiled"
+COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}/compiled"
 
 # Xcode Command Line Tools
 if ! xcode-select -p >/dev/null 2>&1; then
@@ -443,7 +443,15 @@ fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
             if config.files.get(&path_str).is_some_and(|o| o.exclude) {
                 continue;
             }
-            file_list.push(rel.display().to_string());
+            let rel_str = rel.display().to_string();
+            if rel_str == "Brewfile"
+                || rel_str == "apps_manifest.toml"
+                || rel_str == "manifest.lock"
+                || rel_str == ".gitignore"
+            {
+                continue;
+            }
+            file_list.push(rel_str);
         }
         file_list.sort();
     }
@@ -451,7 +459,15 @@ fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
     let file_list_bash = if file_list.is_empty() {
         String::from(
             r#"# No manifest available at generation time — walk compiled/ but skip metadata
-mapfile -t DOTFILES < <(find "$COMPILED_DIR" -type f ! -path '*/.git/*' ! -name 'manifest.lock' ! -name '.gitignore' -printf '%P\n' | sort)"#,
+# Portable across BSD (macOS) and GNU find; skip store metadata and app manifests.
+DOTFILES=()
+while IFS= read -r f; do
+    rel="${f#"$COMPILED_DIR"/}"
+    case "$rel" in
+        .git/*|.git|manifest.lock|.gitignore|Brewfile|apps_manifest.toml) continue ;;
+    esac
+    DOTFILES+=("$rel")
+done < <(find "$COMPILED_DIR" -type f ! -path '*/.git/*' | sort)"#,
         )
     } else {
         let entries = file_list
@@ -546,7 +562,7 @@ fn generate_symlink_setup() -> String {
     r#"# Apply only the listed dotfiles (never walk .git blindly)
 for rel_path in "${DOTFILES[@]}"; do
     # Skip store metadata just in case
-    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]]; then
+    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]] || [[ "$rel_path" == "Brewfile" ]] || [[ "$rel_path" == "apps_manifest.toml" ]]; then
         continue
     fi
 
@@ -577,7 +593,7 @@ done"#
 fn generate_copy_setup() -> String {
     r#"# Apply only the listed dotfiles (never walk .git blindly)
 for rel_path in "${DOTFILES[@]}"; do
-    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]]; then
+    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]] || [[ "$rel_path" == "Brewfile" ]] || [[ "$rel_path" == "apps_manifest.toml" ]]; then
         continue
     fi
 

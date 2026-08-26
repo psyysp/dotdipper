@@ -979,6 +979,7 @@ fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1195,6 +1196,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn git_target_uses_explicit_branch_and_repo() {
         let mut config = crate::cfg::Config::default();
         config.github.username = Some("alice".into());
@@ -1213,6 +1215,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn git_target_defaults_profile_branch() {
         let mut config = crate::cfg::Config::default();
         config.github.username = Some("alice".into());

@@ -14,6 +14,8 @@ fn is_store_metadata(rel_path: &Path) -> bool {
     let s = rel_path.to_string_lossy();
     s == "manifest.lock"
         || s == ".gitignore"
+        || s == "Brewfile"
+        || s == "apps_manifest.toml"
         || s.starts_with(".git/")
         || s == ".git"
         || s.starts_with(".dotdipper/")
@@ -510,12 +512,19 @@ mod tests {
         fs::create_dir_all(compiled.join(".git").join("objects")).unwrap();
         fs::write(compiled.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(compiled.join(".gitignore"), "*.tmp\n").unwrap();
+        fs::write(compiled.join("Brewfile"), "brew \"git\"\n").unwrap();
+        fs::write(
+            compiled.join("apps_manifest.toml"),
+            "[meta]\nos = \"macos\"\n",
+        )
+        .unwrap();
         fs::write(compiled.join(".zshrc"), "export Z=1\n").unwrap();
         fs::create_dir_all(compiled.join(".config")).unwrap();
         fs::write(compiled.join(".config").join("app.conf"), "a=1\n").unwrap();
 
         std::env::set_var("HOME", home);
         std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
         std::env::remove_var("XDG_CONFIG_HOME");
 
         let manifest = rebuild_manifest_from_compiled().unwrap();
@@ -523,6 +532,8 @@ mod tests {
         assert!(manifest.has_file(Path::new(".config/app.conf")));
         assert!(!manifest.has_file(Path::new("manifest.lock")));
         assert!(!manifest.has_file(Path::new(".gitignore")));
+        assert!(!manifest.has_file(Path::new("Brewfile")));
+        assert!(!manifest.has_file(Path::new("apps_manifest.toml")));
         assert!(!manifest.files.keys().any(|p| {
             p.components()
                 .next()
@@ -545,6 +556,7 @@ mod tests {
 
         std::env::set_var("HOME", home);
         std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
         std::env::remove_var("XDG_CONFIG_HOME");
 
         let mut manifest = Manifest::new();

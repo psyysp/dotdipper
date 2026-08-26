@@ -213,10 +213,9 @@ fn test_snapshot_prune_no_criteria() {
         .arg("prune");
 
     // When no criteria is specified and snapshots exist, all are kept
-    cmd.assert().success().stdout(
-        predicate::str::contains("No snapshots to prune")
-            .or(predicate::str::contains("based on criteria")),
-    );
+    cmd.assert().success().stdout(predicate::str::contains(
+        "No prune criteria specified; keeping all snapshots",
+    ));
 }
 
 #[test]

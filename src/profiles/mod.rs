@@ -437,7 +437,19 @@ fn replace_with_symlink(link: &Path, target: &Path) -> Result<()> {
         if let Some(parent) = link.parent() {
             fs::create_dir_all(parent)?;
         }
-        std::os::unix::fs::symlink(target, link)?;
+        match std::os::unix::fs::symlink(target, link) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if let Ok(current) = fs::read_link(link) {
+                    if current == *target {
+                        return Ok(());
+                    }
+                }
+                let _ = fs::remove_file(link);
+                std::os::unix::fs::symlink(target, link)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
 
     #[cfg(not(unix))]

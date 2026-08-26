@@ -3,13 +3,22 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
 
-#[test]
-fn test_snapshot_list() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+fn isolated_bin(temp_dir: &TempDir, config_path: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", temp_dir.path())
+        .env("DOTDIPPER_HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_PROFILE")
+        .arg("--config")
+        .arg(config_path);
+    cmd
+}
 
+fn write_minimal_config(temp_dir: &TempDir) -> std::path::PathBuf {
+    let config_path = temp_dir.path().join("config.toml");
     fs::write(
         &config_path,
         r#"
@@ -18,15 +27,18 @@ tracked_files = []
 "#,
     )
     .unwrap();
+    config_path
+}
 
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+#[test]
+fn test_snapshot_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = write_minimal_config(&temp_dir);
+
+    isolated_bin(&temp_dir, &config_path)
         .arg("snapshot")
-        .arg("list");
-
-    // Now fully implemented - should succeed
-    cmd.assert()
+        .arg("list")
+        .assert()
         .success()
         .stdout(predicate::str::contains("snapshots"));
 }
@@ -34,25 +46,12 @@ tracked_files = []
 #[test]
 fn test_profile_list() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("profile")
-        .arg("list");
-
-    // Now fully implemented - should succeed and show profiles
-    cmd.assert()
+        .arg("list")
+        .assert()
         .success()
         .stdout(predicate::str::contains("profiles"));
 }
@@ -60,25 +59,12 @@ tracked_files = []
 #[test]
 fn test_remote_show() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
-        .arg("show");
-
-    // Now fully implemented - should succeed (shows "No remote configured")
-    cmd.assert()
+        .arg("show")
+        .assert()
         .success()
         .stdout(predicate::str::contains("remote"));
 }
@@ -86,100 +72,56 @@ tracked_files = []
 #[test]
 fn test_daemon_status() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("daemon")
-        .arg("status");
-
-    // Now fully implemented - should succeed (shows daemon status)
-    cmd.assert()
+        .arg("status")
+        .assert()
         .success()
         .stdout(predicate::str::contains("Daemon"));
 }
 
 #[test]
 fn test_all_milestone_commands_exist() {
-    // Verify all milestone commands are accessible and working
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    // Test snapshot list
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("snapshot")
-        .arg("list");
-    cmd.assert().success();
+        .arg("list")
+        .assert()
+        .success();
 
-    // Test profile list
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("profile")
-        .arg("list");
-    cmd.assert().success();
+        .arg("list")
+        .assert()
+        .success();
 
-    // Test remote show
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
-        .arg("show");
-    cmd.assert().success();
+        .arg("show")
+        .assert()
+        .success();
 
-    // Test daemon status
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("daemon")
-        .arg("status");
-    cmd.assert().success();
+        .arg("status")
+        .assert()
+        .success();
 }
 
 #[test]
 fn test_remote_set_localfs_requires_endpoint() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    // Test that localfs without --endpoint fails with helpful message
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
         .arg("set")
-        .arg("localfs");
-
-    cmd.assert()
+        .arg("localfs")
+        .assert()
         .failure()
         .stderr(predicate::str::contains("--endpoint"));
 }
@@ -187,30 +129,17 @@ tracked_files = []
 #[test]
 fn test_remote_set_localfs_with_endpoint() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
     let backup_dir = temp_dir.path().join("backup");
     fs::create_dir_all(&backup_dir).unwrap();
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    // Test that localfs with --endpoint succeeds
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
         .arg("set")
         .arg("localfs")
         .arg("--endpoint")
-        .arg(backup_dir.to_str().unwrap());
-
-    cmd.assert()
+        .arg(backup_dir.to_str().unwrap())
+        .assert()
         .success()
         .stdout(predicate::str::contains("Remote configured"));
 }
@@ -218,26 +147,13 @@ tracked_files = []
 #[test]
 fn test_remote_set_s3_requires_bucket() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    // Test that s3 without --bucket fails with helpful message
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
         .arg("set")
-        .arg("s3");
-
-    cmd.assert()
+        .arg("s3")
+        .assert()
         .failure()
         .stderr(predicate::str::contains("--bucket"));
 }
@@ -245,30 +161,17 @@ tracked_files = []
 #[test]
 fn test_remote_set_s3_with_options() {
     let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let config_path = write_minimal_config(&temp_dir);
 
-    fs::write(
-        &config_path,
-        r#"
-[general]
-tracked_files = []
-"#,
-    )
-    .unwrap();
-
-    // Test that s3 with --bucket succeeds
-    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("--config")
-        .arg(&config_path)
+    isolated_bin(&temp_dir, &config_path)
         .arg("remote")
         .arg("set")
         .arg("s3")
         .arg("--bucket")
         .arg("my-dotfiles")
         .arg("--region")
-        .arg("us-west-2");
-
-    cmd.assert()
+        .arg("us-west-2")
+        .assert()
         .success()
         .stdout(predicate::str::contains("Remote configured"));
 }

@@ -1,8 +1,42 @@
 //! Integration tests for the configuration module
 
 use dotdipper::cfg::{self, Config, GeneralConfig, PackagesConfig, RestoreMode};
+use serial_test::serial;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
+
+struct EnvGuard {
+    keys: Vec<&'static str>,
+}
+
+impl EnvGuard {
+    fn isolate(base: &Path) -> Self {
+        let keys = ["DOTDIPPER_HOME", "DOTDIPPER_PROFILE", "XDG_CONFIG_HOME"];
+        std::env::set_var("DOTDIPPER_HOME", base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        Self {
+            keys: keys.to_vec(),
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for key in &self.keys {
+            std::env::remove_var(key);
+        }
+    }
+}
+
+fn isolated_base() -> (TempDir, std::path::PathBuf, EnvGuard) {
+    let temp_dir = TempDir::new().unwrap();
+    let base = temp_dir.path().to_path_buf();
+    fs::create_dir_all(&base).unwrap();
+    let guard = EnvGuard::isolate(&base);
+    (temp_dir, base, guard)
+}
 
 #[test]
 fn test_config_default() {
@@ -18,7 +52,7 @@ fn test_general_config_default() {
     assert_eq!(general.default_mode, RestoreMode::Symlink);
     assert!(general.backup);
     assert!(general.tracked_files.is_empty());
-    assert!(general.active_profile.is_none());
+    assert_eq!(general.active_profile.as_deref(), Some("default"));
 }
 
 #[test]
@@ -37,9 +71,10 @@ fn test_restore_mode_variants() {
 }
 
 #[test]
+#[serial]
 fn test_config_init_creates_directories() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     cfg::init(config_path.clone(), false).unwrap();
 
@@ -51,9 +86,10 @@ fn test_config_init_creates_directories() {
 }
 
 #[test]
+#[serial]
 fn test_config_init_force_overwrites() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     // Create first
     cfg::init(config_path.clone(), false).unwrap();
@@ -76,9 +112,10 @@ fn test_config_load_nonexistent() {
 }
 
 #[test]
+#[serial]
 fn test_config_save_and_load() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     let mut config = Config::default();
     config.general.default_mode = RestoreMode::Copy;
@@ -94,9 +131,10 @@ fn test_config_save_and_load() {
 }
 
 #[test]
+#[serial]
 fn test_config_update_discovered() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     // Create initial config
     cfg::init(config_path.clone(), false).unwrap();
@@ -121,9 +159,10 @@ fn test_config_update_discovered() {
 }
 
 #[test]
+#[serial]
 fn test_config_update_discovered_replaces_stale_entries() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     cfg::init(config_path.clone(), false).unwrap();
 
@@ -145,9 +184,10 @@ fn test_config_update_discovered_replaces_stale_entries() {
 }
 
 #[test]
+#[serial]
 fn test_config_check_exists() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("config.toml");
+    let (_temp_dir, base, _guard) = isolated_base();
+    let config_path = base.join("config.toml");
 
     // Should fail when file doesn't exist
     assert!(cfg::check_exists(&config_path).is_err());

@@ -142,17 +142,17 @@ mod profile_config_tests {
     }
 
     #[test]
-    fn test_no_active_profile() {
+    fn test_default_active_profile() {
         let config = Config::default();
-        assert!(config.general.active_profile.is_none());
+        assert_eq!(config.general.active_profile.as_deref(), Some("default"));
     }
 
     #[test]
     fn test_switch_profile_updates_config() {
         let mut config = Config::default();
 
-        // Initially no active profile
-        assert!(config.general.active_profile.is_none());
+        // Default config starts on the default profile store
+        assert_eq!(config.general.active_profile.as_deref(), Some("default"));
 
         // Switch to work
         config.general.active_profile = Some("work".to_string());

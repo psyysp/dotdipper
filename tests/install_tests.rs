@@ -2,9 +2,34 @@
 
 use dotdipper::cfg::Config;
 use dotdipper::install::{self, DiscoveryConfig, DiscoveryResult};
+use serial_test::serial;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::{NamedTempFile, TempDir};
+
+struct EnvGuard {
+    keys: Vec<&'static str>,
+}
+
+impl EnvGuard {
+    fn isolate(base: &Path) -> Self {
+        let keys = ["DOTDIPPER_HOME", "DOTDIPPER_PROFILE", "XDG_CONFIG_HOME"];
+        std::env::set_var("DOTDIPPER_HOME", base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        Self {
+            keys: keys.to_vec(),
+        }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for key in &self.keys {
+            std::env::remove_var(key);
+        }
+    }
+}
 
 #[cfg(test)]
 mod os_detection_tests {
@@ -232,8 +257,10 @@ mod install_script_tests {
     use super::*;
 
     #[test]
+    #[serial]
     fn test_generate_scripts_creates_files() {
         let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
         let config_path = temp_dir.path().join("config.toml");
 
         // Create a minimal config
@@ -252,8 +279,10 @@ mod install_script_tests {
     }
 
     #[test]
+    #[serial]
     fn test_script_names() {
         let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
         let config_path = temp_dir.path().join("config.toml");
 
         dotdipper::cfg::init(config_path.clone(), false).unwrap();
@@ -269,8 +298,10 @@ mod install_script_tests {
     }
 
     #[test]
+    #[serial]
     fn test_macos_generated_scripts_contain_app_restore() {
         let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
         let config_path = temp_dir.path().join("config.toml");
 
         dotdipper::cfg::init(config_path.clone(), false).unwrap();
@@ -328,11 +359,19 @@ mod install_script_tests {
             "must print a manual-install section for unmanaged apps"
         );
         assert!(macos_pkg.content.contains("xcode-select"));
+        assert!(
+            macos_pkg.content.contains(
+                r#"COMPILED_DIR="${DOTDIPPER_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/dotdipper}/compiled""#
+            ),
+            "install_macos.sh must resolve compiled/ from DOTDIPPER_HOME (profile store compat symlink), not append /dotdipper/compiled onto DOTDIPPER_HOME"
+        );
     }
 
     #[test]
+    #[serial]
     fn test_ubuntu_generated_scripts_omit_macos_app_restore() {
         let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
         let config_path = temp_dir.path().join("config.toml");
 
         dotdipper::cfg::init(config_path.clone(), false).unwrap();

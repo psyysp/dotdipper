@@ -87,6 +87,7 @@ mod github_config_tests {
 
         assert!(config.username.is_none());
         assert!(config.repo_name.is_none());
+        assert!(config.branch.is_none());
         assert!(config.private);
     }
 
@@ -95,6 +96,7 @@ mod github_config_tests {
         let config = GitHubConfig {
             username: Some("testuser".to_string()),
             repo_name: Some("dotfiles".to_string()),
+            branch: None,
             private: true,
         };
 
@@ -108,6 +110,7 @@ mod github_config_tests {
         let config = GitHubConfig {
             username: Some("testuser".to_string()),
             repo_name: Some("public-dotfiles".to_string()),
+            branch: None,
             private: false,
         };
 
