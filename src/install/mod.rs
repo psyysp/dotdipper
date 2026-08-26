@@ -77,8 +77,8 @@ fn generate_main_script(_config: &Config, target_os: &str) -> Result<InstallScri
         r#"#!/usr/bin/env bash
 #
 # Dotdipper Installation Script
-# Generated: {}
-# Target OS: {}
+# Generated: {timestamp}
+# Target OS: {target_os}
 #
 
 set -euo pipefail
@@ -108,7 +108,7 @@ if [[ $EUID -eq 0 ]]; then
    exit 1
 fi
 
-log_info "Starting Dotdipper installation for $target_os"
+log_info "Starting Dotdipper installation for {target_os}"
 
 # Set up directories
 DOTDIPPER_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}/dotdipper}}"
@@ -127,8 +127,8 @@ command -v git >/dev/null 2>&1 || {{
 
 # Run OS-specific package installation
 log_info "Installing packages..."
-if [[ -f "$INSTALL_DIR/install_{}.sh" ]]; then
-    bash "$INSTALL_DIR/install_{}.sh"
+if [[ -f "$INSTALL_DIR/install_{target_os}.sh" ]]; then
+    bash "$INSTALL_DIR/install_{target_os}.sh"
 else
     log_warn "Package installation script not found"
 fi
@@ -144,10 +144,8 @@ fi
 log_info "Installation complete!"
 log_info "Run 'dotdipper status' to check your dotfiles"
 "#,
-        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
-        target_os,
-        target_os,
-        target_os
+        timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        target_os = target_os
     );
 
     Ok(InstallScript {
@@ -158,6 +156,12 @@ log_info "Run 'dotdipper status' to check your dotfiles"
 }
 
 fn generate_package_script(packages: &PackagesConfig, target_os: &str) -> Result<InstallScript> {
+    // macOS app restore (Brewfile / mas / unmanaged manifest) is gated here so
+    // Linux package scripts stay on the legacy apt/pacman/dnf paths.
+    if target_os == "macos" {
+        return generate_macos_package_script(packages, target_os);
+    }
+
     let (package_manager, install_cmd, update_cmd) = match target_os {
         "macos" => ("brew", "brew install", "brew update"),
         "ubuntu" | "debian" => ("apt", "sudo apt install -y", "sudo apt update"),
@@ -248,6 +252,165 @@ log_info "Package installation complete"
             .collect::<Vec<_>>()
             .join("\n"),
         install_cmd
+    );
+
+    Ok(InstallScript {
+        name: format!("install_{}.sh", target_os),
+        content,
+        path: PathBuf::new(),
+    })
+}
+
+fn generate_macos_package_script(
+    packages: &PackagesConfig,
+    target_os: &str,
+) -> Result<InstallScript> {
+    let mut all_packages = packages.common.clone();
+    all_packages.extend(packages.macos.clone());
+    all_packages.sort();
+    all_packages.dedup();
+
+    let package_lines = all_packages
+        .iter()
+        .map(|p| format!("    \"{}\"", p))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let content = format!(
+        r#"#!/usr/bin/env bash
+#
+# Package Installation Script for {target_os}
+# Package Manager: brew
+#
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log_info() {{
+    echo -e "${{GREEN}}[INFO]${{NC}} $1"
+}}
+
+log_error() {{
+    echo -e "${{RED}}[ERROR]${{NC}} $1" >&2
+}}
+
+log_warn() {{
+    echo -e "${{YELLOW}}[WARN]${{NC}} $1"
+}}
+
+COMPILED_DIR="${{DOTDIPPER_HOME:-${{XDG_CONFIG_HOME:-$HOME/.config}}}}/dotdipper/compiled"
+
+# Xcode Command Line Tools
+if ! xcode-select -p >/dev/null 2>&1; then
+    log_info "Xcode Command Line Tools not found. Starting installer..."
+    xcode-select --install
+    log_info "Please complete the Xcode Command Line Tools installation, then re-run this script."
+    exit 0
+fi
+
+# Homebrew
+if ! command -v brew >/dev/null 2>&1; then
+    log_info "Homebrew not found. Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+# Eval shellenv for Apple Silicon and Intel Homebrew prefixes
+if [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+if [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
+if ! command -v brew >/dev/null 2>&1; then
+    log_error "Homebrew is not available. Please install it manually and re-run this script."
+    exit 1
+fi
+
+# Prefer Brewfile from the compiled repo; fall back to config package lists
+if [[ -f "$COMPILED_DIR/Brewfile" ]]; then
+    log_info "Found Brewfile at $COMPILED_DIR/Brewfile"
+
+    if grep -q '^mas ' "$COMPILED_DIR/Brewfile"; then
+        if ! command -v mas >/dev/null 2>&1; then
+            log_info "Installing mas (Mac App Store CLI)..."
+            brew install mas || log_warn "Failed to install mas"
+        fi
+        log_warn "Brewfile contains Mac App Store apps. Sign in to the App Store before continuing."
+    fi
+
+    log_info "Installing packages from Brewfile..."
+    brew bundle --file="$COMPILED_DIR/Brewfile" || log_warn "brew bundle reported errors; continuing with remaining setup"
+else
+    log_info "No Brewfile found; falling back to configured package lists"
+    log_info "Updating package lists..."
+    brew update || true
+
+    packages=(
+{package_lines}
+    )
+
+    for package in "${{packages[@]}}"; do
+        if brew install "$package"; then
+            log_info "Installed $package"
+        else
+            log_error "Failed to install $package"
+        fi
+    done
+fi
+
+# Apps that cannot be installed via brew/mas
+if [[ -f "$COMPILED_DIR/apps_manifest.toml" ]]; then
+    log_info "Checking for apps that must be installed manually..."
+    unmanaged_list="$(awk '
+        function flush() {{
+            if (name != "") {{
+                printf "  - %s\n    %s\n", name, path
+            }}
+            name = ""
+            path = ""
+        }}
+        /^\[\[unmanaged\]\]/ {{ flush(); in_u = 1; next }}
+        /^\[/ {{ if (in_u) flush(); in_u = 0; next }}
+        in_u && /^name[[:space:]]*=/ {{
+            sub(/^[^=]*=[[:space:]]*"/, "")
+            sub(/"[[:space:]]*$/, "")
+            name = $0
+            next
+        }}
+        in_u && /^path[[:space:]]*=/ {{
+            sub(/^[^=]*=[[:space:]]*"/, "")
+            sub(/"[[:space:]]*$/, "")
+            path = $0
+            next
+        }}
+        END {{
+            if (in_u) flush()
+        }}
+    ' "$COMPILED_DIR/apps_manifest.toml")"
+
+    if [[ -n "$unmanaged_list" ]]; then
+        echo
+        echo "============================================================"
+        echo "  Apps you must install manually"
+        echo "============================================================"
+        echo "$unmanaged_list"
+        echo "============================================================"
+        echo
+    else
+        log_info "All apps are covered by Homebrew/mas; nothing to install manually."
+    fi
+fi
+
+log_info "Package installation complete"
+"#,
+        target_os = target_os,
+        package_lines = package_lines
     );
 
     Ok(InstallScript {

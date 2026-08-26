@@ -48,6 +48,10 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<RemoteConfig>,
 
+    // macOS application capture (Homebrew / MAS / /Applications)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apps: Option<AppsConfig>,
+
     // Legacy field for compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dotfiles: Option<DotfilesConfig>,
@@ -184,6 +188,26 @@ pub struct AutoPruneConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppsConfig {
+    /// Capture Homebrew / MAS / Applications during `dotdipper push`.
+    #[serde(default = "default_true")]
+    pub capture_on_push: bool,
+
+    /// Scan `/Applications` and `~/Applications` for unmanaged apps.
+    #[serde(default = "default_true")]
+    pub scan_applications: bool,
+}
+
+impl Default for AppsConfig {
+    fn default() -> Self {
+        AppsConfig {
+            capture_on_push: true,
+            scan_applications: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Kind: "github", "s3", "gcs", "webdav"
     pub kind: String,
@@ -216,6 +240,7 @@ impl Default for Config {
             daemon: None,
             auto_prune: None,
             remote: None,
+            apps: None,
             dotfiles: None,
         }
     }
@@ -402,6 +427,10 @@ fn default_daemon_mode() -> String {
 
 fn default_debounce_ms() -> u64 {
     1500
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn init(config_path: PathBuf, force: bool) -> Result<()> {

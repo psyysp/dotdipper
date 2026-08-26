@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+use dotdipper::apps;
 use dotdipper::cfg;
 use dotdipper::daemon;
 use dotdipper::diff;
@@ -208,6 +210,11 @@ enum Commands {
     /// Manage push-ignore patterns
     #[command(subcommand)]
     Ignore(IgnoreCommands),
+
+    /// Capture and restore installed macOS applications
+    #[cfg(target_os = "macos")]
+    #[command(subcommand)]
+    Apps(AppsCommands),
 }
 
 #[derive(Subcommand)]
@@ -400,6 +407,23 @@ enum IgnoreCommands {
     List,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
+enum AppsCommands {
+    /// Capture Homebrew, Mac App Store, and /Applications state
+    Capture,
+
+    /// Show the captured apps manifest
+    List,
+
+    /// Restore Homebrew packages from the captured Brewfile
+    Install {
+        /// Print what would be installed without running brew bundle
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -480,6 +504,8 @@ async fn main() -> Result<()> {
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
         Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
+        #[cfg(target_os = "macos")]
+        Commands::Apps(subcmd) => cmd_apps(config_path, subcmd).await,
     };
 
     if let Err(e) = result {
@@ -703,6 +729,32 @@ async fn cmd_push(
     // Create snapshot first
     repo::snapshot(&config, false)?;
 
+    #[cfg(target_os = "macos")]
+    {
+        let capture_on_push = config
+            .apps
+            .as_ref()
+            .map(|apps| apps.capture_on_push)
+            .unwrap_or(true);
+        if capture_on_push {
+            ui::info("Capturing installed applications...");
+            match apps::capture(&config) {
+                Ok(result) => {
+                    ui::success(&format!(
+                        "Captured {} formulae, {} casks, {} MAS apps, {} unmanaged apps",
+                        result.formulae, result.casks, result.mas, result.unmanaged
+                    ));
+                }
+                Err(e) => {
+                    ui::warn(&format!(
+                        "App capture failed (continuing with push): {:#}",
+                        e
+                    ));
+                }
+            }
+        }
+    }
+
     // Push to GitHub
     let effective_repo = vcs::push(&config, message, force, repo.as_deref())?;
 
@@ -778,6 +830,36 @@ async fn cmd_undo(config_path: PathBuf, force: bool, repo: Option<String>) -> Re
     }
 
     ui::success("Successfully reverted the last pushed commit!");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn cmd_apps(config_path: PathBuf, subcmd: AppsCommands) -> Result<()> {
+    let config = cfg::load(&config_path)?;
+
+    match subcmd {
+        AppsCommands::Capture => {
+            ui::info("Capturing installed applications...");
+            let result = apps::capture(&config)?;
+            ui::success(&format!(
+                "Captured {} formulae, {} casks, {} MAS apps, {} unmanaged apps",
+                result.formulae, result.casks, result.mas, result.unmanaged
+            ));
+            ui::info(&format!("Wrote {}", result.brewfile_path.display()));
+            ui::info(&format!("Wrote {}", result.manifest_path.display()));
+        }
+        AppsCommands::List => {
+            apps::list()?;
+        }
+        AppsCommands::Install { dry_run } => {
+            if dry_run {
+                apps::dry_run_install()?;
+            } else {
+                apps::install(&config)?;
+            }
+        }
+    }
+
     Ok(())
 }
 

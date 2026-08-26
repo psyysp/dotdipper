@@ -8,6 +8,8 @@
 //! - Version control integration
 //! - Secrets management
 
+#[cfg(target_os = "macos")]
+pub mod apps;
 pub mod cfg;
 pub mod daemon;
 pub mod diff;

@@ -267,6 +267,105 @@ mod install_script_tests {
         assert!(names.iter().any(|n| n.starts_with("install_")));
         assert!(names.contains(&"setup_dotfiles.sh"));
     }
+
+    #[test]
+    fn test_macos_generated_scripts_contain_app_restore() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+
+        dotdipper::cfg::init(config_path.clone(), false).unwrap();
+        let config = dotdipper::cfg::load(&config_path).unwrap();
+
+        let scripts = install::generate_scripts(&config, "macos").unwrap();
+
+        let install_sh = scripts
+            .iter()
+            .find(|s| s.name == "install.sh")
+            .expect("install.sh");
+        assert!(install_sh
+            .content
+            .contains("Starting Dotdipper installation for macos"));
+        assert!(
+            !install_sh.content.contains("$target_os"),
+            "install.sh must interpolate target_os at generation time, not emit an unbound $target_os"
+        );
+
+        let macos_pkg = scripts
+            .iter()
+            .find(|s| s.name == "install_macos.sh")
+            .expect("install_macos.sh");
+
+        assert!(
+            macos_pkg
+                .content
+                .contains("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"),
+            "must contain the official Homebrew installer"
+        );
+        assert!(
+            macos_pkg.content.contains("command -v brew"),
+            "must guard Homebrew installation with command -v brew"
+        );
+        assert!(
+            macos_pkg
+                .content
+                .contains(r#"brew bundle --file="$COMPILED_DIR/Brewfile""#),
+            "must run brew bundle against the compiled Brewfile"
+        );
+        assert!(
+            macos_pkg.content.contains("grep -q '^mas '"),
+            "must detect mas entries in the Brewfile"
+        );
+        assert!(
+            macos_pkg.content.contains("brew install mas"),
+            "must ensure mas is installed when Brewfile has mas entries"
+        );
+        assert!(
+            macos_pkg.content.contains("apps_manifest.toml"),
+            "must read unmanaged apps from apps_manifest.toml"
+        );
+        assert!(
+            macos_pkg.content.contains("must install manually"),
+            "must print a manual-install section for unmanaged apps"
+        );
+        assert!(macos_pkg.content.contains("xcode-select"));
+    }
+
+    #[test]
+    fn test_ubuntu_generated_scripts_omit_macos_app_restore() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+
+        dotdipper::cfg::init(config_path.clone(), false).unwrap();
+        let config = dotdipper::cfg::load(&config_path).unwrap();
+
+        let scripts = install::generate_scripts(&config, "ubuntu").unwrap();
+
+        let install_sh = scripts
+            .iter()
+            .find(|s| s.name == "install.sh")
+            .expect("install.sh");
+        assert!(install_sh
+            .content
+            .contains("Starting Dotdipper installation for ubuntu"));
+        assert!(!install_sh.content.contains("$target_os"));
+
+        let ubuntu_pkg = scripts
+            .iter()
+            .find(|s| s.name == "install_ubuntu.sh")
+            .expect("install_ubuntu.sh");
+
+        assert!(
+            !ubuntu_pkg.content.contains("Brewfile"),
+            "Linux scripts must not contain Brewfile restore logic"
+        );
+        assert!(!ubuntu_pkg.content.contains("brew bundle"));
+        assert!(!ubuntu_pkg.content.contains("apps_manifest"));
+        assert!(!ubuntu_pkg.content.contains("xcode-select"));
+        assert!(!ubuntu_pkg.content.contains("brew install mas"));
+        assert!(!ubuntu_pkg
+            .content
+            .contains("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"));
+    }
 }
 
 #[cfg(test)]

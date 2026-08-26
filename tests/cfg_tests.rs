@@ -256,6 +256,38 @@ prefix = "backups/"
 }
 
 #[test]
+fn test_apps_config() {
+    let config_str = r#"
+[general]
+default_mode = "symlink"
+
+[apps]
+capture_on_push = false
+scan_applications = false
+"#;
+
+    let config: Config = toml::from_str(config_str).unwrap();
+    let apps = config.apps.unwrap();
+    assert!(!apps.capture_on_push);
+    assert!(!apps.scan_applications);
+}
+
+#[test]
+fn test_apps_config_defaults() {
+    let config_str = r#"
+[general]
+default_mode = "symlink"
+
+[apps]
+"#;
+
+    let config: Config = toml::from_str(config_str).unwrap();
+    let apps = config.apps.expect("empty [apps] should deserialize");
+    assert!(apps.capture_on_push);
+    assert!(apps.scan_applications);
+}
+
+#[test]
 fn test_file_overrides() {
     let config_str = r#"
 [general]
