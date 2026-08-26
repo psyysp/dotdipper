@@ -127,9 +127,41 @@ mod base_dir_tests {
 #[cfg(test)]
 mod discovery_tests {
     use super::*;
+    use serial_test::serial;
+
+    /// Point DOTDIPPER_HOME at an empty temp dir for the duration of a test.
+    ///
+    /// scan::discover consults <DOTDIPPER_HOME>/.dotdipperignore; on a shared
+    /// machine/CI runner that file may exist (created by other test binaries
+    /// running `init`) and its default `**/tmp/**` pattern would exclude
+    /// TempDir fixtures on Linux, where temp dirs live under /tmp.
+    struct IsolatedHome {
+        _dir: TempDir,
+        prev: Option<std::ffi::OsString>,
+    }
+
+    impl IsolatedHome {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let prev = std::env::var_os("DOTDIPPER_HOME");
+            std::env::set_var("DOTDIPPER_HOME", dir.path());
+            Self { _dir: dir, prev }
+        }
+    }
+
+    impl Drop for IsolatedHome {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("DOTDIPPER_HOME", v),
+                None => std::env::remove_var("DOTDIPPER_HOME"),
+            }
+        }
+    }
 
     #[test]
+    #[serial]
     fn test_discover_empty_config() {
+        let _home = IsolatedHome::new();
         let config = Config::default();
 
         // With empty include patterns and no tracked files
@@ -140,7 +172,9 @@ mod discovery_tests {
     }
 
     #[test]
+    #[serial]
     fn test_discover_with_tracked_files() {
+        let _home = IsolatedHome::new();
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "content").unwrap();
@@ -148,6 +182,7 @@ mod discovery_tests {
         let mut config = Config::default();
         config.general.tracked_files = vec![test_file.clone()];
         config.include_patterns = vec![]; // Clear default include patterns
+        config.exclude_patterns = vec![];
 
         let result = dotdipper::scan::discover(&config, false).unwrap();
 
@@ -156,7 +191,9 @@ mod discovery_tests {
     }
 
     #[test]
+    #[serial]
     fn test_discover_sorts_results() {
+        let _home = IsolatedHome::new();
         let temp_dir = TempDir::new().unwrap();
         let file_c = temp_dir.path().join("c.txt");
         let file_a = temp_dir.path().join("a.txt");
@@ -169,6 +206,7 @@ mod discovery_tests {
         let mut config = Config::default();
         config.general.tracked_files = vec![file_c.clone(), file_a.clone(), file_b.clone()];
         config.include_patterns = vec![];
+        config.exclude_patterns = vec![];
 
         let result = dotdipper::scan::discover(&config, false).unwrap();
 
@@ -183,7 +221,9 @@ mod discovery_tests {
     }
 
     #[test]
+    #[serial]
     fn test_discover_removes_duplicates() {
+        let _home = IsolatedHome::new();
         let temp_dir = TempDir::new().unwrap();
         let test_file = temp_dir.path().join("test.txt");
         fs::write(&test_file, "content").unwrap();
@@ -191,6 +231,7 @@ mod discovery_tests {
         let mut config = Config::default();
         config.general.tracked_files = vec![test_file.clone(), test_file.clone()];
         config.include_patterns = vec![];
+        config.exclude_patterns = vec![];
 
         let result = dotdipper::scan::discover(&config, false).unwrap();
 
