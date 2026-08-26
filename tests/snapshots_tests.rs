@@ -205,7 +205,7 @@ mod snapshot_struct_tests {
 
         let now = Utc::now();
 
-        let mut snapshots = vec![
+        let mut snapshots = [
             Snapshot {
                 id: "older".to_string(),
                 message: None,
@@ -230,7 +230,7 @@ mod snapshot_struct_tests {
         ];
 
         // Sort newest first
-        snapshots.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        snapshots.sort_by_key(|s| std::cmp::Reverse(s.created_at));
 
         assert_eq!(snapshots[0].id, "newest");
         assert_eq!(snapshots[1].id, "middle");
