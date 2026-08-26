@@ -2,7 +2,22 @@
 
 All notable changes to dotdipper are documented here.
 
-## [Unreleased]
+## [0.7.5] - 2026-08-26
+
+### Added
+
+- **macOS app capture & restore (`dotdipper apps`, macOS builds only):** `apps capture` dumps Homebrew state via `brew bundle dump` into a `Brewfile`, records Mac App Store apps (`mas list`) and scans `/Applications` + `~/Applications` into `apps_manifest.toml` (unmanaged apps flagged for manual install). Both files live in the compiled store and sync with `push`/`pull`. `apps install [--dry-run]` restores via `brew bundle`; capture runs automatically on `push` (`[apps] capture_on_push`, default true). Linux builds do not include the command.
+- **Bootstrap overhaul for macOS:** generated `install_macos.sh` now installs Xcode Command Line Tools and Homebrew when missing, restores packages with `brew bundle` from the synced Brewfile (with a `mas` guard for App Store apps), and prints unmanaged apps to install manually. Legacy package-list install remains the fallback when no Brewfile exists.
+- **Container e2e suite:** `scripts/container-test.sh` runs a real fresh-machine test in a Linux (Docker) container — build, push to a bare repo, pull `--apply` on a clean HOME, byte-identical restore, status clean, round-trip update, and Linux script generation.
+
+### Fixed
+
+- Generated `install.sh` no longer crashes on an unbound `$target_os` shell variable.
+- `discover`/`snapshot` skip non-regular files (sockets, fifos) instead of failing.
+- `push` retargets the `origin` remote when `github.repo_name` changes, and reports an error instead of claiming success when the GitHub repo/remote could not be prepared.
+- Release tarballs removed from the repository (`release-v*/` now gitignored); test suite is tracked in git again.
+
+### Previously unreleased (0.7.4 branch work, first shipped in this release)
 
 ### Added
 
