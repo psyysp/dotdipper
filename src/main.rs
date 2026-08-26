@@ -172,6 +172,10 @@ enum Commands {
 
     /// Generate and run installation scripts
     Install {
+        /// Print or export the generated setup_dotfiles.sh
+        #[command(subcommand)]
+        action: Option<InstallCommands>,
+
         /// Only generate scripts without running
         #[arg(long)]
         dry_run: bool,
@@ -407,6 +411,16 @@ enum IgnoreCommands {
     List,
 }
 
+#[derive(Subcommand)]
+enum InstallCommands {
+    /// Print or export the generated setup_dotfiles.sh from tracked files / manifest
+    Script {
+        /// Write the script to a file instead of printing to stdout
+        #[arg(short = 'o', long = "out", value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+}
+
 #[cfg(target_os = "macos")]
 #[derive(Subcommand)]
 enum AppsCommands {
@@ -497,10 +511,14 @@ async fn main() -> Result<()> {
         } => cmd_pull(config_path, apply, force, unsafe_allow_outside_home, repo).await,
         Commands::Undo { force, repo } => cmd_undo(config_path, force, repo).await,
         Commands::Install {
+            action,
             dry_run,
             target_os,
             unsafe_allow_outside_home,
-        } => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
+        } => match action {
+            Some(InstallCommands::Script { out }) => cmd_install_script(config_path, out).await,
+            None => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
+        },
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
         Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
@@ -907,6 +925,47 @@ async fn cmd_ignore(config_path: PathBuf, subcmd: IgnoreCommands) -> Result<()> 
                     println!("  {}", pattern);
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+async fn cmd_install_script(config_path: PathBuf, out: Option<PathBuf>) -> Result<()> {
+    let config = cfg::load(&config_path)?;
+    let script = install::generate_dotfiles_script(&config)?;
+
+    if let Some(output_path) = out {
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+            }
+        }
+
+        std::fs::write(&output_path, &script.content).with_context(|| {
+            format!(
+                "Failed to write install script to {}",
+                output_path.display()
+            )
+        })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&output_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&output_path, perms)?;
+        }
+
+        ui::success(&format!(
+            "Wrote install script to {}",
+            output_path.display()
+        ));
+    } else {
+        print!("{}", script.content);
+        if !script.content.ends_with('\n') {
+            println!();
         }
     }
 

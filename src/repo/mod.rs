@@ -10,7 +10,7 @@ use crate::hash::{hash_file, Manifest};
 use crate::ui;
 
 /// Files that live in `compiled/` but are not user dotfiles.
-fn is_store_metadata(rel_path: &Path) -> bool {
+pub(crate) fn is_store_metadata(rel_path: &Path) -> bool {
     let s = rel_path.to_string_lossy();
     s == "manifest.lock"
         || s == ".gitignore"

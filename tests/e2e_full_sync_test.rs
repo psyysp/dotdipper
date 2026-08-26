@@ -339,19 +339,17 @@ fn e2e_push_pull_apply_install_roundtrip() {
         .success();
 
     let setup = fs::read_to_string(base2.join("install").join("setup_dotfiles.sh")).unwrap();
-    assert!(setup.contains("DOTFILES=("));
-    assert!(setup.contains(".zshrc"));
-    assert!(setup.contains(".vimrc"));
-    assert!(setup.contains(".config/app/settings.toml"));
-    // File list must not include git store paths (skip-logic strings may still mention .git)
-    let list_section = setup
-        .split("DOTFILES=(")
-        .nth(1)
-        .and_then(|s| s.split(')').next())
-        .unwrap_or("");
+    assert!(setup.contains("DOTFILE_COUNT="));
+    assert!(setup.contains("apply_copy '.zshrc'"));
+    assert!(setup.contains("apply_copy '.vimrc'"));
+    assert!(setup.contains("apply_copy '.config/app/settings.toml'"));
     assert!(
-        !list_section.contains(".git/"),
-        "DOTFILES list must not include .git paths: {list_section}"
+        !setup.contains("apply_symlink '.git/") && !setup.contains("apply_copy '.git/"),
+        "explicit install steps must not include .git paths"
+    );
+    assert!(
+        !setup.contains(r#"find "$COMPILED_DIR" -type f"#),
+        "manifest-backed setup should not fall back to runtime find"
     );
 
     let install_sh = fs::read_to_string(base2.join("install").join("install.sh")).unwrap();

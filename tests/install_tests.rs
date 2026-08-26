@@ -1,8 +1,11 @@
 //! Integration tests for the install module
 
-use dotdipper::cfg::Config;
+use assert_cmd::Command;
+use dotdipper::cfg::{Config, FileOverride, RestoreMode};
 use dotdipper::install::{self, DiscoveryConfig, DiscoveryResult};
+use predicates::prelude::*;
 use serial_test::serial;
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::{NamedTempFile, TempDir};
@@ -404,6 +407,216 @@ mod install_script_tests {
         assert!(!ubuntu_pkg
             .content
             .contains("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_generate_dotfiles_script_emits_per_file_modes() {
+        let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
+        let home = PathBuf::from(std::env::var("HOME").expect("HOME should be set"));
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![
+            home.join(".zshrc"),
+            home.join(".gitconfig"),
+            home.join(".ssh/config"),
+            home.join(".config/dotdipper-local"),
+        ];
+        config.files.insert(
+            "~/.gitconfig".to_string(),
+            FileOverride {
+                mode: Some(RestoreMode::Copy),
+                exclude: false,
+                local_only: false,
+            },
+        );
+        config.files.insert(
+            "~/.ssh/config".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: true,
+                local_only: false,
+            },
+        );
+        config.files.insert(
+            "~/.config/dotdipper-local".to_string(),
+            FileOverride {
+                mode: None,
+                exclude: false,
+                local_only: true,
+            },
+        );
+
+        let script = install::generate_dotfiles_script(&config).expect("script should generate");
+
+        assert!(script.content.contains("DOTFILE_COUNT=2"));
+        assert!(script.content.contains("apply_symlink '.zshrc'"));
+        assert!(script.content.contains("apply_copy '.gitconfig'"));
+        assert!(!script.content.contains("apply_symlink '.ssh/config'"));
+        assert!(!script.content.contains("dotdipper-local"));
+        assert!(!script.content.contains(r#"find "$COMPILED_DIR" -type f"#));
+        assert!(script.content.contains(
+            r#"COMPILED_DIR="${DOTDIPPER_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/dotdipper}/compiled""#
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn test_generate_dotfiles_script_falls_back_to_find_without_inventory() {
+        let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
+        let config = Config::default();
+
+        let script = install::generate_dotfiles_script(&config).expect("script should generate");
+
+        assert!(script.content.contains(r#"find "$COMPILED_DIR" -type f"#));
+        assert!(script.content.contains("apply_symlink"));
+        assert!(!script.content.contains("DOTFILE_COUNT="));
+    }
+
+    #[test]
+    #[serial]
+    fn test_macos_setup_dotfiles_still_skips_app_store_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let _guard = EnvGuard::isolate(temp_dir.path());
+        let config_path = temp_dir.path().join("config.toml");
+
+        dotdipper::cfg::init(config_path.clone(), false).unwrap();
+        let config = dotdipper::cfg::load(&config_path).unwrap();
+
+        let scripts = install::generate_scripts(&config, "macos").unwrap();
+        let setup = scripts
+            .iter()
+            .find(|s| s.name == "setup_dotfiles.sh")
+            .expect("setup_dotfiles.sh");
+
+        assert!(setup.content.contains("Brewfile"));
+        assert!(setup.content.contains("apps_manifest.toml"));
+        assert!(setup
+            .content
+            .contains(r#"COMPILED_DIR="${DOTDIPPER_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/dotdipper}/compiled""#));
+    }
+}
+
+#[cfg(test)]
+mod install_script_cli_tests {
+    use super::*;
+
+    #[test]
+    fn test_install_script_help() {
+        let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+        cmd.arg("install")
+            .arg("script")
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("setup_dotfiles.sh"))
+            .stdout(predicate::str::contains("--out"));
+    }
+
+    #[test]
+    fn test_install_script_prints_setup_dotfiles() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let dd_home = temp_dir.path().join("dd");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&dd_home).unwrap();
+
+        let zshrc = home.join(".zshrc");
+        let gitconfig = home.join(".gitconfig");
+        fs::write(&zshrc, "export EDITOR=nvim\n").unwrap();
+        fs::write(&gitconfig, "[user]\n\tname = Test\n").unwrap();
+
+        let config_path = dd_home.join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[general]
+default_mode = "symlink"
+tracked_files = ["{}", "{}"]
+
+[files."~/.gitconfig"]
+mode = "copy"
+"#,
+                zshrc.display(),
+                gitconfig.display()
+            ),
+        )
+        .unwrap();
+
+        let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+        cmd.env("HOME", &home)
+            .env("DOTDIPPER_HOME", &dd_home)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("DOTDIPPER_PROFILE")
+            .arg("--config")
+            .arg(&config_path)
+            .arg("install")
+            .arg("script")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("#!/usr/bin/env bash"))
+            .stdout(predicate::str::contains("DOTFILE_COUNT=2"))
+            .stdout(predicate::str::contains("apply_symlink '.zshrc'"))
+            .stdout(predicate::str::contains("apply_copy '.gitconfig'"))
+            .stdout(predicate::str::contains("Wrote install script").not());
+    }
+
+    #[test]
+    fn test_install_script_exports_to_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let home = temp_dir.path().join("home");
+        let dd_home = temp_dir.path().join("dd");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&dd_home).unwrap();
+
+        let zshrc = home.join(".zshrc");
+        fs::write(&zshrc, "alias ll='ls -la'\n").unwrap();
+
+        let config_path = dd_home.join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[general]
+tracked_files = ["{}"]
+"#,
+                zshrc.display()
+            ),
+        )
+        .unwrap();
+
+        let output_path = home.join("exported").join("setup_dotfiles.sh");
+
+        let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+        cmd.env("HOME", &home)
+            .env("DOTDIPPER_HOME", &dd_home)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("DOTDIPPER_PROFILE")
+            .arg("--config")
+            .arg(&config_path)
+            .arg("install")
+            .arg("script")
+            .arg("--out")
+            .arg(&output_path)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Wrote install script"))
+            .stdout(predicate::str::contains("#!/usr/bin/env bash").not())
+            .stdout(predicate::str::contains("apply_symlink").not());
+
+        let content = fs::read_to_string(&output_path).unwrap();
+        assert!(content.contains("#!/usr/bin/env bash"));
+        assert!(content.contains("apply_symlink '.zshrc'"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&output_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
     }
 }
 

@@ -269,12 +269,12 @@ exclude = true
 
     let setup = fs::read_to_string(config_dir.join("install").join("setup_dotfiles.sh")).unwrap();
     assert!(
-        setup.contains("DOTFILES=("),
+        setup.contains("DOTFILE_COUNT=1"),
         "setup script should embed an explicit file list"
     );
-    assert!(setup.contains(".vimrc"));
+    assert!(setup.contains("apply_symlink '.vimrc'"));
     assert!(
-        setup.contains("for rel_path"),
-        "setup script should iterate listed files"
+        !setup.contains(r#"find "$COMPILED_DIR" -type f"#),
+        "manifest-backed setup should not fall back to runtime find"
     );
 }

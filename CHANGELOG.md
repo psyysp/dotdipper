@@ -11,6 +11,7 @@ All notable changes to dotdipper are documented here.
 - **Per-profile config overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). New profiles get a comments-only overlay so they inherit the global file.
 - **Per-profile GitHub target:** push/pull/undo/clone use branch `main` for `default` and `dotdipper/<name>` otherwise. Overlay or global `[github].repo_name` can select a dedicated repository; `[github].branch` overrides the default. Branch and repo are independent.
 - **`[secrets].recipients`:** multi-machine SOPS age recipients; encrypt also honors `SOPS_AGE_RECIPIENTS` / `.sops.yaml` without forcing a single local `--age`.
+- **`dotdipper install script`:** print or export (`--out PATH`) `setup_dotfiles.sh` without running the full install. The generated script uses the compiled manifest (falling back to `tracked_files`, then a runtime `find`) and honors per-file `[files]` symlink/copy / exclude / `local_only` overrides.
 
 ### Changed
 

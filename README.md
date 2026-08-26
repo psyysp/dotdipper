@@ -185,9 +185,15 @@ dotdipper apply --interactive
 
 # 6. Install discovered packages, then place dotfiles safely
 dotdipper install
+
+# Optional: inspect or share the generated setup script (does not run it)
+dotdipper install script
+dotdipper install script -o setup_dotfiles.sh
 ```
 
 `pull` only updates the local compiled store. Your live `$HOME` files are unchanged until you `apply` (or `pull --apply` / `install`). Keep `general.backup = true` so existing files are copied to `.bak.<timestamp>` before overwrite.
+
+`dotdipper install` writes `setup_dotfiles.sh` from the compiled manifest (or tracked file list), honoring per-file `[files]` symlink/copy overrides. Prefer `dotdipper apply` on machines that have the binary; use `dotdipper install script` to print or export the fallback script.
 
 ---
 
@@ -671,6 +677,8 @@ dotdipper discover --packages --include-low-confidence  # Include uncertain matc
 # Install packages
 dotdipper install [--dry-run]       # Install packages
 dotdipper install --target-os ubuntu  # Target specific OS
+dotdipper install script              # Print setup_dotfiles.sh (manifest / tracked files)
+dotdipper install script -o setup.sh  # Export to a file (creates parent dirs; marks executable)
 ```
 
 ---

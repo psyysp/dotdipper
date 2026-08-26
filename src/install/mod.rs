@@ -6,10 +6,10 @@ pub mod validators;
 use anyhow::{Context, Result};
 use os_info::Type as OsType;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::cfg::{Config, PackagesConfig};
+use crate::cfg::{Config, PackagesConfig, RestoreMode};
 use crate::ui;
 
 // Re-export commonly used types
@@ -22,6 +22,12 @@ pub struct InstallScript {
     pub name: String,
     pub content: String,
     pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DotfileInstallAction {
+    rel_path: PathBuf,
+    mode: RestoreMode,
 }
 
 pub fn detect_os() -> String {
@@ -425,65 +431,23 @@ log_info "Package installation complete"
     })
 }
 
-fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
-    let use_symlinks = matches!(
-        config.general.default_mode,
-        crate::cfg::RestoreMode::Symlink
-    ) || config
-        .dotfiles
-        .as_ref()
-        .map(|d| d.use_symlinks)
-        .unwrap_or(false);
-
-    // Prefer an explicit file list from the manifest so we never link .git, excludes, etc.
-    let mut file_list: Vec<String> = Vec::new();
-    if let Ok(manifest) = crate::repo::load_manifest() {
-        for rel in manifest.files.keys() {
-            let path_str = format!("~/{}", rel.display());
-            if config.files.get(&path_str).is_some_and(|o| o.exclude) {
-                continue;
-            }
-            let rel_str = rel.display().to_string();
-            if rel_str == "Brewfile"
-                || rel_str == "apps_manifest.toml"
-                || rel_str == "manifest.lock"
-                || rel_str == ".gitignore"
-            {
-                continue;
-            }
-            file_list.push(rel_str);
-        }
-        file_list.sort();
-    }
-
-    let file_list_bash = if file_list.is_empty() {
-        String::from(
-            r#"# No manifest available at generation time — walk compiled/ but skip metadata
-# Portable across BSD (macOS) and GNU find; skip store metadata and app manifests.
-DOTFILES=()
-while IFS= read -r f; do
-    rel="${f#"$COMPILED_DIR"/}"
-    case "$rel" in
-        .git/*|.git|manifest.lock|.gitignore|Brewfile|apps_manifest.toml) continue ;;
-    esac
-    DOTFILES+=("$rel")
-done < <(find "$COMPILED_DIR" -type f ! -path '*/.git/*' | sort)"#,
-        )
+/// Build the portable `setup_dotfiles.sh` content from the manifest or tracked list.
+pub fn generate_dotfiles_script(config: &Config) -> Result<InstallScript> {
+    let actions = build_dotfiles_install_actions(config)?;
+    let helpers = generate_dotfile_helpers();
+    let body = if actions.is_empty() {
+        generate_find_fallback_body(default_restore_mode(config))
     } else {
-        let entries = file_list
-            .iter()
-            .map(|p| format!("    \"{}\"", p))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!("DOTFILES=(\n{}\n)", entries)
+        generate_explicit_dotfile_body(&actions)
     };
 
     let content = format!(
         r#"#!/usr/bin/env bash
 #
 # Dotfiles Setup Script
-# Method: {}
+# Entries: {entries}
 # NOTE: Prefer `dotdipper apply` — this script is a fallback for bootstrap without the binary.
+# Encrypted secrets (.age / .sops.*) are skipped here; use `dotdipper apply` to decrypt them.
 #
 
 set -euo pipefail
@@ -516,39 +480,15 @@ if [[ ! -d "$COMPILED_DIR" ]]; then
     exit 1
 fi
 
-# Function to create backup
-backup_file() {{
-    local file="$1"
-    if [[ -e "$file" ]] && [[ ! -L "$file" ]]; then
-        local backup="${{file}}.backup.$(date +%Y%m%d_%H%M%S)"
-        mv "$file" "$backup"
-        log_info "Backed up $file to $backup"
-    fi
-}}
+{helpers}
 
-# Function to ensure parent directory exists
-ensure_parent_dir() {{
-    local file="$1"
-    local parent=$(dirname "$file")
-    if [[ ! -d "$parent" ]]; then
-        mkdir -p "$parent"
-        log_info "Created directory $parent"
-    fi
-}}
-
-{}
-
-{}
+{body}
 
 log_info "Dotfiles setup complete"
 "#,
-        if use_symlinks { "symlinks" } else { "copies" },
-        file_list_bash,
-        if use_symlinks {
-            generate_symlink_setup()
-        } else {
-            generate_copy_setup()
-        }
+        entries = describe_install_actions(&actions),
+        helpers = helpers,
+        body = body,
     );
 
     Ok(InstallScript {
@@ -558,60 +498,256 @@ log_info "Dotfiles setup complete"
     })
 }
 
-fn generate_symlink_setup() -> String {
-    r#"# Apply only the listed dotfiles (never walk .git blindly)
-for rel_path in "${DOTFILES[@]}"; do
-    # Skip store metadata just in case
-    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]] || [[ "$rel_path" == "Brewfile" ]] || [[ "$rel_path" == "apps_manifest.toml" ]]; then
-        continue
-    fi
+fn default_restore_mode(config: &Config) -> RestoreMode {
+    if config
+        .dotfiles
+        .as_ref()
+        .map(|d| d.use_symlinks)
+        .unwrap_or(false)
+    {
+        RestoreMode::Symlink
+    } else {
+        config.general.default_mode
+    }
+}
 
-    source_file="$COMPILED_DIR/$rel_path"
-    target_file="$HOME_DIR/$rel_path"
+fn override_key(rel: &Path) -> String {
+    format!("~/{}", rel.display())
+}
+
+fn should_skip_rel(config: &Config, rel: &Path) -> bool {
+    if crate::repo::is_store_metadata(rel) {
+        return true;
+    }
+    if crate::secrets::is_encrypted_secret_path(rel) {
+        return true;
+    }
+    config
+        .files
+        .get(&override_key(rel))
+        .is_some_and(|entry| entry.exclude || entry.local_only)
+}
+
+fn restore_mode_for(config: &Config, rel: &Path) -> RestoreMode {
+    config
+        .files
+        .get(&override_key(rel))
+        .and_then(|entry| entry.mode)
+        .unwrap_or_else(|| default_restore_mode(config))
+}
+
+fn tracked_files_as_rel(config: &Config) -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let mut rels = Vec::new();
+    for tracked in &config.general.tracked_files {
+        let Ok(rel) = tracked.strip_prefix(&home) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        rels.push(rel.to_path_buf());
+    }
+    Ok(rels)
+}
+
+fn build_dotfiles_install_actions(config: &Config) -> Result<Vec<DotfileInstallAction>> {
+    let mut rels: Vec<PathBuf> = Vec::new();
+    let mut have_inventory = false;
+
+    if let Ok(manifest) = crate::repo::load_manifest() {
+        have_inventory = true;
+        rels.extend(manifest.files.keys().cloned());
+    }
+
+    if !have_inventory {
+        rels = tracked_files_as_rel(config)?;
+    }
+
+    let mut actions = Vec::new();
+    for rel in rels {
+        if should_skip_rel(config, &rel) {
+            continue;
+        }
+        let mode = restore_mode_for(config, &rel);
+        actions.push(DotfileInstallAction {
+            rel_path: rel,
+            mode,
+        });
+    }
+
+    actions.sort_by(|left, right| left.rel_path.cmp(&right.rel_path));
+    actions.dedup_by(|left, right| left.rel_path == right.rel_path);
+    Ok(actions)
+}
+
+fn describe_install_actions(actions: &[DotfileInstallAction]) -> String {
+    let symlink_count = actions
+        .iter()
+        .filter(|action| action.mode == RestoreMode::Symlink)
+        .count();
+    let copy_count = actions.len().saturating_sub(symlink_count);
+
+    match (symlink_count, copy_count) {
+        (0, 0) => "none (runtime find fallback if compiled/ is populated)".to_string(),
+        (symlinks, 0) => format!("{symlinks} symlink entries"),
+        (0, copies) => format!("{copies} copy entries"),
+        (symlinks, copies) => format!("{symlinks} symlink entries, {copies} copy entries"),
+    }
+}
+
+fn generate_dotfile_helpers() -> String {
+    r#"# Function to create backup
+backup_file() {
+    local file="$1"
+    if [[ -e "$file" ]] && [[ ! -L "$file" ]]; then
+        local backup="${file}.backup.$(date +%Y%m%d_%H%M%S)"
+        mv "$file" "$backup"
+        log_info "Backed up $file to $backup"
+    fi
+}
+
+# Function to ensure parent directory exists
+ensure_parent_dir() {
+    local file="$1"
+    local parent=$(dirname "$file")
+    if [[ ! -d "$parent" ]]; then
+        mkdir -p "$parent"
+        log_info "Created directory $parent"
+    fi
+}
+
+remove_target() {
+    local path="$1"
+    if [[ -d "$path" ]] && [[ ! -L "$path" ]]; then
+        rm -rf "$path"
+    else
+        rm -f "$path"
+    fi
+}
+
+apply_symlink() {
+    local rel_path="$1"
+    local source_file="$COMPILED_DIR/$rel_path"
+    local target_file="$HOME_DIR/$rel_path"
 
     if [[ ! -e "$source_file" ]]; then
-        log_warn "Missing source: $rel_path"
-        continue
+        log_warn "Skipping $rel_path (source not found in compiled dir)"
+        return 0
+    fi
+
+    if [[ -L "$target_file" ]] && [[ "$(readlink "$target_file")" == "$source_file" ]]; then
+        log_info "Already linked $rel_path"
+        return 0
     fi
 
     ensure_parent_dir "$target_file"
 
-    if [[ -e "$target_file" ]] && [[ ! -L "$target_file" ]]; then
+    if [[ -e "$target_file" ]] || [[ -L "$target_file" ]]; then
         backup_file "$target_file"
-    fi
-
-    if [[ -L "$target_file" ]]; then
-        rm "$target_file"
+        remove_target "$target_file"
     fi
 
     ln -s "$source_file" "$target_file"
     log_info "Linked $rel_path"
-done"#
-        .to_string()
 }
 
-fn generate_copy_setup() -> String {
-    r#"# Apply only the listed dotfiles (never walk .git blindly)
-for rel_path in "${DOTFILES[@]}"; do
-    if [[ "$rel_path" == .git/* ]] || [[ "$rel_path" == "manifest.lock" ]] || [[ "$rel_path" == ".gitignore" ]] || [[ "$rel_path" == "Brewfile" ]] || [[ "$rel_path" == "apps_manifest.toml" ]]; then
-        continue
-    fi
-
-    source_file="$COMPILED_DIR/$rel_path"
-    target_file="$HOME_DIR/$rel_path"
+apply_copy() {
+    local rel_path="$1"
+    local source_file="$COMPILED_DIR/$rel_path"
+    local target_file="$HOME_DIR/$rel_path"
 
     if [[ ! -e "$source_file" ]]; then
-        log_warn "Missing source: $rel_path"
-        continue
+        log_warn "Skipping $rel_path (source not found in compiled dir)"
+        return 0
+    fi
+
+    if [[ -f "$source_file" ]] && [[ -f "$target_file" ]] && cmp -s "$source_file" "$target_file"; then
+        log_info "Already copied $rel_path"
+        return 0
     fi
 
     ensure_parent_dir "$target_file"
-    backup_file "$target_file"
 
-    cp -p "$source_file" "$target_file"
+    if [[ -e "$target_file" ]] || [[ -L "$target_file" ]]; then
+        backup_file "$target_file"
+        remove_target "$target_file"
+    fi
+
+    if [[ -d "$source_file" ]]; then
+        cp -Rp "$source_file" "$target_file"
+    else
+        cp -p "$source_file" "$target_file"
+    fi
+
     log_info "Copied $rel_path"
+}"#
+    .to_string()
+}
+
+fn generate_explicit_dotfile_body(actions: &[DotfileInstallAction]) -> String {
+    let steps = actions
+        .iter()
+        .map(|action| {
+            let rel_path = shell_quote(&action.rel_path.to_string_lossy());
+            match action.mode {
+                RestoreMode::Symlink => format!("apply_symlink {}", rel_path),
+                RestoreMode::Copy => format!("apply_copy {}", rel_path),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        r#"DOTFILE_COUNT={}
+
+if [[ "$DOTFILE_COUNT" -eq 0 ]]; then
+    log_warn "No portable dotfiles are configured for installation"
+    exit 0
+fi
+
+log_info "Installing $DOTFILE_COUNT tracked dotfiles"
+
+{}"#,
+        actions.len(),
+        steps
+    )
+}
+
+fn generate_find_fallback_body(mode: RestoreMode) -> String {
+    let apply_fn = match mode {
+        RestoreMode::Symlink => "apply_symlink",
+        RestoreMode::Copy => "apply_copy",
+    };
+    format!(
+        r#"# No manifest or tracked files at generation time — walk compiled/ but skip metadata.
+# Portable across BSD (macOS) and GNU find; skip store metadata and app manifests.
+DOTFILES=()
+while IFS= read -r f; do
+    rel="${{f#"$COMPILED_DIR"/}}"
+    case "$rel" in
+        .git/*|.git|manifest.lock|.gitignore|Brewfile|apps_manifest.toml|.dotdipper/*) continue ;;
+    esac
+    case "$rel" in
+        *.age|*.sops|*.sops.*|*.enc.yaml|*.enc.yml|*.enc.json|*.enc.env) continue ;;
+    esac
+    DOTFILES+=("$rel")
+done < <(find "$COMPILED_DIR" -type f ! -path '*/.git/*' | sort)
+
+if [[ ${{#DOTFILES[@]}} -eq 0 ]]; then
+    log_warn "No portable dotfiles found in $COMPILED_DIR"
+    exit 0
+fi
+
+log_info "Installing ${{#DOTFILES[@]}} compiled dotfiles"
+for rel_path in "${{DOTFILES[@]}}"; do
+    {apply_fn} "$rel_path"
 done"#
-        .to_string()
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r#"'"'"'"#))
 }
 
 pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
