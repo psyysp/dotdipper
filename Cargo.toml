@@ -78,8 +78,9 @@ tera = "1.20.1"
 which = "6.0"
 
 # Cloud/remote storage (optional features)
-rust-s3 = { version = "0.37", optional = true }
-reqwest = { version = "0.12", features = ["blocking", "json"], optional = true }
+# rustls (not native-tls/openssl) so Linux release binaries cross-compile
+rust-s3 = { version = "0.37", optional = true, default-features = false, features = ["tokio-rustls-tls", "fail-on-err", "tags"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 async-trait = "0.1.89"
 
 [features]
