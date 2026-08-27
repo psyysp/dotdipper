@@ -177,9 +177,12 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
 
         copy_file_with_permissions(&file_hash.path, &dest_path)?;
 
-        let mut relative_hash = file_hash.clone();
-        relative_hash.path = rel_path.to_path_buf();
-        manifest.add_file(relative_hash);
+        // Hash the compiled dest, not the home source. If we skipped an empty
+        // home file over a non-empty store copy, the dest still has real bytes.
+        let mut stored = hash_file(&dest_path)
+            .with_context(|| format!("Failed to hash compiled copy {}", dest_path.display()))?;
+        stored.path = rel_path.to_path_buf();
+        manifest.add_file(stored);
 
         pb.inc(1);
     }
@@ -694,6 +697,39 @@ mod tests {
             "keep me\n",
             "must not replace a non-empty dest with an empty source"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_manifest_uses_compiled_hash_when_home_is_empty() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+
+        let kept = "export KEEP=1\n";
+        fs::write(compiled.join(".zshrc"), kept).unwrap();
+        fs::write(home.join(".zshrc"), "").unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![home.join(".zshrc")];
+        snapshot(&config, true).unwrap();
+
+        assert_eq!(fs::read_to_string(compiled.join(".zshrc")).unwrap(), kept);
+        let manifest = Manifest::load(&compiled.join("manifest.lock")).unwrap();
+        let stored = manifest.get_file(Path::new(".zshrc")).unwrap();
+        let dest_hash = hash_file(&compiled.join(".zshrc")).unwrap();
+        assert_eq!(
+            stored.hash, dest_hash.hash,
+            "manifest must record compiled bytes, not the empty home file"
+        );
+        assert_eq!(stored.size, kept.len() as u64);
     }
 
     #[test]

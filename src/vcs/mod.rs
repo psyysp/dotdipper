@@ -363,7 +363,8 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
             anyhow::bail!(
                 "Local compiled store has uncommitted changes. \
                  Run 'dotdipper push' to save them, or re-run with --force to discard local compiled changes \
-                 (a git stash is created first). Your live $HOME files are not modified until you pass --apply."
+                 (a git stash is created first). If $HOME files are symlinks into compiled/, \
+                 those live files change as soon as git updates compiled/ — --apply is not required."
             );
         }
 
@@ -375,6 +376,15 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
         // Fetch first so force reset / pull both see latest remote
         fetch_origin_branch(&repo_path, &target.branch)?;
         checkout_tracking_branch(&repo_path, &target.branch)?;
+
+        refuse_remote_emptying_nonempty(&repo_path, origin_ref.as_str())?;
+
+        if config.general.default_mode == crate::cfg::RestoreMode::Symlink {
+            ui::warn(
+                "default_mode is symlink: git updates to compiled/ are visible immediately \
+                 in $HOME files that were applied as links.",
+            );
+        }
 
         if force {
             // Overwrite local compiled git state with remote (HOME untouched)
@@ -460,6 +470,75 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
     }
 
     Ok(target.repo_name)
+}
+
+/// Remote blobs that are 0 bytes while the matching local compiled file is not.
+fn refuse_remote_emptying_nonempty(repo_path: &Path, origin_ref: &str) -> Result<()> {
+    let emptying = remote_would_empty_local_files(repo_path, origin_ref)?;
+    if emptying.is_empty() {
+        return Ok(());
+    }
+    let preview: Vec<String> = emptying
+        .iter()
+        .take(5)
+        .map(|p| p.display().to_string())
+        .collect();
+    anyhow::bail!(
+        "Refusing to pull: remote would empty {} non-empty compiled file(s) (e.g. {}). \
+         With symlink restore that also empties the matching $HOME files. \
+         Push a good snapshot first, or fix the empty blobs on the remote.",
+        emptying.len(),
+        preview.join(", ")
+    );
+}
+
+fn remote_would_empty_local_files(
+    repo_path: &Path,
+    origin_ref: &str,
+) -> Result<Vec<std::path::PathBuf>> {
+    let output = Command::new("git")
+        .args(["ls-tree", "-r", "-l", origin_ref])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to list remote tree")?;
+
+    if !output.status.success() {
+        ui::hint("Could not compare remote blob sizes; continuing with pull");
+        return Ok(vec![]);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(paths_remote_would_empty(&stdout, repo_path))
+}
+
+/// Parse `git ls-tree -r -l` output and return relative paths that would go from
+/// non-empty on disk to a 0-byte remote blob.
+pub(crate) fn paths_remote_would_empty(ls_tree: &str, repo_path: &Path) -> Vec<std::path::PathBuf> {
+    let mut emptying = Vec::new();
+    for line in ls_tree.lines() {
+        let Some((meta, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let parts: Vec<&str> = meta.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let Ok(remote_size) = parts[3].parse::<u64>() else {
+            continue;
+        };
+        let rel = Path::new(path);
+        if crate::repo::is_store_metadata(rel) {
+            continue;
+        }
+        let local = repo_path.join(rel);
+        let Ok(meta) = local.metadata() else {
+            continue;
+        };
+        if meta.len() > 0 && remote_size == 0 {
+            emptying.push(rel.to_path_buf());
+        }
+    }
+    emptying
 }
 
 fn has_uncommitted_changes(repo_path: &Path) -> Result<bool> {
@@ -1008,6 +1087,22 @@ mod tests {
         git_ok(repo_path, &["init", "-b", "main"]);
         git_ok(repo_path, &["config", "user.email", "test@example.com"]);
         git_ok(repo_path, &["config", "user.name", "Dotdipper Tests"]);
+    }
+
+    #[test]
+    fn paths_remote_would_empty_detects_zero_byte_remote() {
+        let temp = TempDir::new().unwrap();
+        fs::write(temp.path().join(".zshrc"), "keep me\n").unwrap();
+        fs::write(temp.path().join("manifest.lock"), "x").unwrap();
+        fs::write(temp.path().join(".empty-ok"), "").unwrap();
+
+        let ls_tree = "\
+100644 blob abcdef 0\t.zshrc
+100644 blob 111111 12\tmanifest.lock
+100644 blob e69de29 0\t.empty-ok
+";
+        let hits = paths_remote_would_empty(ls_tree, temp.path());
+        assert_eq!(hits, vec![std::path::PathBuf::from(".zshrc")]);
     }
 
     #[test]

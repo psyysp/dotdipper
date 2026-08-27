@@ -146,7 +146,7 @@ enum Commands {
         #[arg(long)]
         apply: bool,
 
-        /// Discard uncommitted changes in the local compiled/ git store (HOME is untouched unless --apply)
+        /// Discard uncommitted compiled/ git changes. Symlink-restored $HOME files follow compiled/ immediately.
         #[arg(short, long)]
         force: bool,
 

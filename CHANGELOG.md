@@ -2,6 +2,13 @@
 
 All notable changes to dotdipper are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Snapshot records the compiled file hash after copy, so skipping an empty home file over a non-empty store copy cannot poison `manifest.lock`.
+- `pull` refuses to check out remote 0-byte blobs over non-empty compiled files (symlink restore would empty `$HOME` immediately). Help text no longer claims `$HOME` is untouched until `--apply`.
+
 ## [0.7.5] - 2026-08-26
 
 ### Added
