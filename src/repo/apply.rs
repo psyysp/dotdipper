@@ -232,6 +232,36 @@ fn apply_file(
         });
     }
 
+    // Copy-mode: decide skip *before* unlinking the home file. After remove_file,
+    // dest is gone so copy_skip_reason cannot refuse an empty compiled source.
+    if mode == RestoreMode::Copy && source.is_file() {
+        match super::copy_skip_reason(source, target)? {
+            Some(super::CopySkip::SameFile) => {
+                return Ok(AppliedAction {
+                    mode: AppliedMode::Copied,
+                    target: target.to_path_buf(),
+                    source: source.to_path_buf(),
+                    backup_created: false,
+                    skipped_reason: Some("Already the compiled file".to_string()),
+                });
+            }
+            Some(super::CopySkip::EmptyOverNonEmpty) => {
+                ui::warn(&format!(
+                    "Refusing to overwrite non-empty {} with empty compiled source",
+                    target.display()
+                ));
+                return Ok(AppliedAction {
+                    mode: AppliedMode::Skipped,
+                    target: target.to_path_buf(),
+                    source: source.to_path_buf(),
+                    backup_created: false,
+                    skipped_reason: Some("Refusing empty compiled source".to_string()),
+                });
+            }
+            None => {}
+        }
+    }
+
     // Handle existing target
     let mut backup_created = false;
     if target.exists() || target.is_symlink() {
@@ -543,5 +573,23 @@ mod tests {
             &home
         ));
         assert!(is_path_within_home(Path::new("/home/user/.zshrc"), &home));
+    }
+
+    #[test]
+    fn apply_copy_refuses_empty_source_over_nonempty_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("compiled");
+        let target = temp.path().join("home");
+        fs::write(&source, "").unwrap();
+        fs::write(&target, "keep me\n").unwrap();
+
+        let action = apply_file(&source, &target, RestoreMode::Copy, true, true).unwrap();
+        assert_eq!(action.mode, AppliedMode::Skipped);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep me\n");
+        assert!(action
+            .skipped_reason
+            .as_deref()
+            .unwrap()
+            .contains("empty compiled"));
     }
 }
