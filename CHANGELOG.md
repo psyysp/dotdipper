@@ -13,6 +13,7 @@ All notable changes to dotdipper are documented here.
 
 ### Fixed
 
+- **Critical — snapshot/push no longer empties symlink-restored dotfiles.** After `apply` in symlink mode, home paths like `~/.zshrc` point at `compiled/.zshrc`. Snapshot then copied that path onto itself; `fs::copy` of a file onto the same inode truncates it to 0 bytes. Copy now skips when source and dest are the same file, and refuses to replace a non-empty file with an empty source.
 - `dotdipper doctor` resolves home-relative manifest paths against `$HOME` (it previously treated `.zshrc` as relative to the current directory and failed every file).
 - Generated `install.sh` no longer crashes on an unbound `$target_os` shell variable.
 - `discover`/`snapshot` skip non-regular files (sockets, fifos) instead of failing.

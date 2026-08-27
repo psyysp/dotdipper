@@ -400,6 +400,20 @@ fn is_path_within_home(target: &Path, home: &Path) -> bool {
 }
 
 fn copy_file_with_metadata(source: &Path, target: &Path) -> Result<()> {
+    // fs::copy of a file onto itself (including via a home symlink into compiled/)
+    // truncates the file to empty. Empty compiled sources must not wipe real files.
+    match super::copy_skip_reason(source, target)? {
+        Some(super::CopySkip::SameFile) => return Ok(()),
+        Some(super::CopySkip::EmptyOverNonEmpty) => {
+            ui::warn(&format!(
+                "Refusing to overwrite non-empty {} with empty compiled source",
+                target.display()
+            ));
+            return Ok(());
+        }
+        None => {}
+    }
+
     // Copy file
     fs::copy(source, target).with_context(|| {
         format!(

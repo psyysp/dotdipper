@@ -130,13 +130,20 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
                 pb_hash.inc(1);
                 continue;
             }
-            hashes.push(crate::hash::hash_file(path).with_context(|| {
+            let hashed = crate::hash::hash_file(path).with_context(|| {
                 format!(
                     "Failed to hash tracked file {}. \
                      Check that the path exists and is readable (expand ~ if needed).",
                     path.display()
                 )
-            })?);
+            })?;
+            if hashed.size == 0 {
+                ui::warn(&format!(
+                    "Tracked file {} is empty (0 bytes)",
+                    path.display()
+                ));
+            }
+            hashes.push(hashed);
         } else if crate::secrets::is_encrypted_secret_path(rel) {
             // Legacy/bad sync put encrypted names into tracked_files; keep store copy
             ui::hint(&format!(
@@ -499,7 +506,71 @@ fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// True when `a` and `b` resolve to the same inode (symlinks followed).
+pub(crate) fn paths_resolve_to_same_file(a: &Path, b: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let (a_meta, b_meta) = match (a.metadata(), b.metadata()) {
+            (Ok(am), Ok(bm)) => (am, bm),
+            _ => return Ok(false),
+        };
+        Ok(a_meta.dev() == b_meta.dev() && a_meta.ino() == b_meta.ino())
+    }
+
+    #[cfg(not(unix))]
+    {
+        match (a.canonicalize(), b.canonicalize()) {
+            (Ok(ac), Ok(bc)) => Ok(ac == bc),
+            _ => Ok(false),
+        }
+    }
+}
+
+/// Why a copy should be skipped to avoid emptying the destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CopySkip {
+    SameFile,
+    EmptyOverNonEmpty,
+}
+
+/// Skip `fs::copy` when it would truncate (same inode) or replace real content with empty.
+pub(crate) fn copy_skip_reason(source: &Path, dest: &Path) -> Result<Option<CopySkip>> {
+    if !dest.exists() {
+        return Ok(None);
+    }
+    if paths_resolve_to_same_file(source, dest)? {
+        return Ok(Some(CopySkip::SameFile));
+    }
+    let src_len = fs::metadata(source).map(|m| m.len()).unwrap_or(0);
+    let dst_len = fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+    if src_len == 0 && dst_len > 0 {
+        return Ok(Some(CopySkip::EmptyOverNonEmpty));
+    }
+    Ok(None)
+}
+
 fn copy_file_with_permissions(source: &Path, dest: &Path) -> Result<()> {
+    match copy_skip_reason(source, dest)? {
+        Some(CopySkip::SameFile) => {
+            ui::hint(&format!(
+                "Skipping copy of {} — already the compiled file (symlink restore)",
+                source.display()
+            ));
+            return Ok(());
+        }
+        Some(CopySkip::EmptyOverNonEmpty) => {
+            ui::warn(&format!(
+                "Refusing to overwrite non-empty {} with empty {}",
+                dest.display(),
+                source.display()
+            ));
+            return Ok(());
+        }
+        None => {}
+    }
+
     fs::copy(source, dest)
         .with_context(|| format!("Failed to copy {} -> {}", source.display(), dest.display()))?;
 
@@ -559,6 +630,70 @@ mod tests {
         }));
         assert!(base.join("manifest.lock").exists());
         assert!(compiled.join("manifest.lock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn copy_file_with_permissions_skips_same_inode_via_symlink() {
+        use std::os::unix::fs as unix_fs;
+
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+
+        let content = "export ZSH_THEME=robbyrussell\n";
+        let compiled_file = compiled.join(".zshrc");
+        fs::write(&compiled_file, content).unwrap();
+
+        let home_file = home.join(".zshrc");
+        unix_fs::symlink(&compiled_file, &home_file).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        copy_file_with_permissions(&home_file, &compiled_file).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&compiled_file).unwrap(),
+            content,
+            "must not truncate compiled file when home path is a symlink to it"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn copy_file_with_permissions_copies_distinct_files() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source.txt");
+        let dest = temp.path().join("dest.txt");
+
+        fs::write(&source, "distinct content\n").unwrap();
+        copy_file_with_permissions(&source, &dest).unwrap();
+
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "distinct content\n");
+    }
+
+    #[test]
+    #[serial]
+    fn copy_file_with_permissions_refuses_empty_over_nonempty() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("empty.txt");
+        let dest = temp.path().join("kept.txt");
+
+        fs::write(&source, "").unwrap();
+        fs::write(&dest, "keep me\n").unwrap();
+        copy_file_with_permissions(&source, &dest).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&dest).unwrap(),
+            "keep me\n",
+            "must not replace a non-empty dest with an empty source"
+        );
     }
 
     #[test]

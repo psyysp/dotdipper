@@ -453,6 +453,10 @@ mod install_script_tests {
         assert!(script.content.contains("DOTFILE_COUNT=2"));
         assert!(script.content.contains("apply_symlink '.zshrc'"));
         assert!(script.content.contains("apply_copy '.gitconfig'"));
+        assert!(script
+            .content
+            .contains(r#"[[ "$source_file" -ef "$target_file" ]]"#));
+        assert!(script.content.contains("Refusing to overwrite non-empty"));
         assert!(!script.content.contains("apply_symlink '.ssh/config'"));
         assert!(!script.content.contains("dotdipper-local"));
         assert!(!script.content.contains(r#"find "$COMPILED_DIR" -type f"#));

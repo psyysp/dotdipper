@@ -865,6 +865,78 @@ fn e2e_apply_symlink_mode_links_into_compiled() {
     assert_eq!(fs::read_to_string(&target).unwrap(), "alias g=git\n");
 }
 
+#[test]
+#[serial]
+fn e2e_snapshot_after_symlink_apply_does_not_empty_compiled() {
+    let m = TempDir::new().unwrap();
+    let home = m.path();
+    let base = home.join(".config").join("dotdipper");
+    let compiled = base.join("compiled");
+    fs::create_dir_all(&compiled).unwrap();
+    let content = "alias g=git\n";
+    fs::write(compiled.join(".aliases"), content).unwrap();
+
+    let manifest = serde_json::json!({
+        "version": "1.0.0",
+        "created": "2026-01-01T00:00:00Z",
+        "files": {
+            ".aliases": {
+                "path": ".aliases",
+                "hash": "x",
+                "size": 12,
+                "mode": 0o644,
+                "modified": "2026-01-01T00:00:00Z"
+            }
+        }
+    });
+    let text = serde_json::to_string_pretty(&manifest).unwrap();
+    fs::write(compiled.join("manifest.lock"), &text).unwrap();
+    fs::write(base.join("manifest.lock"), &text).unwrap();
+    write_config(
+        &base.join("config.toml"),
+        home,
+        &[".aliases"],
+        true,
+        "symlink",
+    );
+
+    let _guard = EnvGuard::apply(&[
+        ("HOME", Some(home)),
+        ("DOTDIPPER_HOME", Some(&base)),
+        ("XDG_CONFIG_HOME", None),
+    ]);
+
+    bin()
+        .env("HOME", home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("--config")
+        .arg(base.join("config.toml"))
+        .arg("apply")
+        .arg("--force")
+        .assert()
+        .success();
+
+    bin()
+        .env("HOME", home)
+        .env("DOTDIPPER_HOME", &base)
+        .env_remove("XDG_CONFIG_HOME")
+        .arg("--config")
+        .arg(base.join("config.toml"))
+        .arg("snapshot")
+        .arg("create")
+        .arg("--force")
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read_to_string(compiled.join(".aliases")).unwrap(),
+        content,
+        "snapshot must not truncate compiled file after symlink apply"
+    );
+    assert_eq!(fs::read_to_string(home.join(".aliases")).unwrap(), content);
+}
+
 // ---------------------------------------------------------------------------
 // Rollback: safety snapshot + preserve .git
 // ---------------------------------------------------------------------------

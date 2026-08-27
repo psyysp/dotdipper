@@ -371,6 +371,48 @@ mod symlink_tests {
     }
 }
 
+#[cfg(unix)]
+#[cfg(test)]
+mod symlink_snapshot_tests {
+    use super::*;
+    use dotdipper::cfg::Config;
+    use serial_test::serial;
+    use std::os::unix::fs as unix_fs;
+
+    #[test]
+    #[serial]
+    fn test_snapshot_does_not_truncate_compiled_when_home_is_symlink() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+
+        let content = "export ZSH_THEME=robbyrussell\n";
+        let compiled_file = compiled.join(".zshrc");
+        fs::write(&compiled_file, content).unwrap();
+
+        let home_file = home.join(".zshrc");
+        unix_fs::symlink(&compiled_file, &home_file).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let mut config = Config::default();
+        config.general.tracked_files = vec![home_file];
+
+        dotdipper::repo::snapshot(&config, true).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&compiled_file).unwrap(),
+            content,
+            "snapshot must not truncate compiled file when home path is a symlink to it"
+        );
+    }
+}
+
 #[cfg(test)]
 mod home_boundary_tests {
     use std::path::Path;

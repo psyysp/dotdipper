@@ -672,6 +672,16 @@ apply_copy() {
         return 0
     fi
 
+    if [[ -e "$target_file" ]] && [[ "$source_file" -ef "$target_file" ]]; then
+        log_info "Already the same file $rel_path"
+        return 0
+    fi
+
+    if [[ -f "$source_file" ]] && [[ -f "$target_file" ]] && [[ ! -s "$source_file" ]] && [[ -s "$target_file" ]]; then
+        log_warn "Refusing to overwrite non-empty $rel_path with empty compiled copy"
+        return 0
+    fi
+
     if [[ -f "$source_file" ]] && [[ -f "$target_file" ]] && cmp -s "$source_file" "$target_file"; then
         log_info "Already copied $rel_path"
         return 0
