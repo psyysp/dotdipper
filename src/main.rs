@@ -758,10 +758,7 @@ async fn cmd_push(
             ui::info("Capturing installed applications...");
             match apps::capture(&config) {
                 Ok(result) => {
-                    ui::success(&format!(
-                        "Captured {} formulae, {} casks, {} MAS apps, {} unmanaged apps",
-                        result.formulae, result.casks, result.mas, result.unmanaged
-                    ));
+                    ui::success(&format_apps_capture_success(&result));
                 }
                 Err(e) => {
                     ui::warn(&format!(
@@ -874,6 +871,30 @@ async fn cmd_undo(config_path: PathBuf, force: bool, repo: Option<String>) -> Re
 }
 
 #[cfg(target_os = "macos")]
+fn format_apps_capture_success(result: &apps::CaptureResult) -> String {
+    let mut msg = format!(
+        "Captured {} formulae, {} casks, {} MAS, {} unmanaged",
+        result.formulae, result.casks, result.mas, result.unmanaged
+    );
+    let mut extras = Vec::new();
+    if result.promoted_casks > 0 || result.promoted_mas > 0 {
+        extras.push(format!(
+            "promoted {} casks, {} MAS",
+            result.promoted_casks, result.promoted_mas
+        ));
+    }
+    if result.skipped_stock > 0 {
+        extras.push(format!("skipped {} stock Apple apps", result.skipped_stock));
+    }
+    if !extras.is_empty() {
+        msg.push_str(" (");
+        msg.push_str(&extras.join("; "));
+        msg.push(')');
+    }
+    msg
+}
+
+#[cfg(target_os = "macos")]
 async fn cmd_apps(config_path: PathBuf, subcmd: AppsCommands) -> Result<()> {
     let config = cfg::load(&config_path)?;
 
@@ -881,10 +902,7 @@ async fn cmd_apps(config_path: PathBuf, subcmd: AppsCommands) -> Result<()> {
         AppsCommands::Capture => {
             ui::info("Capturing installed applications...");
             let result = apps::capture(&config)?;
-            ui::success(&format!(
-                "Captured {} formulae, {} casks, {} MAS apps, {} unmanaged apps",
-                result.formulae, result.casks, result.mas, result.unmanaged
-            ));
+            ui::success(&format_apps_capture_success(&result));
             ui::info(&format!("Wrote {}", result.brewfile_path.display()));
             ui::info(&format!("Wrote {}", result.manifest_path.display()));
         }
@@ -1123,11 +1141,15 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
     }
 
     let mut has_issues = false;
+    let mut missing_tools = false;
     for (check, result) in issues {
         match result {
             Ok(_) => ui::success(&format!("✓ {}", check)),
             Err(e) => {
                 has_issues = true;
+                if check.contains("installed") {
+                    missing_tools = true;
+                }
                 ui::error(&format!("✗ {}: {}", check, e));
                 if fix {
                     ui::hint(
@@ -1140,12 +1162,14 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
 
     if !has_issues {
         ui::success("All checks passed!");
-    } else {
+    } else if missing_tools {
         ui::hint("Install missing tools:");
         ui::hint("  macOS: brew install age sops git gh");
         ui::hint(
             "  Linux: apt install age git gh; install sops from https://github.com/getsops/sops",
         );
+    } else {
+        ui::hint("Fix the failed checks above, then re-run 'dotdipper doctor'.");
     }
 
     Ok(())

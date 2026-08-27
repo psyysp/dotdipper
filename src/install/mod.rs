@@ -382,9 +382,13 @@ if [[ -f "$COMPILED_DIR/apps_manifest.toml" ]]; then
         function flush() {{
             if (name != "") {{
                 printf "  - %s\n    %s\n", name, path
+                if (homepage != "") {{
+                    printf "    %s\n", homepage
+                }}
             }}
             name = ""
             path = ""
+            homepage = ""
         }}
         /^\[\[unmanaged\]\]/ {{ flush(); in_u = 1; next }}
         /^\[/ {{ if (in_u) flush(); in_u = 0; next }}
@@ -398,6 +402,12 @@ if [[ -f "$COMPILED_DIR/apps_manifest.toml" ]]; then
             sub(/^[^=]*=[[:space:]]*"/, "")
             sub(/"[[:space:]]*$/, "")
             path = $0
+            next
+        }}
+        in_u && /^homepage[[:space:]]*=/ {{
+            sub(/^[^=]*=[[:space:]]*"/, "")
+            sub(/"[[:space:]]*$/, "")
+            homepage = $0
             next
         }}
         END {{

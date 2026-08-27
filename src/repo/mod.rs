@@ -440,9 +440,16 @@ pub fn check_manifest(config_path: &Path) -> Result<()> {
     let invalid_files = crate::hash::verify_manifest(&manifest)?;
 
     if !invalid_files.is_empty() {
+        let preview: Vec<String> = invalid_files
+            .iter()
+            .take(5)
+            .map(|p| p.display().to_string())
+            .collect();
         anyhow::bail!(
-            "Manifest verification failed for {} files",
-            invalid_files.len()
+            "Manifest verification failed for {} files (e.g. {}). \
+             Entries are relative to $HOME; re-run 'dotdipper push' if this machine drifted.",
+            invalid_files.len(),
+            preview.join(", ")
         );
     }
 

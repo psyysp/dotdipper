@@ -138,20 +138,48 @@ pub fn hash_files(paths: &[PathBuf], progress: bool) -> Result<Vec<FileHash>> {
     Ok(hashes)
 }
 
+/// Resolve a manifest path to an on-disk file.
+///
+/// Snapshot entries are stored home-relative (e.g. `.zshrc`). Absolute paths
+/// (used by tests and older manifests) are returned unchanged.
+pub fn resolve_manifest_path(path: &Path) -> Result<PathBuf> {
+    resolve_manifest_path_in(path, None)
+}
+
+pub fn resolve_manifest_path_in(path: &Path, home: Option<&Path>) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let home = match home {
+        Some(h) => h.to_path_buf(),
+        None => dirs::home_dir().context("Failed to find home directory")?,
+    };
+    Ok(home.join(path))
+}
+
 pub fn verify_file(file_hash: &FileHash) -> Result<bool> {
-    if !file_hash.path.exists() {
+    verify_file_in(file_hash, None)
+}
+
+pub fn verify_file_in(file_hash: &FileHash, home: Option<&Path>) -> Result<bool> {
+    let path = resolve_manifest_path_in(&file_hash.path, home)?;
+    if !path.exists() {
         return Ok(false);
     }
 
-    let current_hash = hash_file(&file_hash.path)?;
+    let current_hash = hash_file(&path)?;
     Ok(current_hash.hash == file_hash.hash)
 }
 
 pub fn verify_manifest(manifest: &Manifest) -> Result<Vec<PathBuf>> {
+    verify_manifest_in(manifest, None)
+}
+
+pub fn verify_manifest_in(manifest: &Manifest, home: Option<&Path>) -> Result<Vec<PathBuf>> {
     let mut invalid_files = Vec::new();
 
     for (path, file_hash) in &manifest.files {
-        if !verify_file(file_hash)? {
+        if !verify_file_in(file_hash, home)? {
             invalid_files.push(path.clone());
         }
     }
@@ -174,6 +202,7 @@ fn get_file_mode(_metadata: &std::fs::Metadata) -> u32 {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::Path;
     use tempfile::TempDir;
 
     #[test]
@@ -188,5 +217,19 @@ mod tests {
         let hash = hash_file(&file_path).unwrap();
         assert_eq!(hash.size, 13);
         assert!(!hash.hash.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_manifest_path_relative_joins_home() {
+        let home = TempDir::new().unwrap();
+        let resolved = resolve_manifest_path_in(Path::new(".zshrc"), Some(home.path())).unwrap();
+        assert_eq!(resolved, home.path().join(".zshrc"));
+    }
+
+    #[test]
+    fn test_resolve_manifest_path_absolute_unchanged() {
+        let abs = PathBuf::from("/tmp/dotdipper-absolute");
+        let resolved = resolve_manifest_path_in(&abs, Some(Path::new("/other"))).unwrap();
+        assert_eq!(resolved, abs);
     }
 }

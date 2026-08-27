@@ -206,6 +206,10 @@ pub struct AppsConfig {
     /// Scan `/Applications` and `~/Applications` for unmanaged apps.
     #[serde(default = "default_true")]
     pub scan_applications: bool,
+
+    /// Promote scanned apps that map to Homebrew casks or known MAS ids into the Brewfile.
+    #[serde(default = "default_true")]
+    pub promote_unmanaged: bool,
 }
 
 impl Default for AppsConfig {
@@ -213,6 +217,7 @@ impl Default for AppsConfig {
         AppsConfig {
             capture_on_push: true,
             scan_applications: true,
+            promote_unmanaged: true,
         }
     }
 }

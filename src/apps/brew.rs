@@ -3,6 +3,9 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::resolve::strip_trailing_version;
+use super::MasApp;
+
 /// Parsed brew bundle dump / Brewfile contents.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrewfilePlan {
@@ -41,6 +44,24 @@ pub fn list_installed_casks() -> Result<Vec<String>> {
     if !output.status.success() {
         anyhow::bail!(
             "`brew list --cask` failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    Ok(parse_cask_list(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// List all available Homebrew cask tokens via `brew casks`.
+pub fn list_available_casks() -> Result<Vec<String>> {
+    let brew = find_brew()?;
+    let output = Command::new(&brew)
+        .arg("casks")
+        .output()
+        .context("Failed to run `brew casks`")?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`brew casks` failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
@@ -144,6 +165,58 @@ pub fn ensure_mas_formula(brewfile: &str) -> String {
     }
 }
 
+/// Append `cask "..."` lines for tokens not already present in the Brewfile.
+pub fn append_cask_entries(brewfile: &str, casks: &[String]) -> String {
+    let mut seen = parse_brewfile(brewfile).casks;
+    let mut new_casks = Vec::new();
+    for cask in casks {
+        if !seen.iter().any(|existing| existing == cask) {
+            seen.push(cask.clone());
+            new_casks.push(cask);
+        }
+    }
+    if new_casks.is_empty() {
+        return brewfile.to_string();
+    }
+
+    let mut out = brewfile.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str("# Apps captured from /Applications (not previously in Brewfile)\n");
+    for cask in new_casks {
+        out.push_str(&format!("cask \"{}\"\n", cask));
+    }
+    out
+}
+
+/// Append `mas "Name", id: 123` lines for apps whose names are not already in the Brewfile.
+pub fn append_mas_entries(brewfile: &str, apps: &[MasApp]) -> String {
+    let mut seen = parse_brewfile(brewfile).mas;
+    let mut new_apps = Vec::new();
+    for app in apps {
+        if !seen.iter().any(|existing| existing == &app.name) {
+            seen.push(app.name.clone());
+            new_apps.push(app);
+        }
+    }
+    if new_apps.is_empty() {
+        return brewfile.to_string();
+    }
+
+    let mut out = brewfile.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for app in new_apps {
+        out.push_str(&format!("mas \"{}\", id: {}\n", app.name, app.id));
+    }
+    out
+}
+
 /// Case-insensitive / hyphen-normalized match between an app name and a cask token.
 pub fn cask_matches_app(app_name: &str, cask_name: &str) -> bool {
     let app = normalize_token(app_name);
@@ -151,7 +224,17 @@ pub fn cask_matches_app(app_name: &str, cask_name: &str) -> bool {
     if app.is_empty() || cask.is_empty() {
         return false;
     }
-    app == cask
+    if app == cask {
+        return true;
+    }
+    // NAME aliases: iTerm → iterm2, zoom.us → zoom
+    if matches!(
+        (app.as_str(), cask.as_str()),
+        ("iterm", "iterm2") | ("zoom-us", "zoom")
+    ) {
+        return true;
+    }
+    strip_trailing_version(&app) == cask
 }
 
 pub fn normalize_token(value: &str) -> String {
@@ -248,7 +331,52 @@ mas "Amphetamine", id: 937984704
         assert!(cask_matches_app("Kitty", "kitty"));
         assert!(cask_matches_app("Visual Studio Code", "visual-studio-code"));
         assert!(cask_matches_app("iTerm2.app", "iterm2"));
+        assert!(cask_matches_app("iTerm", "iterm2"));
+        assert!(cask_matches_app("zoom.us", "zoom"));
+        assert!(cask_matches_app("iStat Menus 6", "istat-menus"));
         assert!(!cask_matches_app("Slack", "discord"));
         assert!(!cask_matches_app("", "kitty"));
+    }
+
+    #[test]
+    fn append_cask_entries_adds_missing_and_skips_existing() {
+        let brewfile = "cask \"kitty\"\n";
+        let updated = append_cask_entries(
+            brewfile,
+            &[
+                "kitty".into(),
+                "google-chrome".into(),
+                "google-chrome".into(),
+            ],
+        );
+        assert!(updated.contains("cask \"kitty\""));
+        assert!(updated.contains("# Apps captured from /Applications (not previously in Brewfile)"));
+        assert!(updated.contains("cask \"google-chrome\""));
+        assert_eq!(updated.matches("cask \"kitty\"").count(), 1);
+        assert_eq!(updated.matches("cask \"google-chrome\"").count(), 1);
+
+        assert_eq!(append_cask_entries(brewfile, &["kitty".into()]), brewfile);
+    }
+
+    #[test]
+    fn append_mas_entries_adds_missing_and_skips_existing() {
+        let brewfile = "mas \"Xcode\", id: 497799835\n";
+        let apps = [
+            MasApp {
+                id: 497799835,
+                name: "Xcode".into(),
+                version: "15.0".into(),
+            },
+            MasApp {
+                id: 937984704,
+                name: "Amphetamine".into(),
+                version: "5.3".into(),
+            },
+        ];
+        let updated = append_mas_entries(brewfile, &apps);
+        assert!(updated.contains("mas \"Amphetamine\", id: 937984704"));
+        assert_eq!(updated.matches("mas \"Xcode\"").count(), 1);
+
+        assert_eq!(append_mas_entries(brewfile, &apps[..1]), brewfile);
     }
 }

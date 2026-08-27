@@ -152,6 +152,7 @@ pub fn find_unmanaged(
             bundle_id: app.bundle_id.clone(),
             path: app.path.display().to_string(),
             version: app.version.clone(),
+            homepage: None,
         });
     }
 

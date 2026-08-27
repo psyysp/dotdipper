@@ -181,6 +181,32 @@ fn test_verify_file_missing() {
 }
 
 #[test]
+fn test_verify_manifest_home_relative_paths() {
+    let home = TempDir::new().unwrap();
+    let rel = PathBuf::from(".config/kitty/kitty.conf");
+    let abs = home.path().join(&rel);
+    fs::create_dir_all(abs.parent().unwrap()).unwrap();
+    fs::write(&abs, "font_size 13").unwrap();
+
+    let mut file_hash = hash::hash_file(&abs).unwrap();
+    file_hash.path = rel.clone();
+
+    let mut manifest = Manifest::new();
+    manifest.add_file(file_hash);
+
+    let invalid = hash::verify_manifest_in(&manifest, Some(home.path())).unwrap();
+    assert!(
+        invalid.is_empty(),
+        "home-relative manifest paths should verify against $HOME, got {invalid:?}"
+    );
+
+    // Without a home root, a relative path must not be resolved from cwd
+    // (the bug that made `dotdipper doctor` fail all 78 files).
+    let cwd_miss = hash::resolve_manifest_path_in(&rel, Some(home.path())).unwrap();
+    assert_eq!(cwd_miss, abs);
+}
+
+#[test]
 fn test_verify_manifest() {
     let temp_dir = TempDir::new().unwrap();
     let file1 = temp_dir.path().join("file1.txt");

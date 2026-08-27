@@ -47,6 +47,12 @@ exclude = true  # Don't restore SSH config (too sensitive)
 [files."~/.gitconfig"]
 mode = "copy"  # Copy git config to allow local modifications
 
+# macOS application capture (ignored on Linux)
+# [apps]
+# capture_on_push = true      # dump Brewfile + apps_manifest.toml during `dotdipper push`
+# scan_applications = true    # scan /Applications and ~/Applications
+# promote_unmanaged = true    # add matching Homebrew casks / MAS ids to the Brewfile
+
 # Secrets encryption (age or SOPS+age)
 [secrets]
 provider = "age"  # "age" or "sops" (sops CLI required for sops)

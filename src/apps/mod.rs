@@ -6,6 +6,7 @@
 pub mod applications;
 pub mod brew;
 pub mod mas;
+pub mod resolve;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -15,12 +16,13 @@ use std::path::PathBuf;
 use crate::cfg::Config;
 use crate::ui;
 
-pub use applications::{extract_plist_string, is_managed_app};
+pub use applications::{extract_plist_string, is_managed_app, InstalledApp};
 pub use brew::{
-    brewfile_has_mas_apps, brewfile_has_mas_formula, cask_matches_app, ensure_mas_formula,
-    parse_brewfile, parse_cask_list, BrewfilePlan,
+    append_cask_entries, append_mas_entries, brewfile_has_mas_apps, brewfile_has_mas_formula,
+    cask_matches_app, ensure_mas_formula, parse_brewfile, parse_cask_list, BrewfilePlan,
 };
 pub use mas::parse_mas_list;
+pub use resolve::{classify_scanned_app, homepage_for, resolve_cask, resolve_mas, ScanClass};
 
 pub const BREWFILE_NAME: &str = "Brewfile";
 pub const MANIFEST_NAME: &str = "apps_manifest.toml";
@@ -32,6 +34,9 @@ pub struct CaptureResult {
     pub casks: usize,
     pub mas: usize,
     pub unmanaged: usize,
+    pub promoted_casks: usize,
+    pub promoted_mas: usize,
+    pub skipped_stock: usize,
     pub brewfile_path: PathBuf,
     pub manifest_path: PathBuf,
 }
@@ -69,6 +74,8 @@ pub struct UnmanagedApp {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -101,7 +108,12 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
         .map(|apps| apps.scan_applications)
         .unwrap_or(true);
 
-    let unmanaged = if scan_applications {
+    let mut skipped_stock = 0usize;
+    let mut promoted_casks: Vec<String> = Vec::new();
+    let mut promoted_mas: Vec<MasApp> = Vec::new();
+    let mut unmanaged = Vec::new();
+
+    if scan_applications {
         ui::info("Scanning /Applications...");
         let installed = applications::scan_applications()?;
         let plan = brew::parse_brewfile(&brewfile);
@@ -111,10 +123,63 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
                 cask_tokens.push(name);
             }
         }
-        applications::find_unmanaged(&installed, &cask_tokens, &mas_apps)
-    } else {
-        Vec::new()
-    };
+        let mut mas_names: Vec<String> = mas_apps.iter().map(|app| app.name.clone()).collect();
+        for name in plan.mas {
+            if !mas_names.iter().any(|existing| existing == &name) {
+                mas_names.push(name);
+            }
+        }
+
+        let available_casks = brew::list_available_casks().unwrap_or_default();
+        let promote = config
+            .apps
+            .as_ref()
+            .map(|apps| apps.promote_unmanaged)
+            .unwrap_or(true);
+
+        for app in &installed {
+            match resolve::classify_scanned_app(
+                app,
+                &available_casks,
+                &cask_tokens,
+                &mas_names,
+                promote,
+            ) {
+                resolve::ScanClass::Stock => skipped_stock += 1,
+                resolve::ScanClass::Helper | resolve::ScanClass::AlreadyManaged => {}
+                resolve::ScanClass::Mas(mas_app) => {
+                    mas_names.push(mas_app.name.clone());
+                    promoted_mas.push(mas_app);
+                }
+                resolve::ScanClass::Cask(cask) => {
+                    promoted_casks.push(cask.clone());
+                    cask_tokens.push(cask);
+                }
+                resolve::ScanClass::Unmanaged { homepage } => {
+                    unmanaged.push(UnmanagedApp {
+                        name: app.name.clone(),
+                        bundle_id: app.bundle_id.clone(),
+                        path: app.path.display().to_string(),
+                        version: app.version.clone(),
+                        homepage,
+                    });
+                }
+            }
+        }
+
+        unmanaged.sort_by(|a, b| {
+            a.name
+                .to_lowercase()
+                .cmp(&b.name.to_lowercase())
+                .then_with(|| a.path.cmp(&b.path))
+        });
+    }
+
+    brewfile = brew::append_cask_entries(&brewfile, &promoted_casks);
+    if !promoted_mas.is_empty() {
+        brewfile = brew::ensure_mas_formula(&brewfile);
+        brewfile = brew::append_mas_entries(&brewfile, &promoted_mas);
+    }
 
     let compiled = crate::paths::compiled_dir()?;
     fs::create_dir_all(&compiled).context("Failed to create compiled directory")?;
@@ -132,6 +197,11 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
         .into_iter()
         .map(|name| CaskEntry { name })
         .collect();
+    for name in &promoted_casks {
+        if !casks.iter().any(|existing| existing.name == *name) {
+            casks.push(CaskEntry { name: name.clone() });
+        }
+    }
     if casks.is_empty() {
         casks = brew::parse_brewfile(&brewfile)
             .casks
@@ -142,6 +212,11 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
     casks.sort_by_key(|a| a.name.to_lowercase());
 
     let mut mas_apps = mas_apps;
+    for app in &promoted_mas {
+        if !mas_apps.iter().any(|existing| existing.id == app.id) {
+            mas_apps.push(app.clone());
+        }
+    }
     mas_apps.sort_by_key(|a| a.name.to_lowercase());
 
     let manifest = AppsManifest {
@@ -171,6 +246,9 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
         casks: manifest.casks.len(),
         mas: manifest.mas.len(),
         unmanaged: manifest.unmanaged.len(),
+        promoted_casks: promoted_casks.len(),
+        promoted_mas: promoted_mas.len(),
+        skipped_stock,
         brewfile_path,
         manifest_path,
     })
@@ -227,6 +305,9 @@ pub fn dry_run_install() -> Result<()> {
             ));
             for app in &manifest.unmanaged {
                 println!("    {} ({})", app.name, app.path);
+                if let Some(homepage) = &app.homepage {
+                    println!("      {}", homepage);
+                }
             }
         }
     }
@@ -297,6 +378,9 @@ pub fn list() -> Result<()> {
                 extra = format!("{} · {}", extra, version);
             }
             println!("  {} ({})", app.name, extra);
+            if let Some(homepage) = &app.homepage {
+                println!("    {}", homepage);
+            }
         }
     }
 
@@ -354,6 +438,9 @@ fn report_unmanaged_apps() -> Result<()> {
                 ui::warn(&format!("  {} — {}", app.name, app.path));
             }
         }
+        if let Some(homepage) = &app.homepage {
+            ui::warn(&format!("    {}", homepage));
+        }
     }
     Ok(())
 }
@@ -391,6 +478,7 @@ mod tests {
                 bundle_id: Some("com.foo.SomeApp".into()),
                 path: "/Applications/SomeApp.app".into(),
                 version: Some("1.2.3".into()),
+                homepage: Some("https://example.com".into()),
             }],
             casks: vec![CaskEntry {
                 name: "kitty".into(),
@@ -402,6 +490,7 @@ mod tests {
         assert!(encoded.contains("[[mas]]"));
         assert!(encoded.contains("[[unmanaged]]"));
         assert!(encoded.contains("[[casks]]"));
+        assert!(encoded.contains("homepage = \"https://example.com\""));
 
         let decoded: AppsManifest = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded, manifest);

@@ -325,6 +325,7 @@ default_mode = "symlink"
     let apps = config.apps.expect("empty [apps] should deserialize");
     assert!(apps.capture_on_push);
     assert!(apps.scan_applications);
+    assert!(apps.promote_unmanaged);
 }
 
 #[test]

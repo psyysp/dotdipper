@@ -4,9 +4,10 @@
 #![cfg(target_os = "macos")]
 
 use dotdipper::apps::{
-    brewfile_has_mas_apps, brewfile_has_mas_formula, cask_matches_app, ensure_mas_formula,
-    extract_plist_string, is_managed_app, parse_brewfile, parse_cask_list, parse_mas_list,
-    AppsManifest, CaskEntry, ManifestMeta, MasApp, UnmanagedApp,
+    append_cask_entries, append_mas_entries, brewfile_has_mas_apps, brewfile_has_mas_formula,
+    cask_matches_app, classify_scanned_app, ensure_mas_formula, extract_plist_string, homepage_for,
+    is_managed_app, parse_brewfile, parse_cask_list, parse_mas_list, resolve_cask, resolve_mas,
+    AppsManifest, CaskEntry, InstalledApp, ManifestMeta, MasApp, ScanClass, UnmanagedApp,
 };
 
 #[test]
@@ -108,6 +109,9 @@ fn cask_name_matching_is_case_and_hyphen_insensitive() {
         "Visual Studio Code.app",
         "visual-studio-code"
     ));
+    assert!(cask_matches_app("iTerm", "iterm2"));
+    assert!(cask_matches_app("zoom.us", "zoom"));
+    assert!(cask_matches_app("iStat Menus 6", "istat-menus"));
     assert!(is_managed_app(
         "Xcode",
         &["kitty".into()],
@@ -118,6 +122,34 @@ fn cask_name_matching_is_case_and_hyphen_insensitive() {
         &["kitty".into()],
         &["Xcode".into()]
     ));
+}
+
+#[test]
+fn brewfile_append_cask_and_mas_entries() {
+    let brewfile = "cask \"kitty\"\nmas \"Xcode\", id: 497799835\n";
+    let with_casks = append_cask_entries(brewfile, &["kitty".into(), "google-chrome".into()]);
+    assert!(with_casks.contains("# Apps captured from /Applications (not previously in Brewfile)"));
+    assert!(with_casks.contains("cask \"google-chrome\""));
+    assert_eq!(with_casks.matches("cask \"kitty\"").count(), 1);
+    assert_eq!(append_cask_entries(brewfile, &["kitty".into()]), brewfile);
+
+    let with_mas = append_mas_entries(
+        brewfile,
+        &[
+            MasApp {
+                id: 497799835,
+                name: "Xcode".into(),
+                version: "15.0".into(),
+            },
+            MasApp {
+                id: 937984704,
+                name: "Amphetamine".into(),
+                version: "5.3".into(),
+            },
+        ],
+    );
+    assert!(with_mas.contains("mas \"Amphetamine\", id: 937984704"));
+    assert_eq!(with_mas.matches("mas \"Xcode\"").count(), 1);
 }
 
 #[test]
@@ -138,6 +170,7 @@ fn apps_manifest_toml_round_trip() {
             bundle_id: Some("com.foo.SomeApp".into()),
             path: "/Applications/SomeApp.app".into(),
             version: Some("1.2.3".into()),
+            homepage: Some("https://example.com".into()),
         }],
         casks: vec![CaskEntry {
             name: "kitty".into(),
@@ -148,6 +181,7 @@ fn apps_manifest_toml_round_trip() {
     assert!(encoded.contains("os = \"macos\""));
     assert!(encoded.contains("id = 497799835"));
     assert!(encoded.contains("bundle_id = \"com.foo.SomeApp\""));
+    assert!(encoded.contains("homepage = \"https://example.com\""));
     assert!(encoded.contains("name = \"kitty\""));
 
     let decoded: AppsManifest = toml::from_str(&encoded).unwrap();
@@ -181,4 +215,207 @@ name = "kitty"
     assert_eq!(manifest.mas[0].id, 497799835);
     assert_eq!(manifest.unmanaged[0].name, "SomeApp");
     assert_eq!(manifest.casks[0].name, "kitty");
+}
+
+fn scanned_app(name: &str, bundle_id: Option<&str>) -> InstalledApp {
+    InstalledApp {
+        name: name.into(),
+        path: format!("/Applications/{name}.app").into(),
+        bundle_id: bundle_id.map(str::to_string),
+        version: Some("1.0".into()),
+    }
+}
+
+#[test]
+fn capture_classification_loop_promotes_formerly_unmanaged_apps() {
+    let catalog = vec![
+        "google-chrome".into(),
+        "arc".into(),
+        "cursor".into(),
+        "docker-desktop".into(),
+        "chatgpt".into(),
+        "claude".into(),
+        "kitty".into(),
+        "telegram".into(),
+        "whatsapp".into(),
+        "zed".into(),
+        "zen".into(),
+        "rectangle".into(),
+        "tailscale-app".into(),
+        "ollama-app".into(),
+        "logi-options+".into(),
+        "helium-browser".into(),
+        "grok-bot".into(),
+        "t3-code".into(),
+        "emacs-app".into(),
+        "iterm2".into(),
+        "zoom".into(),
+        "omnidisksweeper".into(),
+        "orca".into(),
+        "helium".into(),
+    ];
+
+    let fixture = vec![
+        scanned_app("Google Chrome", Some("com.google.Chrome")),
+        scanned_app("Arc", Some("company.thebrowser.Browser")),
+        scanned_app("Cursor", Some("com.todesktop.230313mzl4w4u92")),
+        scanned_app("Docker", Some("com.docker.docker")),
+        scanned_app("ChatGPT", Some("com.openai.codex")),
+        scanned_app("Claude", Some("com.anthropic.claudefordesktop")),
+        scanned_app("kitty", Some("net.kovidgoyal.kitty")),
+        scanned_app("Telegram", Some("ru.keepcoder.Telegram")),
+        scanned_app("WhatsApp", Some("net.whatsapp.WhatsApp")),
+        scanned_app("Zed", Some("dev.zed.Zed")),
+        scanned_app("Zen", Some("app.zen-browser.zen")),
+        scanned_app("Rectangle", Some("com.knollsoft.Rectangle")),
+        scanned_app("Tailscale", Some("io.tailscale.ipn.macsys")),
+        scanned_app("Ollama", Some("com.electron.ollama")),
+        scanned_app("logioptionsplus", Some("com.logi.optionsplus")),
+        scanned_app("Helium", Some("net.imput.helium")),
+        scanned_app("Grok Bot", Some("com.anysphere.sand")),
+        scanned_app("T3 Code", Some("com.t3tools.t3code")),
+        scanned_app("Emacs", None),
+        scanned_app("iTerm", Some("com.googlecode.iterm2")),
+        scanned_app("zoom.us", Some("us.zoom.xos")),
+        scanned_app("OmniDiskSweeper", Some("com.omnigroup.OmniDiskSweeper")),
+        scanned_app("Amphetamine", Some("com.if.Amphetamine")),
+        scanned_app("ColorSlurp", Some("com.IdeaPunch.ColorSlurp")),
+        scanned_app("Xcode", Some("com.apple.dt.Xcode")),
+        scanned_app("Gestimer", Some("io.maddin.Gestimer")),
+        scanned_app("PDFgear", Some("com.pdfeditor.pdfeditormac")),
+        scanned_app("OneTab", Some("com.one-tab.OneTab")),
+        scanned_app("DevCleaner", Some("com.oneminutegames.XcodeCleaner")),
+        scanned_app("Safari", Some("com.apple.Safari")),
+        scanned_app("Keynote", Some("com.apple.iWork.Keynote")),
+        scanned_app("Pages", Some("com.apple.iWork.Pages")),
+        scanned_app("Numbers", Some("com.apple.iWork.Numbers")),
+        scanned_app("GarageBand", Some("com.apple.garageband10")),
+        scanned_app("iMovie", Some("com.apple.iMovieApp")),
+        scanned_app(
+            "Karabiner-EventViewer",
+            Some("org.pqrs.Karabiner-EventViewer"),
+        ),
+        scanned_app(
+            "Claude Code URL Handler",
+            Some("com.anthropic.claude-code-url-handler"),
+        ),
+        scanned_app("BlueStacksMIM", Some("com.now.gg.BlueStacksMIM")),
+        scanned_app(
+            "Steinberg Activation Manager",
+            Some("com.steinberg.SteinbergActivationManager"),
+        ),
+        scanned_app("Among Us", None),
+        scanned_app(
+            "DaVinci Resolve",
+            Some("com.blackmagic-design.DaVinciResolve"),
+        ),
+        scanned_app(
+            "Blackmagic Proxy Generator Lite",
+            Some("com.blackmagic-design.BlackmagicProxyGeneratorLite"),
+        ),
+        scanned_app("Eclipse", Some("org.eclipse.platform.ide")),
+        scanned_app("Ivanti Secure Access", Some("net.pulsesecure.Pulse-Secure")),
+        scanned_app("Orca", Some("com.stablyai.orca")),
+    ];
+
+    let mut cask_tokens = Vec::new();
+    let mut mas_names = Vec::new();
+    let mut promoted_casks = Vec::new();
+    let mut promoted_mas = Vec::new();
+    let mut unmanaged = Vec::new();
+    let mut skipped_stock = 0usize;
+    let mut skipped_helpers = 0usize;
+
+    for app in &fixture {
+        match classify_scanned_app(app, &catalog, &cask_tokens, &mas_names, true) {
+            ScanClass::Stock => skipped_stock += 1,
+            ScanClass::Helper => skipped_helpers += 1,
+            ScanClass::AlreadyManaged => {}
+            ScanClass::Mas(mas_app) => {
+                mas_names.push(mas_app.name.clone());
+                promoted_mas.push(mas_app);
+            }
+            ScanClass::Cask(cask) => {
+                promoted_casks.push(cask.clone());
+                cask_tokens.push(cask);
+            }
+            ScanClass::Unmanaged { homepage } => {
+                unmanaged.push((app.name.clone(), homepage));
+            }
+        }
+    }
+
+    assert_eq!(
+        promoted_casks,
+        vec![
+            "google-chrome",
+            "arc",
+            "cursor",
+            "docker-desktop",
+            "chatgpt",
+            "claude",
+            "kitty",
+            "telegram",
+            "whatsapp",
+            "zed",
+            "zen",
+            "rectangle",
+            "tailscale-app",
+            "ollama-app",
+            "logi-options+",
+            "helium-browser",
+            "grok-bot",
+            "t3-code",
+            "emacs-app",
+            "iterm2",
+            "zoom",
+            "omnidisksweeper",
+        ]
+    );
+    assert_eq!(
+        promoted_mas
+            .iter()
+            .map(|mas| (mas.name.as_str(), mas.id))
+            .collect::<Vec<_>>(),
+        vec![
+            ("Amphetamine", 937984704),
+            ("ColorSlurp", 1287239339),
+            ("Xcode", 497799835),
+            ("Gestimer", 990588172),
+            ("PDFgear", 6469021132),
+            ("OneTab", 1540160809),
+            ("DevCleaner", 1388020431),
+        ]
+    );
+    assert_eq!(skipped_stock, 6);
+    assert_eq!(skipped_helpers, 4);
+    assert_eq!(
+        unmanaged
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "Among Us",
+            "DaVinci Resolve",
+            "Blackmagic Proxy Generator Lite",
+            "Eclipse",
+            "Ivanti Secure Access",
+            "Orca",
+        ]
+    );
+    for (name, homepage) in &unmanaged {
+        assert!(homepage.is_some(), "{name} leftover should have a homepage");
+    }
+
+    assert!(resolve_cask(&scanned_app("Orca", Some("com.stablyai.orca")), &catalog).is_none());
+    assert_ne!(
+        resolve_cask(
+            &scanned_app("Helium", Some("net.imput.helium")),
+            &["helium".into()]
+        )
+        .as_deref(),
+        Some("helium")
+    );
+    assert!(resolve_mas(&scanned_app("Xcode", Some("com.apple.dt.Xcode"))).is_some());
+    assert!(homepage_for(&scanned_app("Eclipse", Some("org.eclipse.platform.ide"))).is_some());
 }
