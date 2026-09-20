@@ -17,15 +17,93 @@
 //! What remains after removing all of that is the thing the user actually
 //! asked for: a script that installs the tools.
 
-use crate::apps::brew;
-use crate::apps::AppsManifest;
+use anyhow::{Context, Result};
+use regex::Regex;
+use serde::Deserialize;
+
+/// The half of `apps_manifest.toml` that describes installable software.
+///
+/// Deliberately narrow. The manifest also records the machine's name, the
+/// capture time, the installed version of everything, and applications
+/// installed by hand — and none of those have a field here to land in.
+/// Unknown keys are ignored, so the type is itself the filter: nothing
+/// reaches the generated script without a field added on purpose.
+#[derive(Debug, Default, Clone, Deserialize)]
+pub struct AppsInventory {
+    #[serde(default)]
+    pub mas: Vec<MasEntry>,
+    #[serde(default)]
+    pub casks: Vec<CaskEntry>,
+}
+
+/// A Mac App Store title. No version field, by design.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MasEntry {
+    pub id: u64,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CaskEntry {
+    pub name: String,
+}
+
+impl AppsInventory {
+    pub fn parse(text: &str) -> Result<Self> {
+        toml::from_str(text).context("Failed to parse apps manifest")
+    }
+}
+
+/// The parts of a Brewfile that install something.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BrewfilePlan {
+    pub taps: Vec<String>,
+    pub formulae: Vec<String>,
+    pub casks: Vec<String>,
+    pub mas: Vec<String>,
+}
+
+/// Extracts tap, formula, cask, and App Store entries from a Brewfile.
+///
+/// Lives here rather than beside the rest of the Homebrew code because that
+/// module is macOS-only, and a Linux machine still has to be able to publish
+/// a mirror of a store captured on a Mac.
+pub fn parse_brewfile(content: &str) -> BrewfilePlan {
+    let mut plan = BrewfilePlan::default();
+    let tap_re = line_name_regex("tap");
+    let brew_re = line_name_regex("brew");
+    let cask_re = line_name_regex("cask");
+    let mas_re = Regex::new(r#"(?m)^\s*mas\s+["']([^"']+)["']"#).expect("valid mas regex");
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(caps) = tap_re.captures(line) {
+            plan.taps.push(caps[1].to_string());
+        } else if let Some(caps) = brew_re.captures(line) {
+            plan.formulae.push(caps[1].to_string());
+        } else if let Some(caps) = cask_re.captures(line) {
+            plan.casks.push(caps[1].to_string());
+        } else if let Some(caps) = mas_re.captures(line) {
+            plan.mas.push(caps[1].to_string());
+        }
+    }
+
+    plan
+}
+
+fn line_name_regex(kind: &str) -> Regex {
+    Regex::new(&format!(r#"(?m)^\s*{}\s+["']([^"']+)["']"#, kind)).expect("valid brewfile regex")
+}
 
 /// The inventory a script is generated from. Both halves are optional so a
 /// store that captured only one of them still produces a usable script.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Inventory<'a> {
     pub brewfile: Option<&'a str>,
-    pub manifest: Option<&'a AppsManifest>,
+    pub apps: Option<&'a AppsInventory>,
 }
 
 /// One installable item, resolved from the inventory.
@@ -68,7 +146,7 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
         };
 
         if let Some(brewfile) = inventory.brewfile {
-            let parsed = brew::parse_brewfile(brewfile);
+            let parsed = parse_brewfile(brewfile);
             plan.taps
                 .extend(parsed.taps.into_iter().filter(|t| keep(t)));
             plan.formulae
@@ -77,16 +155,15 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
                 .extend(parsed.casks.into_iter().filter(|c| keep(c)));
         }
 
-        if let Some(manifest) = inventory.manifest {
+        if let Some(apps) = inventory.apps {
             plan.casks.extend(
-                manifest
-                    .casks
+                apps.casks
                     .iter()
                     .map(|c| c.name.clone())
                     .filter(|c| keep(c)),
             );
             plan.mas
-                .extend(manifest.mas.iter().map(|m| (m.id, m.name.clone())));
+                .extend(apps.mas.iter().map(|m| (m.id, m.name.clone())));
         }
     }
 
@@ -252,31 +329,34 @@ log "All tools installed."
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apps::{AppsManifest, CaskEntry, ManifestMeta, MasApp, UnmanagedApp};
 
-    fn manifest() -> AppsManifest {
-        AppsManifest {
-            meta: ManifestMeta {
-                captured_at: "2026-09-20T05:26:48Z".to_string(),
-                hostname: "Someones-MacBook-Air.local".to_string(),
-                os: "macos".to_string(),
-            },
-            mas: vec![MasApp {
-                id: 497799835,
-                name: "Xcode".to_string(),
-                version: "26.6".to_string(),
-            }],
-            unmanaged: vec![UnmanagedApp {
-                name: "Ivanti Secure Access".to_string(),
-                bundle_id: Some("net.pulsesecure.Pulse-Secure".to_string()),
-                path: "/Applications/Ivanti Secure Access.app".to_string(),
-                version: Some("22.7.1".to_string()),
-                homepage: Some("https://www.ivanti.com/support/secure-access".to_string()),
-            }],
-            casks: vec![CaskEntry {
-                name: "kitty".to_string(),
-            }],
-        }
+    /// A real captured manifest, parsed the way publish parses it. Going
+    /// through the text rather than constructing the struct is the point:
+    /// it proves the machine details have nowhere to land.
+    const MANIFEST: &str = r#"
+[meta]
+captured_at = "2026-09-20T05:26:48Z"
+hostname = "Someones-MacBook-Air.local"
+os = "macos"
+
+[[mas]]
+id = 497799835
+name = "Xcode"
+version = "26.6"
+
+[[unmanaged]]
+name = "Ivanti Secure Access"
+bundle_id = "net.pulsesecure.Pulse-Secure"
+path = "/Applications/Ivanti Secure Access.app"
+version = "22.7.1"
+homepage = "https://www.ivanti.com/support/secure-access"
+
+[[casks]]
+name = "kitty"
+"#;
+
+    fn manifest() -> AppsInventory {
+        AppsInventory::parse(MANIFEST).unwrap()
     }
 
     #[test]
@@ -286,7 +366,7 @@ mod tests {
         let script = generate(
             &Inventory {
                 brewfile: Some(brewfile),
-                manifest: Some(&m),
+                apps: Some(&m),
             },
             &[],
         );
@@ -323,7 +403,7 @@ mod tests {
         let p = plan(
             &Inventory {
                 brewfile: Some(brewfile),
-                manifest: None,
+                apps: None,
             },
             &["someuser".to_string()],
         );
@@ -346,7 +426,7 @@ mod tests {
         let m = manifest(); // also lists the kitty cask
         let inventory = Inventory {
             brewfile: Some(brewfile),
-            manifest: Some(&m),
+            apps: Some(&m),
         };
 
         let p = plan(&inventory, &[]);

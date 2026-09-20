@@ -586,11 +586,11 @@ fn synthesized_apps_script(
     }
 
     let brewfile = fs::read_to_string(source.join("Brewfile")).ok();
-    let manifest = fs::read_to_string(source.join("apps_manifest.toml"))
+    let apps = fs::read_to_string(source.join("apps_manifest.toml"))
         .ok()
-        .and_then(|text| toml::from_str::<crate::apps::AppsManifest>(&text).ok());
+        .and_then(|text| crate::install::apps_script::AppsInventory::parse(&text).ok());
 
-    if brewfile.is_none() && manifest.is_none() {
+    if brewfile.is_none() && apps.is_none() {
         return None;
     }
 
@@ -605,7 +605,7 @@ fn synthesized_apps_script(
     let script = crate::install::apps_script::generate(
         &crate::install::apps_script::Inventory {
             brewfile: brewfile.as_deref(),
-            manifest: manifest.as_ref(),
+            apps: apps.as_ref(),
         },
         &omit,
     );

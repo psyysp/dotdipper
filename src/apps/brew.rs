@@ -6,14 +6,10 @@ use std::process::Command;
 use super::resolve::strip_trailing_version;
 use super::MasApp;
 
-/// Parsed brew bundle dump / Brewfile contents.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BrewfilePlan {
-    pub taps: Vec<String>,
-    pub formulae: Vec<String>,
-    pub casks: Vec<String>,
-    pub mas: Vec<String>,
-}
+// The Brewfile parser lives in `install::apps_script`: this module is
+// macOS-only, and a Linux machine still has to be able to publish a mirror
+// of a store captured on a Mac. Re-exported so callers are unchanged.
+pub use crate::install::apps_script::{parse_brewfile, BrewfilePlan};
 
 /// Run `brew bundle dump` and return the Brewfile text from stdout.
 pub fn dump_brewfile() -> Result<String> {
@@ -107,37 +103,6 @@ pub fn parse_cask_list(output: &str) -> Vec<String> {
         .filter(|token| !token.is_empty())
         .map(|token| token.to_string())
         .collect()
-}
-
-/// Parse taps, formulae, casks, and MAS entries from Brewfile content.
-pub fn parse_brewfile(content: &str) -> BrewfilePlan {
-    let mut plan = BrewfilePlan::default();
-    let tap_re = line_name_regex("tap");
-    let brew_re = line_name_regex("brew");
-    let cask_re = line_name_regex("cask");
-    let mas_re = Regex::new(r#"(?m)^\s*mas\s+["']([^"']+)["']"#).expect("valid mas regex");
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(caps) = tap_re.captures(line) {
-            plan.taps.push(caps[1].to_string());
-        } else if let Some(caps) = brew_re.captures(line) {
-            plan.formulae.push(caps[1].to_string());
-        } else if let Some(caps) = cask_re.captures(line) {
-            plan.casks.push(caps[1].to_string());
-        } else if let Some(caps) = mas_re.captures(line) {
-            plan.mas.push(caps[1].to_string());
-        }
-    }
-
-    plan
-}
-
-fn line_name_regex(kind: &str) -> Regex {
-    Regex::new(&format!(r#"(?m)^\s*{}\s+["']([^"']+)["']"#, kind)).expect("valid brewfile regex")
 }
 
 /// True when the Brewfile already installs the `mas` formula.

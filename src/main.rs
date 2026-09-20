@@ -1192,15 +1192,12 @@ async fn cmd_install_apps_script(
 
     let brewfile = std::fs::read_to_string(store.join("Brewfile")).ok();
     let manifest_text = std::fs::read_to_string(store.join("apps_manifest.toml")).ok();
-    let manifest = match &manifest_text {
-        Some(text) => Some(
-            toml::from_str::<dotdipper::apps::AppsManifest>(text)
-                .context("Failed to parse apps_manifest.toml")?,
-        ),
+    let apps = match &manifest_text {
+        Some(text) => Some(dotdipper::install::apps_script::AppsInventory::parse(text)?),
         None => None,
     };
 
-    if brewfile.is_none() && manifest.is_none() {
+    if brewfile.is_none() && apps.is_none() {
         anyhow::bail!(
             "No Brewfile or apps_manifest.toml in {}. Run 'dotdipper apps capture' first.",
             store.display()
@@ -1216,7 +1213,7 @@ async fn cmd_install_apps_script(
     let script = dotdipper::install::apps_script::generate(
         &dotdipper::install::apps_script::Inventory {
             brewfile: brewfile.as_deref(),
-            manifest: manifest.as_ref(),
+            apps: apps.as_ref(),
         },
         &omit,
     );
