@@ -960,13 +960,52 @@ fn overlay_general_table(
     general.as_table_mut().expect("general table")
 }
 
+/// True when a profile other than the active one has no overlay value for `path`
+/// and would therefore fall back to the base config's copy.
+fn base_key_is_inherited_elsewhere(config_path: &Path, path: &[&str]) -> Result<bool> {
+    let active = crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let profiles_dir = match config_path.parent() {
+        Some(parent) => parent.join("profiles"),
+        None => return Ok(false),
+    };
+    let entries = match fs::read_dir(&profiles_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(false),
+    };
+
+    let dotted = path.join(".");
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == active {
+            continue;
+        }
+        let overlay_path = entry.path().join("config.toml");
+        match parse_overlay_file(&overlay_path)? {
+            Some(overlay) if overlay_defines(&overlay, &dotted) => continue,
+            // No overlay, or an overlay silent on this key: it inherits the base.
+            _ => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
 /// Remove a key from the base config once the overlay has taken ownership of it.
 ///
 /// Leaving a stale copy behind is the shadowing trap: the base file still reads
 /// as authoritative, but the overlay wins on load, so hand-edits there vanish.
 /// One writable owner per key is the invariant.
+///
+/// The base copy is kept when another profile would still inherit it — removing
+/// it there would not heal a shadowed key, it would delete a live value out from
+/// under a profile that never asked.
 fn retire_base_key(config_path: &Path, path: &[&str]) -> Result<()> {
     if !config_path.exists() {
+        return Ok(());
+    }
+    if base_key_is_inherited_elsewhere(config_path, path)? {
         return Ok(());
     }
     let contents = fs::read_to_string(config_path)
@@ -1310,6 +1349,34 @@ mod tests {
         assert!(base_text.contains("backup = true"), "{base_text}");
         assert!(shadowed_keys(&config_path).unwrap().is_empty());
         assert_eq!(load(&config_path).unwrap().general.tracked_files.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn update_discovered_keeps_the_base_copy_another_profile_inherits() {
+        let (temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\ntracked_files = [\"/shared\"]\n",
+            "# comments only\n",
+        );
+        // A second profile with no overlay value of its own still inherits the base.
+        std::fs::create_dir_all(
+            temp.path()
+                .join(".config")
+                .join("dotdipper")
+                .join("profiles")
+                .join("work"),
+        )
+        .unwrap();
+
+        update_discovered(&config_path, &[PathBuf::from("/a")]).unwrap();
+
+        let base_text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(
+            base_text.contains("/shared"),
+            "base value another profile inherits must survive: {base_text}"
+        );
+        // The active profile still gets its own value.
+        assert_eq!(load(&config_path).unwrap().general.tracked_files.len(), 1);
     }
 
     #[test]
