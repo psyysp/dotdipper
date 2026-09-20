@@ -144,6 +144,7 @@ fn force_publish_identity(repo_path: &Path) -> Result<()> {
         // personal as the address it accompanies.
         ("commit.gpgsign", "false"),
     ] {
+        // Config alone is not enough — see `publish_env`.
         let output = Command::new("git")
             .args(["config", key, value])
             .current_dir(repo_path)
@@ -158,6 +159,21 @@ fn force_publish_identity(repo_path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Environment that pins the commit identity beyond the reach of config.
+///
+/// git resolves `GIT_AUTHOR_*` and `GIT_COMMITTER_*` ahead of every config
+/// file, so writing the local config is necessary but not sufficient: a
+/// user with those exported (direnv, a wrapper, CI) would put their real
+/// address back into every public commit, and no redactor can reach commit
+/// metadata. Applied to the command, not the process, so nothing leaks into
+/// unrelated git calls.
+fn publish_env(cmd: &mut Command) {
+    cmd.env("GIT_AUTHOR_NAME", PUBLISH_IDENTITY_NAME)
+        .env("GIT_AUTHOR_EMAIL", PUBLISH_IDENTITY_EMAIL)
+        .env("GIT_COMMITTER_NAME", PUBLISH_IDENTITY_NAME)
+        .env("GIT_COMMITTER_EMAIL", PUBLISH_IDENTITY_EMAIL);
 }
 
 /// Resolved GitHub push/pull target. Branch and repo are independent:
@@ -444,11 +460,12 @@ pub fn publish_push(
                 chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
             )
         });
-        let output = Command::new("git")
+        let mut commit = Command::new("git");
+        commit
             .args(["commit", "-m", commit_message.as_str()])
-            .current_dir(repo_path)
-            .output()
-            .context("Failed to commit public tree")?;
+            .current_dir(repo_path);
+        publish_env(&mut commit);
+        let output = commit.output().context("Failed to commit public tree")?;
         if !output.status.success() {
             anyhow::bail!(
                 "Failed to commit public tree: {}",
@@ -1496,14 +1513,12 @@ mod tests {
     }
 
     #[test]
-    fn force_publish_identity_overrides_an_inherited_identity() {
+    fn force_publish_identity_beats_both_config_and_environment() {
         let temp_dir = TempDir::new().unwrap();
         let repo = temp_dir.path();
         init_repo(repo);
 
-        // Stand in for the global identity git would otherwise inherit. The
-        // point of the function is that an identity already being resolvable
-        // is not a reason to leave it alone.
+        // Stand in for the identity git would otherwise inherit.
         for (key, value) in [
             ("user.name", "Real Person"),
             ("user.email", "real@person.tld"),
@@ -1517,16 +1532,42 @@ mod tests {
 
         force_publish_identity(repo).unwrap();
 
-        let read = |key: &str| {
-            let out = std::process::Command::new("git")
-                .args(["config", "--local", "--get", key])
-                .current_dir(repo)
-                .output()
-                .unwrap();
-            String::from_utf8_lossy(&out.stdout).trim().to_string()
-        };
-        assert_eq!(read("user.name"), PUBLISH_IDENTITY_NAME);
-        assert_eq!(read("user.email"), PUBLISH_IDENTITY_EMAIL);
-        assert_eq!(read("commit.gpgsign"), "false");
+        std::fs::write(repo.join("f.txt"), "x\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+
+        // Config alone is not enough: git resolves GIT_AUTHOR_* and
+        // GIT_COMMITTER_* ahead of every config file, so a user with those
+        // exported would put their real address back into public history,
+        // where no redactor can reach it. Assert on the commit, not on the
+        // config, because the config is not what git actually obeys.
+        let mut commit = std::process::Command::new("git");
+        commit
+            .args(["commit", "-m", "test"])
+            .current_dir(repo)
+            .env("GIT_AUTHOR_NAME", "Real Person")
+            .env("GIT_AUTHOR_EMAIL", "real@person.tld")
+            .env("GIT_COMMITTER_NAME", "Real Person")
+            .env("GIT_COMMITTER_EMAIL", "real@person.tld");
+        publish_env(&mut commit);
+        assert!(commit.output().unwrap().status.success());
+
+        let out = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%an|%ae|%cn|%ce"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let recorded = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(
+            recorded,
+            format!(
+                "{0}|{1}|{0}|{1}",
+                PUBLISH_IDENTITY_NAME, PUBLISH_IDENTITY_EMAIL
+            ),
+            "the real identity reached public commit metadata"
+        );
     }
 }

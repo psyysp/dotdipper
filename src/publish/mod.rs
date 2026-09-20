@@ -75,6 +75,17 @@ pub struct AllowedFile {
 pub struct Allowlist {
     #[serde(default)]
     pub generated: String,
+    /// The identity terms in force when this allowlist was generated.
+    ///
+    /// `identity_terms` reads the *publishing* machine — its login name,
+    /// hostname, and configured GitHub user. That is the wrong source the
+    /// moment the store outlives the machine: publish a Mac-captured store
+    /// from a Linux box, a second account, or after a rename, and the Mac's
+    /// name is neither redacted nor flagged, because a bare username
+    /// matches no pattern. Recording the terms here and unioning them back
+    /// in on every publish makes the reviewed set travel with the store.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identity_terms: Vec<String>,
     #[serde(default)]
     pub files: Vec<AllowedFile>,
     /// Paths withheld at review time, with the reason. Informational: it makes
@@ -144,6 +155,9 @@ pub struct Plan {
     /// Sanitized paths that are not on the allowlist. Withheld, and surfaced
     /// so the user knows review is pending rather than silently losing them.
     pub pending_review: Vec<PathBuf>,
+    /// The identity terms this run scrubbed and scanned for, carried into
+    /// the regenerated allowlist so they survive a change of machine.
+    pub identity_terms: Vec<String>,
 }
 
 impl Plan {
@@ -178,6 +192,7 @@ impl Plan {
 
         Allowlist {
             generated: chrono::Utc::now().to_rfc3339(),
+            identity_terms: self.identity_terms.clone(),
             files,
             withheld: self
                 .excluded
@@ -409,7 +424,7 @@ fn is_redaction_artifact(matched: &str) -> bool {
 }
 
 /// Short stable id for a finding, so `allow` entries survive re-runs.
-fn finding_id(path: &Path, kind: &str, line: usize) -> String {
+fn finding_id(path: &Path, kind: &str, line: usize, matched: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in path
         .to_string_lossy()
@@ -417,6 +432,11 @@ fn finding_id(path: &Path, kind: &str, line: usize) -> String {
         .iter()
         .chain(kind.as_bytes())
         .chain(line.to_string().as_bytes())
+        // Without the matched text, two different identity terms on one
+        // line share an id, and `--allow-finding` on one silently allows
+        // the other — and any future one on that line. The config promises
+        // each entry suppresses exactly one finding.
+        .chain(matched.as_bytes())
     {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
@@ -529,6 +549,38 @@ fn redact_text(
 }
 
 /// Scans finished public text for anything that must not ship.
+/// Checks the path itself for identity terms.
+///
+/// Only content was ever examined; `rel` was passed to `scan_text` purely to
+/// label findings. But a path is published as surely as the bytes under it,
+/// and it also lands in the allowlist and in every commit. A directory named
+/// after the machine or its owner is a leak that no content rule can see.
+fn scan_path(rel: &Path, allow: &[String], identity: &[String]) -> Vec<Finding> {
+    let text = rel.to_string_lossy();
+    let mut findings = Vec::new();
+
+    for term in identity {
+        let Some(re) = identity_regex(term) else {
+            continue;
+        };
+        if re.is_match(&text) {
+            let finding = Finding {
+                path: rel.to_path_buf(),
+                line: 0,
+                kind: "identity-term-in-path".to_string(),
+                excerpt: mask(&text),
+                id: finding_id(rel, "identity-term-in-path", 0, &text),
+            };
+            if !allow.contains(&finding.id) {
+                findings.push(finding);
+            }
+            break;
+        }
+    }
+
+    findings
+}
+
 fn scan_text(rel: &Path, text: &str, allow: &[String], identity: &[String]) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut patterns = scanner_patterns();
@@ -544,7 +596,7 @@ fn scan_text(rel: &Path, text: &str, allow: &[String], identity: &[String]) -> V
                 if is_redaction_artifact(m.as_str()) {
                     continue;
                 }
-                let id = finding_id(rel, kind, lineno + 1);
+                let id = finding_id(rel, kind, lineno + 1, m.as_str());
                 if allow.iter().any(|a| a == &id) {
                     continue;
                 }
@@ -586,9 +638,25 @@ fn synthesized_apps_script(
     }
 
     let brewfile = fs::read_to_string(source.join("Brewfile")).ok();
-    let apps = fs::read_to_string(source.join("apps_manifest.toml"))
-        .ok()
-        .and_then(|text| crate::install::apps_script::AppsInventory::parse(&text).ok());
+    let manifest_text = fs::read_to_string(source.join("apps_manifest.toml")).ok();
+    let apps = match &manifest_text {
+        Some(text) => match crate::install::apps_script::AppsInventory::parse(text) {
+            Ok(parsed) => Some(parsed),
+            Err(err) => {
+                // The manifest is withheld either way, so a parse failure
+                // costs the App Store ids and the manifest's casks and
+                // nothing else. Saying so matters: without it the user sees
+                // a shorter script and no reason for it.
+                ui::warn(&format!(
+                    "apps_manifest.toml could not be parsed ({:#}); the install script \
+                     will omit App Store titles and manifest casks",
+                    err
+                ));
+                None
+            }
+        },
+        None => None,
+    };
 
     if brewfile.is_none() && apps.is_none() {
         return None;
@@ -610,7 +678,46 @@ fn synthesized_apps_script(
         &omit,
     );
 
-    Some((PathBuf::from(&public.apps_script_path), script))
+    // `dest.join(rel)` would follow an absolute path out of the tree
+    // entirely, and `..` would climb out of it. `allowlist_path` already
+    // guards its own config value; this one was left open.
+    let rel = PathBuf::from(&public.apps_script_path);
+    if rel.is_absolute() || rel.components().any(|c| c.as_os_str() == "..") {
+        ui::warn(&format!(
+            "public.apps_script_path '{}' must be a relative path inside the tree; \
+             falling back to install-apps.sh",
+            public.apps_script_path
+        ));
+        return Some((PathBuf::from("install-apps.sh"), script));
+    }
+
+    Some((rel, script))
+}
+
+/// The hostname recorded in the store's own app manifest.
+///
+/// Read straight out of the TOML rather than through `AppsInventory`, which
+/// deliberately has no field for it. This is the one identity term the store
+/// carries about itself, so it is correct even when the publishing machine
+/// is not the captured one.
+fn captured_hostname_terms(source: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(source.join("apps_manifest.toml")) else {
+        return Vec::new();
+    };
+    let Ok(re) = Regex::new(r#"(?m)^\s*hostname\s*=\s*"([^"]+)""#) else {
+        return Vec::new();
+    };
+    let Some(caps) = re.captures(&text) else {
+        return Vec::new();
+    };
+
+    let host = caps[1].to_string();
+    let mut terms = Vec::new();
+    if let Some(short) = host.strip_suffix(".local") {
+        terms.push(short.to_string());
+    }
+    terms.push(host);
+    terms
 }
 
 pub fn build(
@@ -618,15 +725,48 @@ pub fn build(
     dest: Option<&Path>,
     config: &Config,
     allowlist: Option<&Allowlist>,
+    recorded_terms: &[String],
 ) -> Result<Plan> {
     let public = config.public.clone().unwrap_or_default();
-    let identity = if public.builtin_redactors {
-        identity_terms(config)
+    // The scanner keeps the identity list even when the redactors are
+    // turned off. `builtin_redactors = false` is a choice to stop rewriting
+    // content; it is not a request to stop noticing. Disabling the denylist
+    // and its safety net together is how a gap becomes a leak instead of a
+    // failed command.
+    let mut identity = identity_terms(config);
+    // Terms recorded by a previous review, plus the hostname the store was
+    // captured on. Both outlive the machine doing the publishing.
+    //
+    // Passed separately from `allowlist` on purpose. `--review` withholds
+    // the allowlist so the review is not filtered by the file it is about
+    // to rewrite — but the recorded terms are an input, not a gate, and
+    // dropping them would let a review on a second machine erase the
+    // captured machine's terms for good.
+    identity.extend(recorded_terms.iter().cloned());
+    identity.extend(captured_hostname_terms(source));
+    identity.retain(|t| t.chars().count() >= 3);
+    identity.sort_by_key(|t| std::cmp::Reverse(t.chars().count()));
+    identity.dedup();
+
+    let redact_identity: &[String] = if public.builtin_redactors {
+        &identity
     } else {
-        Vec::new()
+        &[]
     };
     let mut plan = Plan::default();
     let mut staged: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
+    // The inventory files are withheld as a *consequence* of generating the
+    // script, not as a standalone default. Expressing it here rather than in
+    // `default_public_exclude` is what makes `apps_script = false` mean what
+    // it says: publish the two files as they are. As a default they stayed
+    // in place when the flag was turned off, withholding both the files and
+    // their replacement.
+    let mut effective_exclude = public.exclude.clone();
+    if public.apps_script {
+        effective_exclude.push("Brewfile".to_string());
+        effective_exclude.push("apps_manifest.toml".to_string());
+    }
 
     for entry in walkdir::WalkDir::new(source)
         .into_iter()
@@ -638,8 +778,7 @@ pub fn build(
             continue;
         };
 
-        if let Some(pattern) = public
-            .exclude
+        if let Some(pattern) = effective_exclude
             .iter()
             .find(|pattern| matches_glob(pattern, rel))
         {
@@ -664,13 +803,15 @@ pub fn build(
         }
 
         let text = String::from_utf8_lossy(&bytes).into_owned();
-        let (redacted, applied) = redact_text(rel, &text, &public, &identity);
+        let (redacted, applied) = redact_text(rel, &text, &public, redact_identity);
         if !applied.is_empty() {
             plan.redactions.insert(rel.to_path_buf(), applied);
         }
 
         plan.findings
             .extend(scan_text(rel, &redacted, &public.allow, &identity));
+        plan.findings
+            .extend(scan_path(rel, &public.allow, &identity));
 
         // The allowlist gates paths, the scanner gates content. A path nobody
         // has reviewed is withheld even when it scans clean, so a newly
@@ -707,6 +848,7 @@ pub fn build(
         }
     }
 
+    plan.identity_terms = identity.clone();
     plan.published.sort();
     plan.pending_review.sort();
     plan.excluded.sort_by(|a, b| a.path.cmp(&b.path));
@@ -949,10 +1091,18 @@ mod tests {
 
     #[test]
     fn finding_ids_are_stable_across_runs() {
+        // Two calls to a pure function in one process cannot disagree, so
+        // the previous version of this test could not fail. An id is a
+        // user-facing handle written into config as `[public] allow`, so
+        // what must hold is that it is the same value next release too.
         let text = "key = AKIAIOSFODNN7EXAMPLE\n";
-        let a = scan_text_t(Path::new("f.conf"), text, &[]);
-        let b = scan_text_t(Path::new("f.conf"), text, &[]);
-        assert_eq!(a[0].id, b[0].id);
+        let findings = scan_text_t(Path::new("a.conf"), text, &[]);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].id, "d0c3d1e9",
+            "finding ids are written into user config; changing the hash \
+             silently invalidates every allow entry in the wild"
+        );
     }
 
     #[test]
@@ -971,6 +1121,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1001,6 +1152,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1025,6 +1177,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1046,6 +1199,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             None,
+            &[],
         )
         .unwrap();
         assert!(dst.path().join("b.conf").exists());
@@ -1056,6 +1210,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             None,
+            &[],
         )
         .unwrap();
 
@@ -1155,6 +1310,7 @@ mod tests {
         fs::write(src.path().join("brand-new.conf"), "b = 2\n").unwrap();
 
         let list = Allowlist {
+            identity_terms: Vec::new(),
             generated: String::new(),
             files: vec![AllowedFile {
                 path: "approved.conf".to_string(),
@@ -1168,6 +1324,7 @@ mod tests {
             Some(dst.path()),
             &cfg_with(PublicConfig::default()),
             Some(&list),
+            &[],
         )
         .unwrap();
 
@@ -1186,7 +1343,14 @@ mod tests {
         fs::write(src.path().join(".gitconfig"), "[user]\n\temail = a@b.com\n").unwrap();
 
         // No allowlist yet: this is what --review sees.
-        let plan = build(src.path(), None, &cfg_with(PublicConfig::default()), None).unwrap();
+        let plan = build(
+            src.path(),
+            None,
+            &cfg_with(PublicConfig::default()),
+            None,
+            &[],
+        )
+        .unwrap();
         let list = plan.to_allowlist();
 
         let gitconfig = list
@@ -1212,6 +1376,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("public-allowlist.toml");
         let list = Allowlist {
+            identity_terms: Vec::new(),
             generated: "2026-09-20T00:00:00Z".to_string(),
             files: vec![AllowedFile {
                 path: ".gitconfig".to_string(),

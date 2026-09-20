@@ -287,6 +287,7 @@ fn the_allowlist_shows_what_was_redacted_in_each_file() {
     )
     .unwrap();
     fs::write(compiled.join(".vimrc"), "set number\n").unwrap();
+    fs::write(compiled.join("manifest.lock"), "{}\n").unwrap();
 
     let list_path = review(home, &config_path);
     let text = fs::read_to_string(&list_path).unwrap();
@@ -296,7 +297,12 @@ fn the_allowlist_shows_what_was_redacted_in_each_file() {
     assert!(text.contains(".gitconfig"));
     assert!(text.contains("gitconfig-identity"));
     assert!(text.contains(".vimrc"));
-    assert!(text.contains("withheld") || text.contains("manifest.lock"));
+    // The word "withheld" appears in the header Allowlist::save always
+    // writes, so asserting on it proved nothing. Assert on a real entry.
+    assert!(
+        text.contains("[[withheld]]"),
+        "the allowlist must account for what was held back, not just what ships"
+    );
 }
 
 #[test]
@@ -412,4 +418,176 @@ fn the_generated_script_is_gated_by_the_allowlist_like_any_other_file() {
         .assert()
         .success();
     assert!(out.join("install-apps.sh").exists());
+}
+
+#[test]
+fn the_allowlist_never_publishes_itself() {
+    // Its [[withheld]] section is a complete index of every private path
+    // and the reason each was held back. manifest.lock is excluded for
+    // exactly that reason; this file says the same thing more legibly.
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let (config_path, compiled) = isolated_store(home);
+    let out = home.join("public-out");
+
+    fs::create_dir_all(compiled.join(".config/dotdipper")).unwrap();
+    fs::write(compiled.join(".vimrc"), "set number\n").unwrap();
+    fs::write(
+        compiled.join(".config/dotdipper/public-allowlist.toml"),
+        "generated = \"x\"\n",
+    )
+    .unwrap();
+    fs::write(
+        compiled.join("public-allowlist.toml"),
+        "generated = \"x\"\n",
+    )
+    .unwrap();
+
+    review(home, &config_path);
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success();
+
+    assert!(!out.join("public-allowlist.toml").exists());
+    assert!(!out.join(".config/dotdipper/public-allowlist.toml").exists());
+}
+
+#[test]
+fn a_path_that_names_the_machine_is_a_finding_even_when_its_content_is_clean() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let (config_path, compiled) = isolated_store(home);
+
+    // Content is innocuous; the directory name is not. Only content was
+    // ever scanned, yet a path is published just as surely as the bytes
+    // under it, and it lands in the allowlist and in every commit too.
+    fs::create_dir_all(compiled.join(".config/someuser-laptop")).unwrap();
+    fs::write(
+        compiled.join(".config/someuser-laptop/state.conf"),
+        "enabled = true\n",
+    )
+    .unwrap();
+
+    publish(home, &config_path)
+        .arg("--review")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("identity-term-in-path"));
+}
+
+#[test]
+fn turning_the_script_off_publishes_the_inventory_instead_of_nothing() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let base = home.join(".config").join("dotdipper");
+    let compiled = base.join("profiles").join("default").join("compiled");
+    fs::create_dir_all(&compiled).unwrap();
+    let out = home.join("public-out");
+
+    fs::write(compiled.join("Brewfile"), "brew \"ripgrep\"\n").unwrap();
+
+    let config_path = base.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[general]
+tracked_files = []
+
+[github]
+username = "someuser"
+repo_name = "dotfiles-private"
+public_repo_name = "dotfiles-public"
+
+[public]
+apps_script = false
+"#,
+    )
+    .unwrap();
+
+    review(home, &config_path);
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success();
+
+    // The exclusion of the inventory is a consequence of generating the
+    // script. With the script off, withholding both the file and its
+    // replacement would leave the documented escape hatch publishing
+    // nothing at all.
+    assert!(out.join("Brewfile").exists());
+    assert!(!out.join("install-apps.sh").exists());
+}
+
+#[test]
+fn identity_terms_from_the_review_survive_a_change_of_machine() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let (config_path, compiled) = isolated_store(home);
+    let list_path = home
+        .join(".config")
+        .join("dotdipper")
+        .join("public-allowlist.toml");
+
+    fs::write(compiled.join(".vimrc"), "set number\n").unwrap();
+    review(home, &config_path);
+
+    // Stand in for a term that belonged to the machine the store was
+    // captured on. identity_terms() reads the *publishing* machine, so
+    // without the allowlist carrying it this string matches no pattern and
+    // ships in the clear.
+    let text = fs::read_to_string(&list_path).unwrap();
+    assert!(
+        text.contains("identity_terms"),
+        "--review must record the terms it used, or they cannot travel"
+    );
+
+    // Substitute a term belonging to the machine the store was captured on,
+    // in place of the ones this machine contributed. The array is written
+    // multi-line, so drop every line of it before inserting.
+    let mut patched = String::new();
+    let mut in_array = false;
+    for line in text.lines() {
+        if line.starts_with("identity_terms") {
+            in_array = !line.trim_end().ends_with(']');
+            patched.push_str("identity_terms = [\"oldbox\"]\n");
+            continue;
+        }
+        if in_array {
+            in_array = line.trim() != "]";
+            continue;
+        }
+        patched.push_str(line);
+        patched.push('\n');
+    }
+    fs::write(&list_path, patched).unwrap();
+
+    fs::write(compiled.join("notes.conf"), "host = oldbox\n").unwrap();
+
+    // Redaction runs before the scan, so the right outcome is a clean
+    // publish with the term scrubbed — not an abort. Without the recorded
+    // terms the string matches no pattern at all and ships verbatim.
+    let out = home.join("public-out");
+    review(home, &config_path);
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success();
+
+    let notes = fs::read_to_string(out.join("notes.conf")).unwrap();
+    assert!(
+        !notes.contains("oldbox"),
+        "a term recorded by an earlier review must still be scrubbed: {notes}"
+    );
+
+    // And the regenerated allowlist must still carry it, or it is lost on
+    // the next review instead of merely on this one.
+    let text = fs::read_to_string(&list_path).unwrap();
+    assert!(
+        text.contains("oldbox"),
+        "recorded terms must survive a review"
+    );
 }

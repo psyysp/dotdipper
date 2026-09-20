@@ -867,8 +867,15 @@ async fn cmd_publish(config_path: PathBuf, opts: PublishOptions) -> Result<()> {
     }
 
     // --review derives the full picture, so it must not be filtered by the
-    // allowlist it is about to rewrite.
+    // allowlist it is about to rewrite. The identity terms recorded in it
+    // are a different matter: they are an input, and they must survive a
+    // review run or reviewing on a second machine would discard the terms
+    // belonging to the machine the store was captured on.
     let effective = if review { None } else { allowlist.as_ref() };
+    let recorded_terms: Vec<String> = allowlist
+        .as_ref()
+        .map(|l| l.identity_terms.clone())
+        .unwrap_or_default();
 
     let dest = if dry_run || review {
         None
@@ -880,7 +887,13 @@ async fn cmd_publish(config_path: PathBuf, opts: PublishOptions) -> Result<()> {
     };
 
     ui::info("Building sanitized public mirror...");
-    let plan = publish::build(&source, dest.as_deref(), &config, effective)?;
+    let plan = publish::build(
+        &source,
+        dest.as_deref(),
+        &config,
+        effective,
+        &recorded_terms,
+    )?;
     publish::report(&plan);
 
     if !plan.is_clean() {

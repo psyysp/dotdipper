@@ -4,6 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  # GitHub does not start a workflow from an event created with
+  # GITHUB_TOKEN, so the tag auto-release.yml pushes does NOT trigger the
+  # block above. Without this, an automated bump produces a tag with no
+  # binaries attached. Re-pushing the tag by hand works because that push
+  # comes from a real account; this input is the same thing without the
+  # tag surgery.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.8.0)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -191,7 +203,7 @@ jobs:
           body_path: release_notes.md
           files: release-assets/*
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ contains(inputs.tag || github.ref, '-rc') || contains(inputs.tag || github.ref, '-beta') || contains(inputs.tag || github.ref, '-alpha') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -199,7 +211,7 @@ jobs:
     name: Update Homebrew Formula
     needs: create-release
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
+    if: ${{ !contains(inputs.tag || github.ref, '-rc') && !contains(inputs.tag || github.ref, '-beta') && !contains(inputs.tag || github.ref, '-alpha') }}
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
@@ -231,7 +243,7 @@ jobs:
       - name: Update formula
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION=${RELEASE_VERSION}
           # One generator, shared with scripts/update-formula.sh. This step
           # used to carry its own macOS-only copy of the template, which
           # meant a release would silently drop Linux support added by hand.
@@ -251,14 +263,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/dotdipper.rb
           git diff --staged --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Update dotdipper to ${GITHUB_REF#refs/tags/v}"
+          git commit -m "Update dotdipper to ${RELEASE_VERSION}"
           git push
 
   publish-crates:
     name: Publish to crates.io
     needs: create-release
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
+    if: ${{ !contains(inputs.tag || github.ref, '-rc') && !contains(inputs.tag || github.ref, '-beta') && !contains(inputs.tag || github.ref, '-alpha') }}
 
     steps:
       - name: Checkout code

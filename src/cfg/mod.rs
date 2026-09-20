@@ -323,11 +323,13 @@ fn default_public_exclude() -> Vec<String> {
         ".ssh/**".to_string(),
         "manifest.lock".to_string(),
         ".gitignore".to_string(),
-        // Superseded by the generated install script, which carries the
-        // package list without the machine name, capture time, installed
-        // versions, or hand-installed applications. See `apps_script`.
-        "Brewfile".to_string(),
-        "apps_manifest.toml".to_string(),
+        // The allowlist's [[withheld]] section is a complete index of every
+        // private path and why each was held back. `manifest.lock` is
+        // excluded for exactly that reason; this file says the same thing
+        // more legibly. Both spellings, since the store layout depends on
+        // DOTDIPPER_HOME / XDG_CONFIG_HOME.
+        "**/public-allowlist.toml".to_string(),
+        "public-allowlist.toml".to_string(),
     ]
 }
 

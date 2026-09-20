@@ -165,10 +165,11 @@ exclude_patterns = [
 # public_repo_name = "dotfiles-public"   # must differ from repo_name
 
 # [public]
-# Paths never published, whatever the allowlist says. Brewfile and
-# apps_manifest.toml are excluded by default because the generated install
-# script replaces them; see apps_script below.
-# exclude = [".ssh/**", "manifest.lock", ".gitignore", "Brewfile", "apps_manifest.toml"]
+# Paths never published, whatever the allowlist says. The allowlist itself is
+# on this list: its [[withheld]] section indexes every private path.
+# Brewfile and apps_manifest.toml are withheld too while apps_script is on,
+# since the generated script replaces them.
+# exclude = [".ssh/**", "manifest.lock", ".gitignore", "public-allowlist.toml"]
 #
 # Publish a generated install script in place of the captured Brewfile and
 # apps manifest. It installs the same taps, formulae, casks, and App Store
@@ -185,6 +186,9 @@ exclude_patterns = [
 # builtin_redactors = true
 #
 # Where the generated allowlist lives, relative to the dotdipper base dir.
+# It also records the identity terms in force at review time, so a store
+# published from a different machine than the one it was captured on still
+# has that machine's name and login scrubbed.
 # allowlist = "public-allowlist.toml"
 #
 # Scanner findings you have reviewed and accepted, by id.

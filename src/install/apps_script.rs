@@ -61,6 +61,10 @@ pub struct BrewfilePlan {
     pub formulae: Vec<String>,
     pub casks: Vec<String>,
     pub mas: Vec<String>,
+    /// App Store ids from `mas "Name", id: 12345` lines. The names alone
+    /// cannot install anything, so without these a store that captured a
+    /// Brewfile but no manifest lost its App Store entries entirely.
+    pub mas_ids: Vec<u64>,
 }
 
 /// Extracts tap, formula, cask, and App Store entries from a Brewfile.
@@ -74,6 +78,7 @@ pub fn parse_brewfile(content: &str) -> BrewfilePlan {
     let brew_re = line_name_regex("brew");
     let cask_re = line_name_regex("cask");
     let mas_re = Regex::new(r#"(?m)^\s*mas\s+["']([^"']+)["']"#).expect("valid mas regex");
+    let mas_id_re = Regex::new(r"\bid:\s*(\d+)").expect("valid mas id regex");
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -88,6 +93,12 @@ pub fn parse_brewfile(content: &str) -> BrewfilePlan {
             plan.casks.push(caps[1].to_string());
         } else if let Some(caps) = mas_re.captures(line) {
             plan.mas.push(caps[1].to_string());
+            if let Some(id) = mas_id_re
+                .captures(line)
+                .and_then(|c| c[1].parse::<u64>().ok())
+            {
+                plan.mas_ids.push(id);
+            }
         }
     }
 
@@ -112,9 +123,9 @@ pub struct Plan {
     pub taps: Vec<String>,
     pub formulae: Vec<String>,
     pub casks: Vec<String>,
-    /// Mac App Store ids. Names are kept only as a shell comment, so the
-    /// script reads sensibly without depending on them.
-    pub mas: Vec<(u64, String)>,
+    /// Mac App Store ids. Ids only: the script installs by id, and a list
+    /// of purchase titles identifies its owner.
+    pub mas: Vec<u64>,
     /// Entries dropped because they sit under an omitted namespace.
     pub omitted: usize,
 }
@@ -153,6 +164,7 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
                 .extend(parsed.formulae.into_iter().filter(|f| keep(f)));
             plan.casks
                 .extend(parsed.casks.into_iter().filter(|c| keep(c)));
+            plan.mas.extend(parsed.mas_ids);
         }
 
         if let Some(apps) = inventory.apps {
@@ -162,8 +174,7 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
                     .map(|c| c.name.clone())
                     .filter(|c| keep(c)),
             );
-            plan.mas
-                .extend(apps.mas.iter().map(|m| (m.id, m.name.clone())));
+            plan.mas.extend(apps.mas.iter().map(|m| m.id));
         }
     }
 
@@ -172,8 +183,8 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
     dedup_sorted(&mut plan.taps);
     dedup_sorted(&mut plan.formulae);
     dedup_sorted(&mut plan.casks);
-    plan.mas.sort();
-    plan.mas.dedup_by_key(|(id, _)| *id);
+    plan.mas.sort_unstable();
+    plan.mas.dedup();
 
     plan
 }
@@ -206,17 +217,17 @@ pub fn render(plan: &Plan) -> String {
     s.push_str(&array("TAPS", plan.taps.iter().cloned()));
     s.push_str(&array("FORMULAE", plan.formulae.iter().cloned()));
     s.push_str(&array("CASKS", plan.casks.iter().cloned()));
-    s.push_str(&array(
-        "MAS_IDS",
-        plan.mas.iter().map(|(id, _)| id.to_string()),
-    ));
+    s.push_str(&array("MAS_IDS", plan.mas.iter().map(|id| id.to_string())));
 
     if !plan.mas.is_empty() {
-        s.push_str("# Mac App Store titles, for reference only:\n");
-        for (id, name) in &plan.mas {
-            s.push_str(&format!("#   {id}  {}\n", name.replace('\n', " ")));
-        }
-        s.push('\n');
+        // Deliberately ids only. The script installs by id, so the titles
+        // were decoration — and a list of App Store purchases names its
+        // owner exactly the way the hand-installed applications this
+        // feature already drops do.
+        s.push_str(&format!(
+            "# {} Mac App Store title(s), listed by id. `mas info <id>` names one.\n\n",
+            plan.mas.len()
+        ));
     }
 
     s.push_str(BODY);
@@ -433,7 +444,12 @@ name = "kitty"
         assert_eq!(p.casks, vec!["kitty".to_string()], "cask listed twice");
         assert_eq!(p.formulae, vec!["bat".to_string(), "ripgrep".to_string()]);
 
-        assert_eq!(generate(&inventory, &[]), generate(&inventory, &[]));
+        // Ordering is what keeps the published diff readable across
+        // captures, and `brew bundle dump` does not promise an order.
+        let mut shuffled = p.casks.clone();
+        shuffled.reverse();
+        shuffled.sort();
+        assert_eq!(p.casks, shuffled, "output must not depend on input order");
     }
 
     #[test]
@@ -450,10 +466,65 @@ name = "kitty"
 
     #[test]
     fn an_empty_inventory_still_renders_a_runnable_script() {
+        // "Runnable" is the claim, so run the parser. The previous version
+        // asserted that a substring of the BODY constant appeared in the
+        // BODY constant, which no regression could break. macOS ships bash
+        // 3.2, where an unguarded empty-array expansion under `set -u` is an
+        // unbound-variable error — exactly what this has to catch.
         let script = generate(&Inventory::default(), &[]);
-        // Under `set -u`, bash 3.2 treats an unguarded empty array expansion
-        // as an unbound variable, so the guard is not decoration.
+        assert_syntax_ok(&script);
         assert!(script.contains("TAPS=()"));
-        assert!(script.contains(r#"${TAPS[@]+"${TAPS[@]}"}"#));
+    }
+
+    #[test]
+    fn a_full_inventory_renders_a_script_bash_accepts() {
+        let m = manifest();
+        let script = generate(
+            &Inventory {
+                brewfile: Some("tap \"a/b\"\nbrew \"git\"\ncask \"kitty\"\n"),
+                apps: Some(&m),
+            },
+            &[],
+        );
+        assert_syntax_ok(&script);
+    }
+
+    #[test]
+    fn a_quoted_name_from_the_manifest_survives_into_valid_bash() {
+        // The escape test above builds a Plan directly. This one proves a
+        // hostile name reaches `array` through the real parse path and
+        // still leaves the script parseable.
+        let apps = AppsInventory::parse(
+            "[[casks]]\nname = \"od'd; rm -rf /\"\n\n[[casks]]\nname = \"$(id)\"\n",
+        )
+        .unwrap();
+        let script = generate(
+            &Inventory {
+                brewfile: None,
+                apps: Some(&apps),
+            },
+            &[],
+        );
+        assert_syntax_ok(&script);
+        assert!(script.contains(r"'od'\''d; rm -rf /'"));
+        assert!(script.contains("'$(id)'"));
+    }
+
+    /// Parses the script with the system bash. A generated shell script that
+    /// does not parse is the one defect no unit assertion would reveal.
+    fn assert_syntax_ok(script: &str) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("install-apps.sh");
+        std::fs::write(&path, script).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&path)
+            .output()
+            .expect("bash must be available to check the generated script");
+        assert!(
+            out.status.success(),
+            "generated script is not valid bash: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
