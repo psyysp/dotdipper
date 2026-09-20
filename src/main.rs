@@ -452,6 +452,20 @@ enum InstallCommands {
         #[arg(short = 'o', long = "out", value_name = "PATH")]
         out: Option<PathBuf>,
     },
+
+    /// Print or export a script that installs the captured tools, derived
+    /// from the Brewfile and apps manifest without their machine details
+    AppsScript {
+        /// Write the script to a file instead of printing to stdout
+        #[arg(short = 'o', long = "out", value_name = "PATH")]
+        out: Option<PathBuf>,
+
+        /// Drop taps owned by the configured GitHub user, as the public
+        /// mirror does. Off by default, since a personal tap is wanted on
+        /// your own machines.
+        #[arg(long)]
+        shareable: bool,
+    },
 }
 
 #[cfg(target_os = "macos")]
@@ -573,6 +587,9 @@ async fn main() -> Result<()> {
             unsafe_allow_outside_home,
         } => match action {
             Some(InstallCommands::Script { out }) => cmd_install_script(config_path, out).await,
+            Some(InstallCommands::AppsScript { out, shareable }) => {
+                cmd_install_apps_script(config_path, out, shareable).await
+            }
             None => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
         },
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
@@ -1160,6 +1177,71 @@ async fn cmd_install_script(config_path: PathBuf, out: Option<PathBuf>) -> Resul
         if !script.content.ends_with('\n') {
             println!();
         }
+    }
+
+    Ok(())
+}
+
+async fn cmd_install_apps_script(
+    config_path: PathBuf,
+    out: Option<PathBuf>,
+    shareable: bool,
+) -> Result<()> {
+    let config = cfg::load(&config_path)?;
+    let store = dotdipper::paths::compiled_dir()?;
+
+    let brewfile = std::fs::read_to_string(store.join("Brewfile")).ok();
+    let manifest_text = std::fs::read_to_string(store.join("apps_manifest.toml")).ok();
+    let manifest = match &manifest_text {
+        Some(text) => Some(
+            toml::from_str::<dotdipper::apps::AppsManifest>(text)
+                .context("Failed to parse apps_manifest.toml")?,
+        ),
+        None => None,
+    };
+
+    if brewfile.is_none() && manifest.is_none() {
+        anyhow::bail!(
+            "No Brewfile or apps_manifest.toml in {}. Run 'dotdipper apps capture' first.",
+            store.display()
+        );
+    }
+
+    let omit = if shareable {
+        config.github.username.clone().into_iter().collect()
+    } else {
+        Vec::new()
+    };
+
+    let script = dotdipper::install::apps_script::generate(
+        &dotdipper::install::apps_script::Inventory {
+            brewfile: brewfile.as_deref(),
+            manifest: manifest.as_ref(),
+        },
+        &omit,
+    );
+
+    if let Some(output_path) = out {
+        if let Some(parent) = output_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create directory {}", parent.display()))?;
+            }
+        }
+        std::fs::write(&output_path, &script)
+            .with_context(|| format!("Failed to write {}", output_path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&output_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&output_path, perms)?;
+        }
+
+        ui::success(&format!("Wrote apps script to {}", output_path.display()));
+    } else {
+        print!("{}", script);
     }
 
     Ok(())

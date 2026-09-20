@@ -569,6 +569,50 @@ fn scan_text(rel: &Path, text: &str, allow: &[String], identity: &[String]) -> V
 ///
 /// Nothing is written until the scan is clean: the tree is built in memory
 /// first, and a dirty scan returns before `dest` is touched.
+/// Builds the install script from the store's captured inventory.
+///
+/// Returns `None` when the feature is off or the store captured neither
+/// file. Parse failures are not fatal: a malformed manifest should cost the
+/// script, not the whole publish, and the files it would have replaced are
+/// withheld either way.
+fn synthesized_apps_script(
+    source: &Path,
+    config: &Config,
+    public: &PublicConfig,
+    identity: &[String],
+) -> Option<(PathBuf, String)> {
+    if !public.apps_script {
+        return None;
+    }
+
+    let brewfile = fs::read_to_string(source.join("Brewfile")).ok();
+    let manifest = fs::read_to_string(source.join("apps_manifest.toml"))
+        .ok()
+        .and_then(|text| toml::from_str::<crate::apps::AppsManifest>(&text).ok());
+
+    if brewfile.is_none() && manifest.is_none() {
+        return None;
+    }
+
+    // A tap under the owner's own namespace names them. Dropping it here is
+    // what keeps the script runnable: left in, the identity redactor would
+    // rewrite it into a tap that does not exist.
+    let mut omit = identity.to_vec();
+    if let Some(user) = &config.github.username {
+        omit.push(user.clone());
+    }
+
+    let script = crate::install::apps_script::generate(
+        &crate::install::apps_script::Inventory {
+            brewfile: brewfile.as_deref(),
+            manifest: manifest.as_ref(),
+        },
+        &omit,
+    );
+
+    Some((PathBuf::from(&public.apps_script_path), script))
+}
+
 pub fn build(
     source: &Path,
     dest: Option<&Path>,
@@ -642,6 +686,27 @@ pub fn build(
         staged.push((rel.to_path_buf(), redacted.into_bytes()));
     }
 
+    if let Some((rel, text)) = synthesized_apps_script(source, config, &public, &identity) {
+        // The generated script is held to exactly the same contract as a
+        // captured file: redacted, scanned, and gated by the allowlist. It
+        // is derived from two files that are withheld, so nothing about it
+        // is pre-approved.
+        let (redacted, applied) = redact_text(&rel, &text, &public, &identity);
+        if !applied.is_empty() {
+            plan.redactions.insert(rel.clone(), applied);
+        }
+        plan.findings
+            .extend(scan_text(&rel, &redacted, &public.allow, &identity));
+
+        let approved = allowlist.map(|list| list.contains(&rel)).unwrap_or(true);
+        if approved {
+            plan.published.push(rel.clone());
+            staged.push((rel, redacted.into_bytes()));
+        } else {
+            plan.pending_review.push(rel);
+        }
+    }
+
     plan.published.sort();
     plan.pending_review.sort();
     plan.excluded.sort_by(|a, b| a.path.cmp(&b.path));
@@ -686,6 +751,15 @@ fn write_tree(dest: &Path, staged: &[(PathBuf, Vec<u8>)]) -> Result<()> {
             fs::create_dir_all(parent)?;
         }
         fs::write(&out, bytes).with_context(|| format!("Failed to write {}", out.display()))?;
+
+        // A bootstrap script that has to be chmod'd first is a bootstrap
+        // script that gets run through `bash` by hand, or not at all.
+        #[cfg(unix)]
+        if out.extension().and_then(|e| e.to_str()) == Some("sh") {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&out, fs::Permissions::from_mode(0o755))
+                .with_context(|| format!("Failed to mark {} executable", out.display()))?;
+        }
     }
 
     Ok(())

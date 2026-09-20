@@ -562,6 +562,23 @@ dotdipper publish --allow-finding a1b2c3d4
 
 Add project-specific rules with `[[public.redact]]` — see `example-config.toml`.
 
+**The app inventory publishes as a script, not as itself.** The point of the mirror is that a new machine can install the same tools. The captured `Brewfile` and `apps_manifest.toml` do that, but they also record the machine's name, when the capture ran, the exact version of everything installed, and the applications that were installed by hand — none of which helps install anything. A version list in particular is a vulnerability list, and a hand-installed app list describes its owner rather than their toolchain.
+
+So `publish` withholds both files and ships a generated `install-apps.sh` instead:
+
+```bash
+./install-apps.sh          # taps, formulae, casks, App Store titles — idempotent
+```
+
+Packages under your own Homebrew tap are dropped from the public copy and the omission is stated in the script, since a tap names its owner. Your **private** repo still has the real `Brewfile` and manifest, so your own new machine loses nothing. Generate the same script from the private store at any time:
+
+```bash
+dotdipper install apps-script              # keeps your personal tap
+dotdipper install apps-script --shareable  # drops it, as the mirror does
+```
+
+Turn the whole behaviour off with `[public] apps_script = false`, which publishes the two files as they are.
+
 ---
 
 ## ⚙️ Configuration

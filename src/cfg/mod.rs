@@ -258,6 +258,18 @@ pub struct PublicConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allow: Vec<String>,
 
+    /// Synthesise an install script from the captured `Brewfile` and
+    /// `apps_manifest.toml` and publish that instead of the files
+    /// themselves. The script installs the same tools without reproducing
+    /// the machine name, capture time, installed versions, or applications
+    /// that were installed by hand and cannot be installed from a script.
+    #[serde(default = "default_true")]
+    pub apps_script: bool,
+
+    /// Where the generated script lands in the public tree.
+    #[serde(default = "default_apps_script_path")]
+    pub apps_script_path: String,
+
     /// Allowlist file, relative to the dotdipper base dir. It records every
     /// path approved for publication and the redactions applied to each, and
     /// `dotdipper publish --review` generates it. A path missing from it is
@@ -270,6 +282,10 @@ fn default_allowlist_path() -> String {
     "public-allowlist.toml".to_string()
 }
 
+fn default_apps_script_path() -> String {
+    "install-apps.sh".to_string()
+}
+
 impl Default for PublicConfig {
     fn default() -> Self {
         PublicConfig {
@@ -277,6 +293,8 @@ impl Default for PublicConfig {
             builtin_redactors: true,
             redact: Vec::new(),
             allow: Vec::new(),
+            apps_script: true,
+            apps_script_path: default_apps_script_path(),
             allowlist: default_allowlist_path(),
         }
     }
@@ -305,6 +323,11 @@ fn default_public_exclude() -> Vec<String> {
         ".ssh/**".to_string(),
         "manifest.lock".to_string(),
         ".gitignore".to_string(),
+        // Superseded by the generated install script, which carries the
+        // package list without the machine name, capture time, installed
+        // versions, or hand-installed applications. See `apps_script`.
+        "Brewfile".to_string(),
+        "apps_manifest.toml".to_string(),
     ]
 }
 

@@ -165,8 +165,18 @@ exclude_patterns = [
 # public_repo_name = "dotfiles-public"   # must differ from repo_name
 
 # [public]
-# Paths never published, whatever the allowlist says.
-# exclude = [".ssh/**", "manifest.lock", ".gitignore"]
+# Paths never published, whatever the allowlist says. Brewfile and
+# apps_manifest.toml are excluded by default because the generated install
+# script replaces them; see apps_script below.
+# exclude = [".ssh/**", "manifest.lock", ".gitignore", "Brewfile", "apps_manifest.toml"]
+#
+# Publish a generated install script in place of the captured Brewfile and
+# apps manifest. It installs the same taps, formulae, casks, and App Store
+# titles without reproducing the machine name, the capture time, the exact
+# installed version of everything, or applications installed by hand. Set to
+# false to publish the two files as they are.
+# apps_script = true
+# apps_script_path = "install-apps.sh"
 #
 # Built-in redactors: git identity (including commented-out lines), captured
 # hostname, SSH endpoints, Tailscale MagicDNS names, absolute home paths

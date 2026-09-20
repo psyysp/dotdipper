@@ -1,4 +1,5 @@
 pub mod analyzers;
+pub mod apps_script;
 pub mod discover;
 pub mod package_map;
 pub mod validators;

@@ -298,3 +298,118 @@ fn the_allowlist_shows_what_was_redacted_in_each_file() {
     assert!(text.contains(".vimrc"));
     assert!(text.contains("withheld") || text.contains("manifest.lock"));
 }
+
+#[test]
+fn the_apps_inventory_publishes_as_a_script_rather_than_as_itself() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let (config_path, compiled) = isolated_store(home);
+    let out = home.join("public-out");
+
+    fs::write(
+        compiled.join("Brewfile"),
+        "tap \"homebrew/cask\"\ntap \"someuser/tools\"\nbrew \"ripgrep\"\ncask \"kitty\"\n",
+    )
+    .unwrap();
+    fs::write(
+        compiled.join("apps_manifest.toml"),
+        r#"
+[meta]
+captured_at = "2026-09-20T05:26:48Z"
+hostname = "Someones-MacBook-Air.local"
+os = "macos"
+
+[[mas]]
+id = 497799835
+name = "Xcode"
+version = "26.6"
+
+[[unmanaged]]
+name = "Ivanti Secure Access"
+path = "/Applications/Ivanti Secure Access.app"
+version = "22.7.1"
+"#,
+    )
+    .unwrap();
+
+    review(home, &config_path);
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Scan clean"));
+
+    // The inventory files themselves stay behind.
+    assert!(!out.join("Brewfile").exists());
+    assert!(!out.join("apps_manifest.toml").exists());
+
+    let script = fs::read_to_string(out.join("install-apps.sh")).unwrap();
+
+    // What a new machine needs in order to install the same tools.
+    assert!(script.contains("'ripgrep'"));
+    assert!(script.contains("'kitty'"));
+    assert!(script.contains("'497799835'"));
+    assert!(script.contains("'homebrew/cask'"));
+
+    // What describes the old machine, and so has no business being here.
+    assert!(!script.contains("Someones-MacBook-Air"));
+    assert!(!script.contains("2026-09-20"));
+    assert!(!script.contains("26.6"));
+    assert!(!script.contains("Ivanti"));
+
+    // The owner's own tap would be rewritten into a tap that does not
+    // exist, so it is dropped and the omission is stated.
+    assert!(!script.contains("someuser"));
+    assert!(script.contains("omitted"));
+
+    // Nothing in it was redacted, which would have left a broken reference.
+    assert!(
+        !script.contains("<redacted>"),
+        "a redacted package name is an uninstallable one: {script}"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(out.join("install-apps.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "the script must be executable");
+    }
+}
+
+#[test]
+fn the_generated_script_is_gated_by_the_allowlist_like_any_other_file() {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path();
+    let (config_path, compiled) = isolated_store(home);
+    let out = home.join("public-out");
+
+    fs::write(compiled.join(".vimrc"), "set number\n").unwrap();
+    let list_path = review(home, &config_path);
+    assert!(!fs::read_to_string(&list_path)
+        .unwrap()
+        .contains("install-apps.sh"));
+
+    // The inventory appears after the review. The script it produces is
+    // derived from files nobody has looked at, so it waits its turn.
+    fs::write(compiled.join("Brewfile"), "brew \"ripgrep\"\n").unwrap();
+
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("awaiting review"));
+    assert!(!out.join("install-apps.sh").exists());
+
+    review(home, &config_path);
+    publish(home, &config_path)
+        .arg("--out")
+        .arg(&out)
+        .assert()
+        .success();
+    assert!(out.join("install-apps.sh").exists());
+}
