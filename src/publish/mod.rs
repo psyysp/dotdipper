@@ -227,6 +227,15 @@ fn builtin_rules() -> Vec<Rule> {
             pattern: Regex::new(r"(?mi)^(\s*[#;]?\s*(?:name|email)\s*=\s*).+$").unwrap(),
             replacement: "${1}<redacted>",
         },
+        // dotdipper's own config names the backup repositories. Publishing
+        // the private repo's name discloses that it exists and what it holds,
+        // and the value is wrong for anyone reusing the config as a template.
+        Rule {
+            name: "dotdipper-repo-names",
+            path: Some(".config/dotdipper/config.toml"),
+            pattern: Regex::new(r#"(?mi)^((?:public_)?repo_name\s*=\s*).+$"#).unwrap(),
+            replacement: "${1}\"<redacted>\"",
+        },
         // Machine name recorded at capture time.
         Rule {
             name: "apps-hostname",
@@ -310,8 +319,18 @@ pub(crate) fn identity_terms(config: &Config) -> Vec<String> {
 }
 
 /// Case-insensitive, boundary-anchored pattern for one literal identity term.
+///
+/// The optional trailing `s` (or apostrophe-`s`) is not pedantry: macOS turns
+/// an account named `psy` into the host `PSYs-MacBook-Air`, and shell prompts
+/// strip that `PSYs-` prefix by literal text. Without the suffix the term
+/// `psy` has no word boundary after it and the owner's name ships in the
+/// clear. Both boundaries are still required, so `psychology` is untouched.
 fn identity_regex(term: &str) -> Option<Regex> {
-    Regex::new(&format!(r"(?i)\b{}\b", regex::escape(term))).ok()
+    Regex::new(&format!(
+        r"(?i)\b{}(?:['\u{{2019}}]?s)?\b",
+        regex::escape(term)
+    ))
+    .ok()
 }
 
 /// Patterns that must not survive into a public tree.
@@ -789,6 +808,17 @@ mod tests {
             &public,
         );
         assert!(!out.contains("Someones-MacBook-Air"));
+
+        // The published config is a template. Naming the owner's private
+        // backup repo in it is both a disclosure and wrong for a re-user.
+        let (out, applied) = redact_text_t(
+            Path::new(".config/dotdipper/config.toml"),
+            "[github]\nrepo_name = \"dotfiles-secret\"\npublic_repo_name = \"dotfiles-pub\"\n",
+            &public,
+        );
+        assert!(!out.contains("dotfiles-secret"));
+        assert!(!out.contains("dotfiles-pub"));
+        assert!(applied.iter().any(|r| r.rule == "dotdipper-repo-names"));
     }
 
     #[test]
@@ -979,6 +1009,33 @@ mod tests {
         assert!(!out.contains("someuser"));
         assert!(!out.contains("Someones-MacBook-Air"));
         assert!(applied.iter().any(|r| r.rule == "identity-terms"));
+    }
+
+    #[test]
+    fn identity_scrubbing_catches_the_macos_possessive_host_prefix() {
+        let public = PublicConfig::default();
+        let identity = vec!["psy".to_string()];
+
+        // macOS derives "PSYs-MacBook-Air" from the account name, and shell
+        // prompts strip that prefix by literal text. A bare word-boundary
+        // rule misses it, because "psy" is followed by "s".
+        let (out, applied) = redact_text(
+            Path::new(".zshrc"),
+            "PROMPT+=\"%F{green}${${(%):-%m}#PSYs-}%f\"\nowner = \"PSY's laptop\"\n",
+            &public,
+            &identity,
+        );
+
+        assert!(!out.to_lowercase().contains("psys-"));
+        assert!(!out.to_lowercase().contains("psy's"));
+        assert!(applied.iter().any(|r| r.rule == "identity-terms"));
+
+        // And the scanner agrees, so a future regression fails closed.
+        assert!(
+            scan_text(Path::new(".zshrc"), "${${(%):-%m}#PSYs-}", &[], &identity)
+                .iter()
+                .any(|f| f.kind == "identity-term")
+        );
     }
 
     #[test]

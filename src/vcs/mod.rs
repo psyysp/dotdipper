@@ -77,6 +77,11 @@ pub fn init_repo(repo_path: &Path, branch: &str) -> Result<()> {
 }
 
 /// Ensure the compiled git repo can commit even when HOME has no global git identity.
+/// Author identity used for commits in the public mirror, so that no
+/// personal name or address is recorded in its history.
+const PUBLISH_IDENTITY_NAME: &str = "dotdipper";
+const PUBLISH_IDENTITY_EMAIL: &str = "dotdipper@localhost";
+
 fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
     let name_ok = Command::new("git")
         .args(["config", "--get", "user.name"])
@@ -119,6 +124,39 @@ fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Pins the commit identity for a tree that is destined to become public.
+///
+/// [`ensure_commit_identity`] only fills in a *missing* identity, and
+/// `git config --get` resolves through the global config, so on a normal
+/// machine it finds the user's real name and address and leaves them in
+/// place. Commit metadata is not file content, so no redaction rule can
+/// reach it: the address would ship in every commit of the public mirror.
+/// The public tree therefore gets the neutral identity written
+/// unconditionally into its local config.
+fn force_publish_identity(repo_path: &Path) -> Result<()> {
+    for (key, value) in [
+        ("user.name", PUBLISH_IDENTITY_NAME),
+        ("user.email", PUBLISH_IDENTITY_EMAIL),
+        // A signature carries the signer's key identity, which is as
+        // personal as the address it accompanies.
+        ("commit.gpgsign", "false"),
+    ] {
+        let output = Command::new("git")
+            .args(["config", key, value])
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("Failed to set local git {}", key))?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set git {}: {}",
+                key,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
     Ok(())
 }
 
@@ -399,7 +437,7 @@ pub fn publish_push(
     if status_output.stdout.is_empty() {
         ui::info("No changes to publish");
     } else {
-        ensure_commit_identity(repo_path)?;
+        force_publish_identity(repo_path)?;
         let commit_message = message.unwrap_or_else(|| {
             format!(
                 "Update public dotfiles - {}",
@@ -1455,5 +1493,40 @@ mod tests {
             fs::read_to_string(temp_dir.path().join("keep.txt")).unwrap(),
             "keep\n"
         );
+    }
+
+    #[test]
+    fn force_publish_identity_overrides_an_inherited_identity() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        init_repo(repo);
+
+        // Stand in for the global identity git would otherwise inherit. The
+        // point of the function is that an identity already being resolvable
+        // is not a reason to leave it alone.
+        for (key, value) in [
+            ("user.name", "Real Person"),
+            ("user.email", "real@person.tld"),
+        ] {
+            std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(repo)
+                .output()
+                .unwrap();
+        }
+
+        force_publish_identity(repo).unwrap();
+
+        let read = |key: &str| {
+            let out = std::process::Command::new("git")
+                .args(["config", "--local", "--get", key])
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        assert_eq!(read("user.name"), PUBLISH_IDENTITY_NAME);
+        assert_eq!(read("user.email"), PUBLISH_IDENTITY_EMAIL);
+        assert_eq!(read("commit.gpgsign"), "false");
     }
 }
