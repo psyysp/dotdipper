@@ -190,6 +190,11 @@ enum Commands {
         /// Override the GitHub repository name
         #[arg(long)]
         repo: Option<String>,
+
+        /// Clone over anonymous HTTPS instead of SSH. Use this to consume a
+        /// public mirror on a machine with no GitHub sign-in and no SSH key.
+        #[arg(long)]
+        https: bool,
     },
 
     /// Undo the last pushed commit by creating a revert commit
@@ -601,7 +606,18 @@ async fn main() -> Result<()> {
             force,
             unsafe_allow_outside_home,
             repo,
-        } => cmd_pull(config_path, apply, force, unsafe_allow_outside_home, repo).await,
+            https,
+        } => {
+            cmd_pull(
+                config_path,
+                apply,
+                force,
+                unsafe_allow_outside_home,
+                repo,
+                https,
+            )
+            .await
+        }
         Commands::Undo { force, repo } => cmd_undo(config_path, force, repo).await,
         Commands::Install {
             action,
@@ -1026,11 +1042,17 @@ async fn cmd_pull(
     force: bool,
     allow_outside_home: bool,
     repo: Option<String>,
+    https: bool,
 ) -> Result<()> {
     ui::info("Pulling from GitHub...");
     let config = cfg::load(&config_path)?;
 
-    let effective_repo = vcs::pull(&config, force, repo.as_deref())?;
+    let transport = if https {
+        vcs::Transport::HttpsAnonymous
+    } else {
+        vcs::Transport::Ssh
+    };
+    let effective_repo = vcs::pull(&config, force, repo.as_deref(), transport)?;
 
     if repo.is_some() && config.github.repo_name.is_none() {
         cfg::set_config_value(&config_path, "github.repo_name", &effective_repo)?;

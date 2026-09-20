@@ -192,6 +192,18 @@ impl GitTarget {
     }
 }
 
+/// How git reaches the remote.
+///
+/// Pushing always uses SSH, which requires a key on the machine. Reading a
+/// *public* mirror does not require an account at all, so `pull --https`
+/// clones over anonymous HTTPS — the whole point of publishing a mirror is
+/// that a machine with no GitHub sign-in can consume it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Ssh,
+    HttpsAnonymous,
+}
+
 pub fn default_branch_for_profile(profile: &str) -> String {
     if profile == "default" {
         "main".to_string()
@@ -511,7 +523,12 @@ pub fn publish_push(
     Ok(repo_name)
 }
 
-pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
+pub fn pull(
+    config: &Config,
+    force: bool,
+    repo_override: Option<&str>,
+    transport: Transport,
+) -> Result<String> {
     let repo_path = crate::paths::compiled_dir()?;
     let target = resolve_git_target(config, repo_override)?;
     let origin_ref = target.origin_ref();
@@ -528,10 +545,11 @@ pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result
             &target.repo_name,
             &target.branch,
             &repo_path,
+            transport,
         )?;
     } else {
         // Ensure current origin points at the selected repo
-        add_remote(&target.username, &target.repo_name, &repo_path)?;
+        add_remote(&target.username, &target.repo_name, &repo_path, transport)?;
 
         let dirty = has_uncommitted_changes(&repo_path)?;
         if dirty && !force {
@@ -766,9 +784,15 @@ pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>)
             &target.repo_name,
             &target.branch,
             &repo_path,
+            Transport::Ssh,
         )?;
     } else {
-        add_remote(&target.username, &target.repo_name, &repo_path)?;
+        add_remote(
+            &target.username,
+            &target.repo_name,
+            &repo_path,
+            Transport::Ssh,
+        )?;
     }
 
     ensure_clean_worktree(&repo_path)?;
@@ -1017,7 +1041,7 @@ fn ensure_github_repo(
 ) -> Result<()> {
     // Tests can point at a local bare repo via DOTDIPPER_TEST_REMOTE and skip gh.
     if std::env::var_os("DOTDIPPER_TEST_REMOTE").is_some() {
-        add_remote(username, repo_name, repo_path)?;
+        add_remote(username, repo_name, repo_path, Transport::Ssh)?;
         return Ok(());
     }
 
@@ -1077,23 +1101,40 @@ fn ensure_github_repo(
     }
 
     // Always ensure remote URL matches selected repo
-    add_remote(username, repo_name, repo_path)?;
+    add_remote(username, repo_name, repo_path, Transport::Ssh)?;
 
     Ok(())
 }
 
-fn resolve_remote_url(username: &str, repo_name: &str) -> String {
+fn resolve_remote_url(username: &str, repo_name: &str, transport: Transport) -> String {
     if let Ok(url) = std::env::var("DOTDIPPER_TEST_REMOTE") {
         let url = url.trim();
         if !url.is_empty() {
             return url.to_string();
         }
     }
-    format!("git@github.com:{}/{}.git", username, repo_name)
+    match transport {
+        Transport::Ssh => format!("git@github.com:{}/{}.git", username, repo_name),
+        Transport::HttpsAnonymous => format!("https://github.com/{}/{}.git", username, repo_name),
+    }
 }
 
-fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
-    let remote_url = resolve_remote_url(username, repo_name);
+/// Anonymous HTTPS must fail rather than sit at a credential prompt: a private
+/// repo over this transport is a configuration mistake, not something to ask
+/// the user to authenticate their way out of.
+fn apply_transport_env(cmd: &mut Command, transport: Transport) {
+    if transport == Transport::HttpsAnonymous {
+        cmd.env("GIT_TERMINAL_PROMPT", "0");
+    }
+}
+
+fn add_remote(
+    username: &str,
+    repo_name: &str,
+    repo_path: &Path,
+    transport: Transport,
+) -> Result<()> {
+    let remote_url = resolve_remote_url(username, repo_name, transport);
 
     let output = Command::new("git")
         .args(["remote", "add", "origin", remote_url.as_str()])
@@ -1125,8 +1166,14 @@ fn add_remote(username: &str, repo_name: &str, repo_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn clone_repo(username: &str, repo_name: &str, branch: &str, dest_path: &Path) -> Result<()> {
-    let repo_url = resolve_remote_url(username, repo_name);
+fn clone_repo(
+    username: &str,
+    repo_name: &str,
+    branch: &str,
+    dest_path: &Path,
+    transport: Transport,
+) -> Result<()> {
+    let repo_url = resolve_remote_url(username, repo_name, transport);
 
     ui::info(&format!(
         "Cloning repository from {} ({})",
@@ -1141,17 +1188,17 @@ fn clone_repo(username: &str, repo_name: &str, branch: &str, dest_path: &Path) -
     let dest = dest_path
         .to_str()
         .context("Repository path is not valid UTF-8")?;
-    let mut output = Command::new("git")
-        .args([
-            "clone",
-            "--branch",
-            branch,
-            "--single-branch",
-            repo_url.as_str(),
-            dest,
-        ])
-        .output()
-        .context("Failed to clone repository")?;
+    let mut clone = Command::new("git");
+    clone.args([
+        "clone",
+        "--branch",
+        branch,
+        "--single-branch",
+        repo_url.as_str(),
+        dest,
+    ]);
+    apply_transport_env(&mut clone, transport);
+    let mut output = clone.output().context("Failed to clone repository")?;
 
     if !output.status.success() {
         // Branch may not exist yet on a shared repo; clone default then create it.
@@ -1159,10 +1206,10 @@ fn clone_repo(username: &str, repo_name: &str, branch: &str, dest_path: &Path) -
             "Branch '{}' not found on remote; cloning default branch",
             branch
         ));
-        output = Command::new("git")
-            .args(["clone", repo_url.as_str(), dest])
-            .output()
-            .context("Failed to clone repository")?;
+        let mut fallback = Command::new("git");
+        fallback.args(["clone", repo_url.as_str(), dest]);
+        apply_transport_env(&mut fallback, transport);
+        output = fallback.output().context("Failed to clone repository")?;
         if !output.status.success() {
             anyhow::bail!(
                 "Failed to clone: {}",
@@ -1509,6 +1556,50 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp_dir.path().join("keep.txt")).unwrap(),
             "keep\n"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn transport_selects_the_url_scheme() {
+        std::env::remove_var("DOTDIPPER_TEST_REMOTE");
+
+        assert_eq!(
+            resolve_remote_url("octocat", "dots", Transport::Ssh),
+            "git@github.com:octocat/dots.git"
+        );
+        // Anonymous HTTPS is what a machine with no key and no sign-in can use.
+        assert_eq!(
+            resolve_remote_url("octocat", "dots", Transport::HttpsAnonymous),
+            "https://github.com/octocat/dots.git"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn anonymous_https_never_waits_at_a_credential_prompt() {
+        let mut ssh = Command::new("git");
+        apply_transport_env(&mut ssh, Transport::Ssh);
+        let ssh_envs: Vec<_> = ssh.get_envs().collect();
+        assert!(
+            ssh_envs.is_empty(),
+            "SSH transport should not touch the environment: {ssh_envs:?}"
+        );
+
+        let mut https = Command::new("git");
+        apply_transport_env(&mut https, Transport::HttpsAnonymous);
+        let set: Vec<_> = https
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            set,
+            vec![("GIT_TERMINAL_PROMPT".to_string(), Some("0".to_string()))]
         );
     }
 

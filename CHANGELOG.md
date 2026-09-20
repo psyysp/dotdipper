@@ -13,7 +13,14 @@ All notable changes to dotdipper are documented here.
   - `dotdipper macos keys` lists what is eligible. A key that is set but not recorded is reported as a warning, so a refusal is visible rather than silent.
   - The generated script is applied by a `post_apply` hook, so a new machine actually receives the settings instead of inheriting a file nobody runs — which is what the previous script had been.
 
+### Added
+
+- **`dotdipper pull --https` — consume a public mirror with no GitHub account.** Every remote was `git@github.com:…`, so pulling required an SSH key registered with GitHub even for a repository the whole world can read. That defeated the point of publishing a mirror: the machine most likely to want it is the one you have not signed in on. `--https` clones over anonymous HTTPS, and sets `GIT_TERMINAL_PROMPT=0` so a private repo fails immediately instead of parking on a credential prompt. Push, publish and undo still use SSH, because they write.
+
 ### Fixed
+
+- **The public mirror shipped dotdipper's own config, and applying it broke the consumer's dotdipper.** `.config/dotdipper/config.toml` was published like any other dotfile — but its `username`, `repo_name` and `public_repo_name` are redacted to `<redacted>`, and `apply` symlinked that over the consumer's working config. A machine that pulled the mirror could not pull again. `.config/dotdipper/**` is now excluded: one dotdipper's state has no business overwriting another's.
+  - Withholding `manifest.lock` costs nothing here — `pull` already rebuilds the manifest by hashing the cloned tree when the remote has none.
 
 - **A profile overlay could silently override the global config, and nothing said so.** `profiles/<name>/config.toml` is merged over `config.toml` with overlay keys winning, and discovery writes `tracked_files` and `packages.common` to the overlay — so the global file kept a stale copy of both that still read as authoritative. On the author's machine the global config listed 49 tracked paths against the overlay's 74, and hand-editing the global list changed nothing: the snapshot kept capturing the old set, with no warning, no diff, and no indication which file was in charge.
   - `config --set` now writes to whichever file governs the key rather than always the global one, and reports the file when that is the overlay.
