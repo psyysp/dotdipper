@@ -4,6 +4,8 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-20
+
 ### Added
 
 - **`dotdipper publish` — a sanitized public mirror alongside the private backup.** The private repo keeps everything a restore needs, including `.ssh/config`, `.gitconfig`, the Brewfile and the app manifest. `publish` derives a *second*, separate repository from the same store: paths in `[public] exclude` are withheld, the rest are rewritten by the redactors, and the finished tree is scanned before anything is written or pushed.
