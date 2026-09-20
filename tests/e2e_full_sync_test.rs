@@ -358,11 +358,25 @@ fn e2e_push_pull_apply_install_roundtrip() {
         "install.sh should prefer Rust apply when binary is available"
     );
 
-    // tracked_files should have been refreshed after pull
+    // tracked_files should have been refreshed after pull — into the active
+    // profile overlay, which is the file that wins on load.
+    let overlay_after = fs::read_to_string(
+        base2
+            .join("profiles")
+            .join("default")
+            .join("config.toml"),
+    )
+    .unwrap();
+    assert!(
+        overlay_after.contains("tracked_files") && overlay_after.contains(".zshrc"),
+        "pull sync should write tracked_files to the profile overlay: {overlay_after}"
+    );
+    // And it must not leave a second, stale copy in the base config: a base key
+    // the overlay overrides reads as authoritative but is silently ignored.
     let cfg_after = fs::read_to_string(&config2).unwrap();
     assert!(
-        cfg_after.contains(".zshrc") || cfg_after.contains("tracked_files"),
-        "config should retain tracked_files section after pull sync"
+        !cfg_after.contains("tracked_files"),
+        "base config must not keep a shadowed tracked_files copy: {cfg_after}"
     );
 }
 

@@ -329,7 +329,14 @@ dotdipper profile remove work
 
 Legacy top-level `compiled/` is migrated into `profiles/default/` on first use. Snapshot, apply, push, pull, status, diff, install, and remote bundles all use the **active** profile store.
 
-**Per-profile overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). Leave it comments-only to inherit everything. `dotdipper config --set` / `--edit` still write the global file; `profile switch` only updates `active_profile` there.
+**Per-profile overlay:** `profiles/<name>/config.toml` is merged on top of the global config (overlay keys win). Leave it comments-only to inherit everything. `profile switch` only updates `active_profile` in the global file.
+
+Because the overlay wins on load, a key defined in both files makes the global copy dead weight — edits there have no effect. dotdipper keeps that from happening silently:
+
+- `config --set` writes to whichever file governs the key, and says so when that is the overlay.
+- `config --edit` warns about every shadowed key before opening; `config --edit --overlay` opens the overlay instead.
+- `config --show` and `doctor` both report shadowed keys.
+- Discovery writes `tracked_files` and `packages.common` to the overlay and removes the stale global copy, so exactly one file owns each key.
 
 **GitHub sync:** each profile pushes to its own branch by default (`main` for `default`, `dotdipper/<name>` otherwise). Set `[github].repo_name` in the overlay for a dedicated repository. Branch and repo are independent; set `[github].branch` to override the default.
 

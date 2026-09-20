@@ -640,6 +640,13 @@ pub fn overlay_path_for(profile: &str) -> Result<PathBuf> {
         .join("config.toml"))
 }
 
+/// Overlay path for the profile that is active right now.
+pub fn active_overlay_path() -> Result<PathBuf> {
+    let profile =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    overlay_path_for(&profile)
+}
+
 pub fn write_sparse_overlay_if_missing(path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
@@ -753,6 +760,117 @@ fn sanitize_overlay(value: &mut toml::Value) {
     }
 }
 
+/// One base-config key that the active profile overlay overrides with a
+/// different value. Editing the base file for such a key has no effect —
+/// the overlay wins on load — so every write and edit path reports these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShadowedKey {
+    /// Dotted path, e.g. `general.tracked_files`.
+    pub key: String,
+    /// Human-readable base value ("49 entries" for arrays).
+    pub base: String,
+    /// Human-readable overlay value.
+    pub overlay: String,
+}
+
+/// Keys the active profile overlay overrides with a *different* value.
+///
+/// A key the overlay defines identically, or one the base never defines, is
+/// not shadowed: editing the base there is either a no-op by agreement or
+/// simply unrelated. Only a genuine disagreement misleads the editor.
+pub fn shadowed_keys(config_path: &Path) -> Result<Vec<ShadowedKey>> {
+    let profile =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let overlay_path = overlay_path_for(&profile)?;
+    if overlay_path == config_path {
+        return Ok(Vec::new());
+    }
+    let Some(overlay) = parse_overlay_file(&overlay_path)? else {
+        return Ok(Vec::new());
+    };
+    let base_contents = match fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(_) => return Ok(Vec::new()),
+    };
+    let base: toml::Value = match toml::from_str(&base_contents) {
+        Ok(value) => value,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let mut found = Vec::new();
+    collect_shadowed(&base, &overlay, &mut Vec::new(), &mut found);
+    found.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(found)
+}
+
+fn collect_shadowed(
+    base: &toml::Value,
+    overlay: &toml::Value,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<ShadowedKey>,
+) {
+    let (Some(base_table), Some(overlay_table)) = (base.as_table(), overlay.as_table()) else {
+        return;
+    };
+    for (key, overlay_val) in overlay_table {
+        let Some(base_val) = base_table.get(key) else {
+            continue;
+        };
+        prefix.push(key.clone());
+        if base_val.is_table() && overlay_val.is_table() {
+            collect_shadowed(base_val, overlay_val, prefix, out);
+        } else if base_val != overlay_val {
+            out.push(ShadowedKey {
+                key: prefix.join("."),
+                base: describe_value(base_val),
+                overlay: describe_value(overlay_val),
+            });
+        }
+        prefix.pop();
+    }
+}
+
+fn describe_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::Array(items) => format!("{} entries", items.len()),
+        toml::Value::String(s) => format!("\"{s}\""),
+        other => other.to_string().trim().to_string(),
+    }
+}
+
+/// Which file a `config --set` write must land in for `key` to take effect:
+/// the overlay when it already defines that key, otherwise the base config.
+pub fn write_target_for(config_path: &Path, key: &str) -> Result<PathBuf> {
+    let profile =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let overlay_path = overlay_path_for(&profile)?;
+    if overlay_path == config_path {
+        return Ok(config_path.to_path_buf());
+    }
+    let Some(overlay) = parse_overlay_file(&overlay_path)? else {
+        return Ok(config_path.to_path_buf());
+    };
+    if overlay_defines(&overlay, key) {
+        Ok(overlay_path)
+    } else {
+        Ok(config_path.to_path_buf())
+    }
+}
+
+fn overlay_defines(overlay: &toml::Value, key: &str) -> bool {
+    let mut cursor = overlay;
+    for segment in key.split('.') {
+        let Some(table) = cursor.as_table() else {
+            return false;
+        };
+        let Some(next) = table.get(segment) else {
+            return false;
+        };
+        cursor = next;
+    }
+    true
+}
+
 fn normalize_config(mut config: Config) -> Config {
     if let Some(dotfiles) = &config.dotfiles {
         if config.general.tracked_files.is_empty() {
@@ -842,6 +960,44 @@ fn overlay_general_table(
     general.as_table_mut().expect("general table")
 }
 
+/// Remove a key from the base config once the overlay has taken ownership of it.
+///
+/// Leaving a stale copy behind is the shadowing trap: the base file still reads
+/// as authoritative, but the overlay wins on load, so hand-edits there vanish.
+/// One writable owner per key is the invariant.
+fn retire_base_key(config_path: &Path, path: &[&str]) -> Result<()> {
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(config_path)
+        .with_context(|| format!("Failed to read {}", config_path.display()))?;
+    let Ok(parsed) = toml::from_str::<toml::Value>(&contents) else {
+        return Ok(());
+    };
+    let Some(mut root) = parsed.as_table().cloned() else {
+        return Ok(());
+    };
+
+    let Some((leaf, tables)) = path.split_last() else {
+        return Ok(());
+    };
+    let mut cursor = &mut root;
+    for segment in tables {
+        match cursor.get_mut(*segment).and_then(|v| v.as_table_mut()) {
+            Some(next) => cursor = next,
+            None => return Ok(()),
+        }
+    }
+    if cursor.remove(*leaf).is_none() {
+        return Ok(());
+    }
+
+    let serialized =
+        toml::to_string_pretty(&toml::Value::Table(root)).context("Failed to serialize config")?;
+    atomic_write(config_path, serialized)
+        .with_context(|| format!("Failed to write {}", config_path.display()))
+}
+
 /// Write discovered tracked files to the active profile overlay when a
 /// profile store exists; otherwise write them to the global config file.
 pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
@@ -864,7 +1020,8 @@ pub fn update_discovered(config_path: &Path, files: &[PathBuf]) -> Result<()> {
                             .collect(),
                     ),
                 );
-                return write_overlay_table(&overlay_path, table);
+                write_overlay_table(&overlay_path, table)?;
+                return retire_base_key(config_path, &["general", "tracked_files"]);
             }
         }
     }
@@ -893,7 +1050,8 @@ pub fn update_packages_common(config_path: &Path, packages: Vec<String>) -> Resu
                         toml::Value::Array(packages.into_iter().map(toml::Value::String).collect()),
                     );
                 }
-                return write_overlay_table(&overlay_path, table);
+                write_overlay_table(&overlay_path, table)?;
+                return retire_base_key(config_path, &["packages", "common"]);
             }
         }
     }
@@ -1022,47 +1180,89 @@ pub fn remove_push_ignore(config_path: &Path, pattern: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<()> {
-    let mut config = load_file(config_path)?;
+/// Set one config key, writing to whichever file actually governs it.
+///
+/// A key the active profile overlay already defines is written to the overlay:
+/// writing it to the base config would be silently overridden on the next
+/// load. Returns the file written so callers can report it.
+pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<PathBuf> {
+    let parsed = parse_config_value(key, value)?;
+    let target = write_target_for(config_path, key)?;
+    set_in_file(&target, key, parsed)?;
+    Ok(target)
+}
 
-    match key {
-        "github.username" => config.github.username = Some(value.to_string()),
-        "github.repo_name" => config.github.repo_name = Some(value.to_string()),
+/// Validate a `key=value` pair and render the value as TOML.
+fn parse_config_value(key: &str, value: &str) -> Result<toml::Value> {
+    let parsed = match key {
+        "github.username" | "github.repo_name" => toml::Value::String(value.to_string()),
         "github.branch" => {
             let trimmed = value.trim();
-            config.github.branch = if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            };
-        }
-        "github.private" => {
-            config.github.private = value
-                .parse()
-                .context("Invalid boolean value. Use 'true' or 'false'")?
-        }
-        "general.default_mode" => {
-            config.general.default_mode = match value {
-                "symlink" => RestoreMode::Symlink,
-                "copy" => RestoreMode::Copy,
-                _ => anyhow::bail!("Invalid mode '{}'. Use 'symlink' or 'copy'", value),
+            if trimmed.is_empty() {
+                anyhow::bail!("github.branch cannot be empty");
             }
+            toml::Value::String(trimmed.to_string())
         }
-        "general.backup" => {
-            config.general.backup = value
+        "github.private" => toml::Value::Boolean(
+            value
                 .parse()
-                .context("Invalid boolean value. Use 'true' or 'false'")?
-        }
+                .context("Invalid boolean value. Use 'true' or 'false'")?,
+        ),
+        "general.default_mode" => match value {
+            "symlink" | "copy" => toml::Value::String(value.to_string()),
+            _ => anyhow::bail!("Invalid mode '{}'. Use 'symlink' or 'copy'", value),
+        },
+        "general.backup" => toml::Value::Boolean(
+            value
+                .parse()
+                .context("Invalid boolean value. Use 'true' or 'false'")?,
+        ),
         _ => anyhow::bail!(
             "Unknown config key '{}'. Supported keys:\n  \
              github.username, github.repo_name, github.branch, github.private,\n  \
              general.default_mode, general.backup",
             key
         ),
-    }
+    };
+    Ok(parsed)
+}
 
-    save(config_path, &config)?;
-    Ok(())
+/// Insert a dotted key into a TOML file, creating intermediate tables and
+/// leaving every other key — including ones this binary does not model — intact.
+fn set_in_file(path: &Path, key: &str, value: toml::Value) -> Result<()> {
+    let mut root = if path.exists() {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if overlay_is_blank(&contents) {
+            toml::map::Map::new()
+        } else {
+            toml::from_str::<toml::Value>(&contents)
+                .with_context(|| format!("Failed to parse {}", path.display()))?
+                .as_table()
+                .cloned()
+                .unwrap_or_default()
+        }
+    } else {
+        toml::map::Map::new()
+    };
+
+    let segments: Vec<&str> = key.split('.').collect();
+    let (leaf, tables) = segments.split_last().context("Empty config key")?;
+    let mut cursor = &mut root;
+    for segment in tables {
+        let entry = cursor
+            .entry(segment.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(toml::map::Map::new());
+        }
+        cursor = entry.as_table_mut().expect("table");
+    }
+    cursor.insert(leaf.to_string(), value);
+
+    let serialized =
+        toml::to_string_pretty(&toml::Value::Table(root)).context("Failed to serialize config")?;
+    atomic_write(path, serialized).with_context(|| format!("Failed to write {}", path.display()))
 }
 
 #[cfg(test)]
@@ -1070,6 +1270,140 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    /// Sets up HOME/DOTDIPPER_HOME with a base config and a profile overlay.
+    fn overlay_fixture(base_body: &str, overlay_body: &str) -> (TempDir, PathBuf) {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        std::fs::create_dir_all(base.join("profiles").join("default")).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let config_path = base.join("config.toml");
+        std::fs::write(&config_path, base_body).unwrap();
+        std::fs::write(
+            base.join("profiles").join("default").join("config.toml"),
+            overlay_body,
+        )
+        .unwrap();
+        (temp, config_path)
+    }
+
+    #[test]
+    #[serial]
+    fn update_discovered_retires_the_stale_base_copy() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\nbackup = true\ntracked_files = [\"/stale\"]\n",
+            "# comments only\n",
+        );
+
+        update_discovered(&config_path, &[PathBuf::from("/a"), PathBuf::from("/b")]).unwrap();
+
+        let base_text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(!base_text.contains("/stale"), "{base_text}");
+        assert!(!base_text.contains("tracked_files"), "{base_text}");
+        // Unrelated base keys survive, and nothing shadows anything any more.
+        assert!(base_text.contains("backup = true"), "{base_text}");
+        assert!(shadowed_keys(&config_path).unwrap().is_empty());
+        assert_eq!(load(&config_path).unwrap().general.tracked_files.len(), 2);
+    }
+
+    #[test]
+    #[serial]
+    fn shadowed_keys_reports_a_disagreeing_overlay() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\ntracked_files = [\"/a\", \"/b\"]\n",
+            "[general]\ntracked_files = [\"/a\", \"/b\", \"/c\"]\n",
+        );
+
+        let shadowed = shadowed_keys(&config_path).unwrap();
+
+        assert_eq!(shadowed.len(), 1, "{shadowed:?}");
+        assert_eq!(shadowed[0].key, "general.tracked_files");
+        assert_eq!(shadowed[0].base, "2 entries");
+        assert_eq!(shadowed[0].overlay, "3 entries");
+    }
+
+    #[test]
+    #[serial]
+    fn shadowed_keys_ignores_agreement_and_base_only_keys() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\nbackup = true\n\n[github]\nrepo_name = \"dots\"\n",
+            "[general]\nbackup = true\n",
+        );
+
+        assert!(shadowed_keys(&config_path).unwrap().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn set_config_value_writes_the_overlay_when_the_overlay_owns_the_key() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\n\n[github]\nrepo_name = \"base-repo\"\n",
+            "[github]\nrepo_name = \"overlay-repo\"\n",
+        );
+
+        let written = set_config_value(&config_path, "github.repo_name", "changed").unwrap();
+
+        assert_eq!(written, active_overlay_path().unwrap());
+        // The base file is untouched, and the merged view reflects the write.
+        let base_text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(base_text.contains("base-repo"), "{base_text}");
+        assert_eq!(
+            load(&config_path).unwrap().github.repo_name.as_deref(),
+            Some("changed")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn set_config_value_writes_the_base_when_no_overlay_owns_the_key() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\n\n[github]\nrepo_name = \"base-repo\"\n",
+            "[general]\ntracked_files = [\"/a\"]\n",
+        );
+
+        let written = set_config_value(&config_path, "github.repo_name", "changed").unwrap();
+
+        assert_eq!(written, config_path);
+        assert_eq!(
+            load(&config_path).unwrap().github.repo_name.as_deref(),
+            Some("changed")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn set_config_value_preserves_keys_it_does_not_model() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\n\n[hooks]\npost_apply = [\"echo hi\"]\n",
+            "# comments only\n",
+        );
+
+        set_config_value(&config_path, "github.private", "false").unwrap();
+
+        let text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(text.contains("echo hi"), "{text}");
+        assert!(text.contains("active_profile"), "{text}");
+        assert!(!load(&config_path).unwrap().github.private);
+    }
+
+    #[test]
+    #[serial]
+    fn set_config_value_rejects_an_unknown_key_without_writing() {
+        let (_temp, config_path) = overlay_fixture(
+            "[general]\nactive_profile = \"default\"\n",
+            "# comments only\n",
+        );
+        let before = std::fs::read_to_string(&config_path).unwrap();
+
+        assert!(set_config_value(&config_path, "github.nope", "x").is_err());
+        assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+    }
 
     #[test]
     #[serial]

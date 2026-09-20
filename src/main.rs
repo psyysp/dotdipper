@@ -18,7 +18,7 @@ use dotdipper::vcs;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Dotdipper - A smart dotfiles manager with GitHub sync and machine bootstrapping
 #[derive(Parser)]
@@ -234,6 +234,10 @@ enum Commands {
         /// Open config in editor
         #[arg(long)]
         edit: bool,
+
+        /// With --edit, open the active profile overlay instead of the base config
+        #[arg(long)]
+        overlay: bool,
 
         /// Show current configuration
         #[arg(long)]
@@ -612,7 +616,12 @@ async fn main() -> Result<()> {
             None => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
         },
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
-        Commands::Config { edit, show, set } => cmd_config(config_path, edit, show, set).await,
+        Commands::Config {
+            edit,
+            overlay,
+            show,
+            set,
+        } => cmd_config(config_path, edit, overlay, show, set).await,
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
         #[cfg(target_os = "macos")]
         Commands::Apps(subcmd) => cmd_apps(config_path, subcmd).await,
@@ -1471,6 +1480,7 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
         ("GitHub CLI installed", vcs::check_gh()),
         ("Age encryption tools installed", secrets::check_age()),
         ("Config file exists", cfg::check_exists(&config_path)),
+        ("Profile overlay does not shadow the config", check_no_shadowing(&config_path)),
         ("Manifest valid", repo::check_manifest(&config_path)),
     ];
 
@@ -1768,6 +1778,7 @@ async fn cmd_daemon(config_path: PathBuf, subcmd: DaemonCommands) -> Result<()> 
 async fn cmd_config(
     config_path: PathBuf,
     edit: bool,
+    overlay: bool,
     show: bool,
     set: Option<String>,
 ) -> Result<()> {
@@ -1775,25 +1786,81 @@ async fn cmd_config(
         let (key, value) = kv
             .split_once('=')
             .context("Invalid format. Use key=value (e.g. github.repo_name=dotfiles-dotdipper)")?;
-        cfg::set_config_value(&config_path, key.trim(), value.trim())?;
+        let written = cfg::set_config_value(&config_path, key.trim(), value.trim())?;
         ui::success(&format!("Set {} = {}", key.trim(), value.trim()));
+        if written != config_path {
+            ui::hint(&format!(
+                "wrote {} — the active profile overlay already defines this key, \
+                 so a write to the base config would have been overridden",
+                written.display()
+            ));
+        }
     } else if edit {
-        cfg::edit(&config_path)?;
-        ui::success("Configuration edited");
+        let target = if overlay {
+            cfg::active_overlay_path()?
+        } else {
+            report_shadowed_keys(&config_path)?;
+            config_path.clone()
+        };
+        cfg::edit(&target)?;
+        ui::success(&format!("Edited {}", target.display()));
     } else if show {
         let config = cfg::load(&config_path)?;
         println!("{}", toml::to_string_pretty(&config)?);
-        if let Ok(profile) = profiles::resolve_active_profile_name() {
-            if let Ok(overlay) = cfg::overlay_path_for(&profile) {
-                if overlay.exists() {
-                    ui::hint(&format!("merged with overlay {}", overlay.display()));
-                }
+        if let Ok(path) = cfg::active_overlay_path() {
+            if path.exists() {
+                ui::hint(&format!("merged with overlay {}", path.display()));
             }
         }
+        report_shadowed_keys(&config_path)?;
     } else {
-        ui::hint("Use --edit to modify, --show to view, or --set key=value to set a value");
+        ui::hint(
+            "Use --edit to modify, --edit --overlay to modify the active profile overlay, \
+             --show to view, or --set key=value to set a value",
+        );
     }
 
+    Ok(())
+}
+
+/// Doctor check: the base config and the active overlay must not disagree.
+/// A disagreement means one of the two files is dead weight that still reads
+/// as authoritative.
+fn check_no_shadowing(config_path: &Path) -> Result<()> {
+    let shadowed = cfg::shadowed_keys(config_path)?;
+    if shadowed.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<&str> = shadowed.iter().map(|k| k.key.as_str()).collect();
+    let overlay_path = cfg::active_overlay_path()?;
+    anyhow::bail!(
+        "{} is overridden by {} for: {}. Edits to the base config for those keys do nothing",
+        config_path.display(),
+        overlay_path.display(),
+        keys.join(", ")
+    )
+}
+
+/// Warn about base-config keys the active profile overlay overrides. Editing
+/// those in the base file has no effect, and the silence is the whole trap.
+fn report_shadowed_keys(config_path: &Path) -> Result<()> {
+    let shadowed = cfg::shadowed_keys(config_path)?;
+    if shadowed.is_empty() {
+        return Ok(());
+    }
+    let overlay_path = cfg::active_overlay_path()?;
+    ui::warn(&format!(
+        "{} key(s) in {} are overridden by the profile overlay and have no effect:",
+        shadowed.len(),
+        config_path.display()
+    ));
+    for key in &shadowed {
+        println!("    {} — base: {}, overlay: {}", key.key, key.base, key.overlay);
+    }
+    ui::hint(&format!(
+        "the overlay wins on load. Edit {} instead (dotdipper config --edit --overlay)",
+        overlay_path.display()
+    ));
     Ok(())
 }
 
