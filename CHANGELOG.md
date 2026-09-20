@@ -19,6 +19,8 @@ All notable changes to dotdipper are documented here.
 
 ### Fixed
 
+- **A preference the system refuses to set now says so.** `com.apple.universalaccess` is protected by TCC rather than by file permissions: the write fails for everyone until the terminal has Full Disk Access, and `sudo` does not help. The generated script emitted bare `defaults write` lines, so those two settings produced a raw `Could not write domain` from `defaults` and were otherwise indistinguishable from success. Writes now go through a `set_default` helper that collects refusals and reports them at the end, naming the domain and the actual remedy. Applying continues past a refusal, as it did before — one protected domain must not cost you the 49 settings that follow it.
+
 - **The public mirror shipped dotdipper's own config, and applying it broke the consumer's dotdipper.** `.config/dotdipper/config.toml` was published like any other dotfile — but its `username`, `repo_name` and `public_repo_name` are redacted to `<redacted>`, and `apply` symlinked that over the consumer's working config. A machine that pulled the mirror could not pull again. `.config/dotdipper/**` is now excluded: one dotdipper's state has no business overwriting another's.
   - Withholding `manifest.lock` costs nothing here — `pull` already rebuilds the manifest by hashing the cloned tree when the remote has none.
 

@@ -213,7 +213,7 @@ pub fn render(captured: &[(Setting, Value)]) -> String {
         }
         let (flag, literal) = value.write_args();
         out.push_str(&format!(
-            "defaults write {} \"{}\" {} {}\n",
+            "set_default {} \"{}\" {} {}\n",
             setting.domain, setting.key, flag, literal
         ));
     }
@@ -258,11 +258,33 @@ if [ "$(uname -s)" != "Darwin" ]; then
   echo "macos defaults: not macOS, nothing to do." >&2
   exit 0
 fi
+
+REFUSED=()
+
+# Some domains are protected by TCC, not by file permissions, and
+# `com.apple.universalaccess` is the common one: the write fails no matter who
+# runs it until the terminal has Full Disk Access. sudo does not help. Record
+# the refusal and keep going, so one protected domain cannot quietly cost you
+# every setting after it.
+set_default() {
+  local domain="$1" key="$2"
+  shift 2
+  if ! defaults write "$domain" "$key" "$@" 2>/dev/null; then
+    REFUSED+=("$domain $key")
+  fi
+}
 "#;
 
 const TRAILER: &str = r#"
 # Trackpad and keyboard changes may need a log out and back in to fully apply.
-echo "macOS preferences applied."
+if [ ${#REFUSED[@]} -gt 0 ]; then
+  echo "macOS preferences applied, except ${#REFUSED[@]} the system refused:" >&2
+  for entry in "${REFUSED[@]}"; do echo "  $entry" >&2; done
+  echo "These domains are protected by privacy controls, not permissions --" >&2
+  echo "grant your terminal Full Disk Access and re-run. sudo will not help." >&2
+else
+  echo "macOS preferences applied."
+fi
 "#;
 
 /// Reads one setting from the live system. `None` when unset or unsafe.
@@ -428,9 +450,15 @@ mod tests {
             (s("com.apple.dock", "tilesize"), Value::Float("62".into())),
             (s("com.apple.dock", "mineffect"), Value::Str("genie".into())),
         ]);
-        assert!(script.contains(r#"defaults write com.apple.dock "autohide" -bool true"#));
-        assert!(script.contains(r#"defaults write com.apple.dock "tilesize" -float 62"#));
-        assert!(script.contains(r#"defaults write com.apple.dock "mineffect" -string "genie""#));
+        // Writes go through set_default, which records a refusal rather than
+        // letting a TCC-protected domain abort or silently swallow the rest.
+        assert!(script.contains(r#"set_default com.apple.dock "autohide" -bool true"#));
+        assert!(script.contains(r#"set_default com.apple.dock "tilesize" -float 62"#));
+        assert!(script.contains(r#"set_default com.apple.dock "mineffect" -string "genie""#));
+        assert!(
+            !script.contains("defaults write com.apple.dock"),
+            "a bare defaults write bypasses refusal reporting: {script}"
+        );
     }
 
     #[test]
