@@ -2,12 +2,23 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    # Every branch, not just main. There is no `develop` branch, and the
+    # branches actually in use (fix/*, cursor/*) got no run at all until
+    # someone opened a pull request.
+    branches: ["**"]
   pull_request:
     branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+# Superseded pushes to the same branch stop consuming runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
@@ -28,23 +39,18 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v3
+      - name: Cache cargo and target
+        uses: actions/cache@v4
         with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache target directory
-        uses: actions/cache@v3
-        with:
-          path: target
-          key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # The toolchain version is part of the key: a target/ built by an
+          # older compiler is not reusable after a toolchain bump.
+          key: ${{ runner.os }}-${{ matrix.rust }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rust }}-cargo-
 
       - name: Install age (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
@@ -64,19 +70,28 @@ jobs:
           age --version
 
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
 
       - name: Run ignored tests (with age)
-        run: cargo test --verbose -- --ignored --test-threads=1
+        run: cargo test --locked --verbose -- --ignored --test-threads=1
+
+      # Cargo.toml documents this configuration, and src/remote/mod.rs has
+      # cfg(not(feature = ...)) arms that compile in no other one. --all-features
+      # below enables everything and so can never reach them.
+      - name: Build with no default features
+        run: cargo build --locked --no-default-features
 
       - name: Check formatting
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Clippy with no default features
+        run: cargo clippy --locked --no-default-features -- -D warnings
 
   build-release:
     name: Build Release
@@ -93,7 +108,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release
-        run: cargo build --release --verbose
+        run: cargo build --release --locked --verbose
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -112,8 +127,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo-audit
+        id: audit-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-${{ runner.os }}-v0.21
+
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        # Pinned and --locked: an unpinned build from source breaks whenever
+        # an upstream dependency of cargo-audit does, failing a job that has
+        # nothing to say about this repository.
+        run: cargo install cargo-audit --version ^0.21 --locked
 
       - name: Run security audit
         run: cargo audit
@@ -129,9 +155,39 @@ jobs:
       - name: Check documentation files exist
         run: |
           test -f README.md
+          test -f CHANGELOG.md
+          test -f example-config.toml
 
-      - name: Verify example config exists
-        run: test -f example-config.toml
+      # This job used to assert only that two files existed, which no real
+      # change could break. These are the claims that actually go stale.
+      - name: The documented install command matches the published formula
+        run: |
+          set -euo pipefail
+          grep -q 'brew install psyysp/dotdipper/dotdipper' README.md \
+            || { echo "::error::README no longer documents the one-command install"; exit 1; }
+
+      - name: Every config key in example-config.toml is one the code parses
+        run: |
+          set -euo pipefail
+          MISSING=0
+          # Commented-out keys in the example are the documentation for the
+          # config format; a renamed field silently makes them lies.
+          for key in $(grep -oE '^# *[a-z_]+ =' example-config.toml \
+                        | sed 's/^# *//; s/ =//' | sort -u); do
+            if ! grep -rq "\"$key\"\|pub $key" src/cfg/mod.rs; then
+              echo "::warning::example-config.toml documents '$key', not found in src/cfg/mod.rs"
+              MISSING=$((MISSING + 1))
+            fi
+          done
+          echo "$MISSING documented key(s) had no obvious match in src/cfg/mod.rs"
+
+      - name: CHANGELOG has an entry for the current version
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          grep -q "## \[$VERSION\]" CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
+          echo "CHANGELOG documents $VERSION"
 
       - name: Check for broken links in markdown
         uses: gaurav-nelson/github-action-markdown-link-check@v1

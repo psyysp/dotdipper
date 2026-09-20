@@ -226,7 +226,7 @@ if [ "$DRY_RUN" = true ]; then
   echo "  3. git add Cargo.toml Cargo.lock"
   echo "  4. git commit -m \"chore(release): bump version to $NEW_VERSION\""
   echo "  5. git tag -a \"v$NEW_VERSION\" -m \"Release v$NEW_VERSION\""
-  echo "  6. git push origin main"
+  echo "  6. git push origin HEAD:main"
   echo "  7. git push origin \"v$NEW_VERSION\""
   exit 0
 fi
@@ -258,7 +258,7 @@ cargo update --workspace --quiet
 # Commit changes
 log_detail "Committing version bump..."
 git add Cargo.toml Cargo.lock
-git commit -m "chore(release): bump version to $NEW_VERSION"
+git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
 
 # Create tag
 log_detail "Creating tag v$NEW_VERSION..."

@@ -43,7 +43,10 @@ log_info "Current platform: $CURRENT_OS $CURRENT_ARCH"
 MACOS_TARGETS=("x86_64-apple-darwin" "aarch64-apple-darwin")
 
 # Linux targets (only if on Linux or with cross-compilation)
-LINUX_TARGETS=("x86_64-unknown-linux-gnu")
+# Both, to match release.yml. Building only x86_64 here meant a local run
+# produced no aarch64 checksum, and gen-formula.sh then silently dropped the
+# whole on_linux/on_arm block from the formula.
+LINUX_TARGETS=("x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu")
 
 build_target() {
     local target=$1

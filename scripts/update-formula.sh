@@ -43,11 +43,21 @@ if [ ! -f "$FORMULA_PATH" ]; then
     exit 1
 fi
 
-# Extract version from directory name (e.g., release-v0.3.1 -> 0.3.1)
-VERSION=$(echo "$RELEASE_DIR" | sed 's/.*release-v//')
+# Extract the version from the directory name (release-v0.3.1 -> 0.3.1).
+#
+# sed echoes its input unchanged when the pattern does not match, so a
+# directory named "artifacts" used to yield VERSION=artifacts and a formula
+# whose every URL was dead — and the [ -z "$VERSION" ] fallback that was here
+# could therefore never fire. Validate instead.
+VERSION=$(basename "${RELEASE_DIR%/}" | sed -n 's/^release-v\(.*\)$/\1/p')
 if [ -z "$VERSION" ]; then
-    # Fallback: get from Cargo.toml
-    VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    log_error "Cannot read a version from '$RELEASE_DIR'."
+    log_info  "Expected a directory named release-vX.Y.Z (e.g. release-v0.8.0)."
+    exit 1
+fi
+if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+    log_error "'$VERSION' is not a semantic version."
+    exit 1
 fi
 
 log_step "Updating formula to version $VERSION"
