@@ -32,14 +32,13 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 
 ### Installation
 
-#### macOS (Homebrew) - Recommended
+#### Homebrew (macOS and Linux) - Recommended
 
 ```bash
-brew tap psyysp/dotdipper
-brew install dotdipper
+brew install psyysp/dotdipper/dotdipper
 ```
 
-This will also install `age` (required for secrets encryption) as a dependency.
+One command — the three-part name taps and installs in a single step. This also installs `age`, required for secrets encryption.
 
 #### Arch Linux (AUR)
 
@@ -973,6 +972,6 @@ MIT License - See LICENSE file for details
 **Version:** 0.7.3  
 **Status:** Production-ready  
 **Last Updated:** March 14, 2026  
-**Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
+**Installation:** `brew install psyysp/dotdipper/dotdipper`
 
 **Happy dotfile management! 🚀**

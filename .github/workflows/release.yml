@@ -208,6 +208,12 @@ jobs:
         if: env.HOMEBREW_TAP_TOKEN == ''
         run: echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
 
+      - name: Checkout dotdipper (for the formula generator)
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          path: dotdipper-src
+
       - name: Checkout tap repository
         if: env.HOMEBREW_TAP_TOKEN != ''
         uses: actions/checkout@v4
@@ -226,61 +232,13 @@ jobs:
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
-          SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-          SHA256_MACOS_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-
-          echo "Updating formula to version $VERSION"
-          echo "  macOS x86_64: $SHA256_MACOS_X86"
-          echo "  macOS ARM64:  $SHA256_MACOS_ARM"
-
-          cat > homebrew-tap/Formula/dotdipper.rb << FORMULA
-          # Homebrew Formula for Dotdipper
-          # brew tap psyysp/dotdipper && brew install dotdipper
-
-          class Dotdipper < Formula
-            desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
-            homepage "https://github.com/psyysp/dotdipper"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-aarch64-apple-darwin.tar.gz"
-                sha256 "${SHA256_MACOS_ARM}"
-              end
-              on_intel do
-                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-x86_64-apple-darwin.tar.gz"
-                sha256 "${SHA256_MACOS_X86}"
-              end
-            end
-
-            depends_on :macos
-            depends_on "age"
-
-            def install
-              bin.install "dotdipper"
-            end
-
-            def caveats
-              <<~EOS
-                Dotdipper has been installed!
-
-                To get started:
-                  dotdipper init
-
-                For help:
-                  dotdipper --help
-              EOS
-            end
-
-            test do
-              assert_match "dotdipper", shell_output("\#{bin}/dotdipper --version")
-            end
-          end
-          FORMULA
-
-          # Remove leading spaces from heredoc content (10 spaces)
-          sed -i 's/^          //' homebrew-tap/Formula/dotdipper.rb
+          # One generator, shared with scripts/update-formula.sh. This step
+          # used to carry its own macOS-only copy of the template, which
+          # meant a release would silently drop Linux support added by hand.
+          dotdipper-src/scripts/gen-formula.sh \
+            --version "$VERSION" \
+            --checksums artifacts \
+            > homebrew-tap/Formula/dotdipper.rb
 
           echo "Formula updated:"
           cat homebrew-tap/Formula/dotdipper.rb

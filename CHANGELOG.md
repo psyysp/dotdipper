@@ -17,6 +17,8 @@ All notable changes to dotdipper are documented here.
 
 ### Changed
 
+- **Homebrew installs in one command, on Linux as well as macOS.** `brew install psyysp/dotdipper/dotdipper` taps and installs in a single step. The formula previously carried `depends_on :macos` and no `on_linux` block, so Linux users could not install at all even though every release publishes `x86_64` and `aarch64` Linux tarballs — they were built and then discarded.
+- **One Homebrew formula template instead of two.** The release workflow and `scripts/update-formula.sh` each carried their own copy, and they had drifted: the script emitted Linux blocks, the workflow's macOS-only heredoc did not. Whichever ran last decided whether Linux users could install. Both now call `scripts/gen-formula.sh`. A platform with no build artifact is omitted from the formula rather than given a placeholder checksum, since a formula that names a fake hash fails at install time instead of immediately.
 - `status` lists modified, added, and deleted file paths by default (previously only with `--detailed`). `--detailed` is still accepted for compatibility but is hidden from help.
 
 ### Fixed
