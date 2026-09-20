@@ -4,6 +4,15 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`dotdipper macos capture` — system preferences as a replayable script.** Reads an explicit allowlist of individual preference keys and regenerates `~/.config/macos/defaults.sh`. Covers the Dock (including hot-corner *modifiers*, without which a corner restores to the wrong gesture), Finder, keyboard repeat and text substitution, trackpad across both the built-in and Bluetooth domains, Stage Manager, spaces, and accessibility — 51 settings on the author's machine, against 21 in the hand-written script it replaces, which was dock-only and had not been regenerated since March.
+  - **It never copies a preference plist**, which is the obvious implementation and the wrong one. A Finder plist holds `FXRecentFolders`, naming private project directories, and `NewWindowTargetPath`, an absolute home path; a Dock plist holds `persistent-apps`, a nested structure of file URLs. Recording where someone has been is what those keys are for.
+  - **Two structural rules, not a blocklist**, because a blocklist is what let the plists through the first time. Nothing is captured for merely being set: a key absent from the allowlist is never read. And only scalars are recorded, with any value that looks like a path or a URL refused even when its key is allowlisted — the allowlist is the policy, and that check is what makes a careless addition to it fail safe.
+  - **The pinned Dock lineup is deliberately omitted.** It is genuinely useful on a new machine and it is also a nested array of paths, the exact shape that leaked before. Rebuilding a Dock by hand once is the cheaper side of that trade.
+  - `dotdipper macos keys` lists what is eligible. A key that is set but not recorded is reported as a warning, so a refusal is visible rather than silent.
+  - The generated script is applied by a `post_apply` hook, so a new machine actually receives the settings instead of inheriting a file nobody runs — which is what the previous script had been.
+
 ### Fixed
 
 - **CI/CD: releases are built from the tag, not from whatever `github.ref` happens to be.** Every job re-derived the version and the checkout ref independently, and under `workflow_dispatch` that is a *branch* ref: a manual run built the tip of `main` while labelling the assets with the tag, rendered `refs/heads/main` into all four download links in the release notes, and — because `softprops/action-gh-release` was called without `tag_name` — created a second, bogus release and attached the binaries to that instead. A single `resolve` job now derives the tag, version and prerelease flag once; every other job takes them from it, checks out the tag explicitly, and refuses to release when the tag disagrees with `Cargo.toml`.

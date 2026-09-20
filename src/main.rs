@@ -252,6 +252,11 @@ enum Commands {
     #[cfg(target_os = "macos")]
     #[command(subcommand)]
     Apps(AppsCommands),
+
+    /// Capture macOS system preferences as a replayable script
+    #[cfg(target_os = "macos")]
+    #[command(subcommand)]
+    Macos(MacosCommands),
 }
 
 #[derive(Subcommand)]
@@ -470,6 +475,20 @@ enum InstallCommands {
 
 #[cfg(target_os = "macos")]
 #[derive(Subcommand)]
+enum MacosCommands {
+    /// Capture macOS preferences into a replayable defaults script
+    Capture {
+        /// Write the script somewhere other than ~/.config/macos/defaults.sh
+        #[arg(short = 'o', long = "out", value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+
+    /// Show which preference keys are eligible for capture
+    Keys,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
 enum AppsCommands {
     /// Capture Homebrew, Mac App Store, and /Applications state
     Capture,
@@ -597,6 +616,8 @@ async fn main() -> Result<()> {
         Commands::Ignore(subcmd) => cmd_ignore(config_path, subcmd).await,
         #[cfg(target_os = "macos")]
         Commands::Apps(subcmd) => cmd_apps(config_path, subcmd).await,
+        #[cfg(target_os = "macos")]
+        Commands::Macos(subcmd) => cmd_macos(subcmd).await,
     };
 
     if let Err(e) = result {
@@ -1189,6 +1210,59 @@ async fn cmd_install_script(config_path: PathBuf, out: Option<PathBuf>) -> Resul
         print!("{}", script.content);
         if !script.content.ends_with('\n') {
             println!();
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn cmd_macos(subcmd: MacosCommands) -> Result<()> {
+    use dotdipper::macos;
+
+    match subcmd {
+        MacosCommands::Keys => {
+            ui::info(&format!(
+                "{} preference key(s) are eligible for capture:",
+                macos::ALLOWLIST.len()
+            ));
+            let mut domain = "";
+            for setting in macos::ALLOWLIST {
+                if setting.domain != domain {
+                    println!("\n  {}", setting.domain);
+                    domain = setting.domain;
+                }
+                println!("    {}", setting.key);
+            }
+            ui::hint(
+                "Only these keys are read, and only scalar values. No preference plist is \
+                 ever copied: Finder and Dock plists carry recent folders, home paths, and \
+                 the pinned app lineup.",
+            );
+        }
+        MacosCommands::Capture { out } => {
+            ui::info("Capturing macOS preferences...");
+            let result = macos::capture(out.as_deref())?;
+
+            ui::success(&format!(
+                "Captured {} setting(s) to {}",
+                result.captured,
+                result.path.display()
+            ));
+            if result.skipped_unset > 0 {
+                ui::hint(&format!(
+                    "{} allowlisted key(s) are not set on this machine and were skipped",
+                    result.skipped_unset
+                ));
+            }
+            // A key that is set but not recorded is the interesting case: it
+            // means a value was refused, not that the machine lacks it.
+            for refused in &result.refused {
+                ui::warn(&format!(
+                    "{} is set but was not recorded (not a scalar, or the value looks like a path)",
+                    refused
+                ));
+            }
         }
     }
 

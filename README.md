@@ -578,6 +578,19 @@ dotdipper install apps-script --shareable  # drops it, as the mirror does
 
 Turn the whole behaviour off with `[public] apps_script = false`, which publishes the two files as they are.
 
+### 🖥️ macOS Preferences
+
+`dotdipper macos capture` records your system preferences as a replayable script at `~/.config/macos/defaults.sh`:
+
+```bash
+dotdipper macos capture   # regenerate from the live system
+dotdipper macos keys      # show what is eligible for capture
+```
+
+It covers the Dock and its hot corners, Finder, keyboard repeat and text substitution, the trackpad, Stage Manager, spaces, and accessibility. A `post_apply` hook runs it, so a new machine receives the settings rather than a file it ignores.
+
+**It never copies a preference plist.** Finder's holds `FXRecentFolders` — the names of directories you have been working in — and `NewWindowTargetPath`, an absolute home path; the Dock's holds the pinned app lineup as file URLs. Instead an explicit allowlist of individual keys is read, scalar values only, and any value that looks like a path or URL is refused even when its key is allowlisted. The pinned Dock lineup is deliberately left out for the same reason.
+
 ---
 
 ## ⚙️ Configuration

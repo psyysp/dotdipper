@@ -15,6 +15,8 @@ pub mod daemon;
 pub mod diff;
 pub mod hash;
 pub mod install;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod paths;
 pub mod profiles;
 pub mod publish;
