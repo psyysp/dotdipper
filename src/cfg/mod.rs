@@ -963,7 +963,8 @@ fn overlay_general_table(
 /// True when a profile other than the active one has no overlay value for `path`
 /// and would therefore fall back to the base config's copy.
 fn base_key_is_inherited_elsewhere(config_path: &Path, path: &[&str]) -> Result<bool> {
-    let active = crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
+    let active =
+        crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
     let profiles_dir = match config_path.parent() {
         Some(parent) => parent.join("profiles"),
         None => return Ok(false),

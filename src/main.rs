@@ -1480,7 +1480,10 @@ async fn cmd_doctor(config_path: PathBuf, fix: bool) -> Result<()> {
         ("GitHub CLI installed", vcs::check_gh()),
         ("Age encryption tools installed", secrets::check_age()),
         ("Config file exists", cfg::check_exists(&config_path)),
-        ("Profile overlay does not shadow the config", check_no_shadowing(&config_path)),
+        (
+            "Profile overlay does not shadow the config",
+            check_no_shadowing(&config_path),
+        ),
         ("Manifest valid", repo::check_manifest(&config_path)),
     ];
 
@@ -1855,7 +1858,10 @@ fn report_shadowed_keys(config_path: &Path) -> Result<()> {
         config_path.display()
     ));
     for key in &shadowed {
-        println!("    {} — base: {}, overlay: {}", key.key, key.base, key.overlay);
+        println!(
+            "    {} — base: {}, overlay: {}",
+            key.key, key.base, key.overlay
+        );
     }
     ui::hint(&format!(
         "the overlay wins on load. Edit {} instead (dotdipper config --edit --overlay)",

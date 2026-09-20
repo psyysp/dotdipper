@@ -963,7 +963,7 @@ Contributions are welcome! Please:
 1. Fork the repository
 2. Create a feature branch
 3. Write tests for new features
-4. Run `cargo test` and `cargo clippy`
+4. Run `./scripts/check.sh` — formatting, clippy (with and without default features) and the tests, in the order CI runs them
 5. Submit a pull request
 
 ---

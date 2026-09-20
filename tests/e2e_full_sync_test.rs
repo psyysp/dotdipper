@@ -360,13 +360,8 @@ fn e2e_push_pull_apply_install_roundtrip() {
 
     // tracked_files should have been refreshed after pull — into the active
     // profile overlay, which is the file that wins on load.
-    let overlay_after = fs::read_to_string(
-        base2
-            .join("profiles")
-            .join("default")
-            .join("config.toml"),
-    )
-    .unwrap();
+    let overlay_after =
+        fs::read_to_string(base2.join("profiles").join("default").join("config.toml")).unwrap();
     assert!(
         overlay_after.contains("tracked_files") && overlay_after.contains(".zshrc"),
         "pull sync should write tracked_files to the profile overlay: {overlay_after}"
