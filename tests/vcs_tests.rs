@@ -97,6 +97,7 @@ mod github_config_tests {
             username: Some("testuser".to_string()),
             repo_name: Some("dotfiles".to_string()),
             branch: None,
+            public_repo_name: None,
             private: true,
         };
 
@@ -111,6 +112,7 @@ mod github_config_tests {
             username: Some("testuser".to_string()),
             repo_name: Some("public-dotfiles".to_string()),
             branch: None,
+            public_repo_name: None,
             private: false,
         };
 

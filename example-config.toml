@@ -143,3 +143,46 @@ exclude_patterns = [
 # [general]
 # tracked_files = ["~/.zshrc"]
 
+
+# ---------------------------------------------------------------------------
+# Sanitized public mirror (`dotdipper publish`)
+# ---------------------------------------------------------------------------
+# The private repo above keeps everything a restore needs, including
+# .ssh/config, .gitconfig and the Brewfile. Those are exactly the files you
+# cannot make public, so `publish` derives a second, separate repository from
+# the same store.
+#
+# Flow:
+#   dotdipper publish --review    # generate public-allowlist.toml, then read it
+#   dotdipper publish --dry-run   # see the plan
+#   dotdipper publish             # push the sanitized mirror
+#
+# Only paths listed in the allowlist are published, so a dotfile captured after
+# your last review is withheld until you review again. On top of that, every
+# publish scans the finished tree for secrets and PII and aborts on any hit.
+
+# [github]
+# public_repo_name = "dotfiles-public"   # must differ from repo_name
+
+# [public]
+# Paths never published, whatever the allowlist says.
+# exclude = [".ssh/**", "manifest.lock", ".gitignore"]
+#
+# Built-in redactors: git identity (including commented-out lines), captured
+# hostname, SSH endpoints, Tailscale MagicDNS names, absolute home paths
+# (rewritten to $HOME), email addresses, and the literal identity terms read
+# from your environment (username, $USER, github.username, hostname).
+# builtin_redactors = true
+#
+# Where the generated allowlist lives, relative to the dotdipper base dir.
+# allowlist = "public-allowlist.toml"
+#
+# Scanner findings you have reviewed and accepted, by id.
+# allow = []
+
+# Project-specific redactions, applied after the built-ins.
+# [[public.redact]]
+# name = "license-key"
+# path = "**/*.conf"                      # optional; omit for every file
+# pattern = "(?m)^(license\\s*=\\s*).+$"
+# replacement = "${1}<redacted>"

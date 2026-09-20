@@ -4,6 +4,16 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`dotdipper publish` — a sanitized public mirror alongside the private backup.** The private repo keeps everything a restore needs, including `.ssh/config`, `.gitconfig`, the Brewfile and the app manifest. `publish` derives a *second*, separate repository from the same store: paths in `[public] exclude` are withheld, the rest are rewritten by the redactors, and the finished tree is scanned before anything is written or pushed.
+  - **Allowlist-driven, but the allowlist is generated for you.** `dotdipper publish --review` builds the sanitized tree and writes `public-allowlist.toml`, recording every approved path and the redactions applied to each. Publish ships only what that file lists, so a dotfile captured *after* the review is withheld and reported as pending rather than publishing itself. The file is meant to be read and committed: it is a diffable account of exactly what is public, and an entry that loses its redactions in a diff is the visible signal that a rule stopped matching. Publishing before any review has happened is refused outright.
+  - **Fails closed.** Exclusion and redaction are a denylist and denylists have gaps, so a secret/PII scan runs over the sanitized output and aborts the publish on any hit. Nothing is written or pushed unless the scan is clean. Each finding gets a stable id; accept a reviewed one with `--allow-finding <id>` or `[public] allow`.
+  - **Scrubs literal identity terms, not just patterns.** A bare username or device name has no regex shape, so `publish` reads the actual values (home directory owner, `$USER`, `github.username`, hostname) and removes those strings, with the scanner re-checking the same list. This is what catches things like a username baked into a shell prompt.
+  - **Built-in redactors** cover git identity (including commented-out lines), the captured hostname, SSH endpoints, Tailscale MagicDNS names, absolute home paths (rewritten to `$HOME`, which also makes the public copy reusable), and email addresses. Add project rules with `[[public.redact]]`.
+  - **Binary files are withheld**, not shipped, because they can be neither redacted nor meaningfully scanned.
+  - `--dry-run` reports the plan, `--out DIR` writes the tree without pushing, and `github.public_repo_name` must differ from `github.repo_name` — visibility is per-repository, so a sanitized copy cannot be a branch of the private repo.
+
 ### Changed
 
 - `status` lists modified, added, and deleted file paths by default (previously only with `--detailed`). `--detailed` is still accepted for compatibility but is hidden from help.

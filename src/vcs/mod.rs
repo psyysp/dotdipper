@@ -235,7 +235,12 @@ pub fn push(
         ui::success("Changes committed");
     }
 
-    if let Err(e) = ensure_github_repo(config, &repo_path, &target.username, &target.repo_name) {
+    if let Err(e) = ensure_github_repo(
+        config.github.private,
+        &repo_path,
+        &target.username,
+        &target.repo_name,
+    ) {
         ui::hint("Create a GitHub repository manually and add it as a remote");
         anyhow::bail!(
             "Changes were committed locally but NOT pushed: could not prepare GitHub repo/remote: {:#}",
@@ -319,6 +324,136 @@ pub fn push(
     }
 
     Ok(target.repo_name)
+}
+
+/// Resolves the public mirror's repository name.
+pub fn resolve_public_repo(
+    config: &Config,
+    repo_override: Option<&str>,
+) -> Result<(String, String)> {
+    let username = resolve_git_target(config, None)?.username;
+    let repo_name = repo_override
+        .map(ToOwned::to_owned)
+        .or_else(|| config.github.public_repo_name.clone())
+        .context(
+            "No public repository configured. Set one with:\n  \
+             dotdipper config --set github.public_repo_name=<name>",
+        )?;
+
+    let private_repo = config.github.repo_name.clone().unwrap_or_default();
+    if !private_repo.is_empty() && private_repo == repo_name {
+        anyhow::bail!(
+            "github.public_repo_name must differ from github.repo_name ('{}'). \
+             Repository visibility is per-repository, so the sanitized copy needs its own repo.",
+            private_repo
+        );
+    }
+
+    Ok((username, repo_name))
+}
+
+/// Commits and pushes the sanitized public tree to its own public repository.
+///
+/// Kept separate from `push` on purpose. The target is created **public**, and
+/// the tree is a distinct git repository, so no private history or blob can
+/// reach it even if the private store is later rewritten.
+pub fn publish_push(
+    config: &Config,
+    repo_path: &Path,
+    repo_name: &str,
+    message: Option<String>,
+    force: bool,
+) -> Result<String> {
+    let (username, repo_name) = {
+        let (u, r) = resolve_public_repo(config, Some(repo_name))?;
+        (u, r)
+    };
+    let branch = "main";
+
+    init_repo(repo_path, branch)?;
+    checkout_or_create_branch(repo_path, branch)?;
+
+    ui::info(&format!(
+        "Publishing to {}/{} ({}) — public",
+        username, repo_name, branch
+    ));
+
+    let output = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to stage public tree")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to stage public tree: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to check public tree status")?;
+
+    if status_output.stdout.is_empty() {
+        ui::info("No changes to publish");
+    } else {
+        ensure_commit_identity(repo_path)?;
+        let commit_message = message.unwrap_or_else(|| {
+            format!(
+                "Update public dotfiles - {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
+            )
+        });
+        let output = Command::new("git")
+            .args(["commit", "-m", commit_message.as_str()])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to commit public tree")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to commit public tree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        ui::success("Public tree committed");
+    }
+
+    ensure_github_repo(false, repo_path, &username, &repo_name).context(
+        "Public tree was committed locally but NOT pushed: could not prepare the public repo",
+    )?;
+
+    let mut push_args = vec!["push", "origin", branch];
+    if force {
+        push_args.push("--force");
+    }
+    let output = Command::new("git")
+        .args(&push_args)
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to push public tree")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let retry = Command::new("git")
+            .args(["push", "--set-upstream", "origin", branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to set upstream for public tree")?;
+        if !retry.status.success() {
+            anyhow::bail!(
+                "Failed to push public tree: {}",
+                if stderr.is_empty() {
+                    String::from_utf8_lossy(&retry.stderr).to_string()
+                } else {
+                    stderr.to_string()
+                }
+            );
+        }
+    }
+
+    Ok(repo_name)
 }
 
 pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
@@ -816,8 +951,11 @@ fn git_stdout(repo_path: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// `private` is passed explicitly rather than read from config: `publish`
+/// must create its target repository public even though `github.private` is
+/// true for the private store.
 fn ensure_github_repo(
-    config: &Config,
+    private: bool,
     repo_path: &Path,
     username: &str,
     repo_name: &str,
@@ -844,8 +982,9 @@ fn ensure_github_repo(
         ui::info("Repository already exists on GitHub");
     } else {
         // Prompt to create repo
+        let visibility = if private { "private" } else { "public" };
         if ui::prompt_confirm(
-            &format!("Create private GitHub repository '{}'?", repo_name),
+            &format!("Create {} GitHub repository '{}'?", visibility, repo_name),
             true,
         ) {
             // Create the repo standalone (no --source): gh's --source flag tries
@@ -854,7 +993,7 @@ fn ensure_github_repo(
             // wiring/retargeting origin idempotently.
             let mut create_args = vec!["repo", "create", repo_name];
 
-            if config.github.private {
+            if private {
                 create_args.push("--private");
             } else {
                 create_args.push("--public");

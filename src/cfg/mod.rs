@@ -52,6 +52,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps: Option<AppsConfig>,
 
+    // Sanitized public mirror (`dotdipper publish`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicConfig>,
+
     // Legacy field for compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dotfiles: Option<DotfilesConfig>,
@@ -112,6 +116,11 @@ pub struct GitHubConfig {
     /// other profiles use `dotdipper/<name>`. Independent of `repo_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Separate repository for the sanitized public copy. Visibility is a
+    /// per-repository property, so the public copy cannot be a branch of the
+    /// private repo — it needs its own repo with its own history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_repo_name: Option<String>,
     #[serde(default = "default_private")]
     pub private: bool,
 }
@@ -222,6 +231,83 @@ impl Default for AppsConfig {
     }
 }
 
+/// Settings for the sanitized public mirror produced by `dotdipper publish`.
+///
+/// The private store stays the source of truth. Publish derives a separate
+/// tree from it: files matching `exclude` are withheld entirely, the rest are
+/// rewritten by the built-in redactors plus any `redact` rules. A secret and
+/// PII scan then runs over the result and aborts the publish on any hit, so
+/// a gap in the rules fails closed instead of leaking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicConfig {
+    /// Glob patterns, relative to the store root, never published.
+    #[serde(default = "default_public_exclude")]
+    pub exclude: Vec<String>,
+
+    /// Apply the built-in redactors (identity, hostnames, home paths, tailnet
+    /// names, email addresses). Turning this off is rarely right.
+    #[serde(default = "default_true")]
+    pub builtin_redactors: bool,
+
+    /// Extra project-specific redaction rules, applied after the built-ins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<RedactRule>,
+
+    /// Scanner finding ids that have been reviewed and accepted. Each entry
+    /// suppresses exactly one finding; anything else still aborts the publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+
+    /// Allowlist file, relative to the dotdipper base dir. It records every
+    /// path approved for publication and the redactions applied to each, and
+    /// `dotdipper publish --review` generates it. A path missing from it is
+    /// withheld, so a newly captured file cannot publish itself unnoticed.
+    #[serde(default = "default_allowlist_path")]
+    pub allowlist: String,
+}
+
+fn default_allowlist_path() -> String {
+    "public-allowlist.toml".to_string()
+}
+
+impl Default for PublicConfig {
+    fn default() -> Self {
+        PublicConfig {
+            exclude: default_public_exclude(),
+            builtin_redactors: true,
+            redact: Vec::new(),
+            allow: Vec::new(),
+            allowlist: default_allowlist_path(),
+        }
+    }
+}
+
+/// A user-supplied redaction: within files matching `path`, every match of
+/// `pattern` becomes `replacement`. Capture groups are available as `${1}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactRule {
+    /// Short identifier, shown in publish output.
+    pub name: String,
+    /// Glob matched against the store-relative path. Omit for every file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Regular expression to replace.
+    pub pattern: String,
+    /// Replacement text.
+    pub replacement: String,
+}
+
+/// Withheld by default: the SSH config maps private network topology, and the
+/// manifest is an index of the private file set, including the names of files
+/// that were deliberately excluded.
+fn default_public_exclude() -> Vec<String> {
+    vec![
+        ".ssh/**".to_string(),
+        "manifest.lock".to_string(),
+        ".gitignore".to_string(),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Kind: "github", "s3", "gcs", "webdav"
@@ -256,6 +342,7 @@ impl Default for Config {
             auto_prune: None,
             remote: None,
             apps: None,
+            public: None,
             dotfiles: None,
         }
     }
@@ -288,6 +375,7 @@ impl Default for GitHubConfig {
             username: None,
             repo_name: None,
             branch: None,
+            public_repo_name: None,
             private: default_private(),
         }
     }

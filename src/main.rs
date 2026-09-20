@@ -6,6 +6,7 @@ use dotdipper::diff;
 use dotdipper::hash;
 use dotdipper::install;
 use dotdipper::profiles;
+use dotdipper::publish;
 use dotdipper::remote;
 use dotdipper::repo;
 use dotdipper::scan;
@@ -138,6 +139,38 @@ enum Commands {
         /// Override the GitHub repository name (e.g. 'dotfiles-dotdipper')
         #[arg(long)]
         repo: Option<String>,
+    },
+
+    /// Build and push a sanitized public mirror of the dotfiles
+    Publish {
+        /// Commit message
+        #[arg(short, long)]
+        message: Option<String>,
+
+        /// Show what would be published, redacted and withheld; write nothing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Write the sanitized tree to a directory instead of pushing
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Override the public repository name
+        #[arg(long)]
+        repo: Option<String>,
+
+        /// Regenerate the allowlist from the current store and stop. Review
+        /// the file it writes, then publish.
+        #[arg(long)]
+        review: bool,
+
+        /// Accept one reviewed scanner finding by id (repeatable)
+        #[arg(long = "allow-finding")]
+        allow_finding: Vec<String>,
+
+        /// Force push the public mirror
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Pull dotfiles from GitHub
@@ -503,6 +536,29 @@ async fn main() -> Result<()> {
             force,
             repo,
         } => cmd_push(config_path, message, force, repo).await,
+        Commands::Publish {
+            message,
+            dry_run,
+            out,
+            repo,
+            review,
+            allow_finding,
+            force,
+        } => {
+            cmd_publish(
+                config_path,
+                PublishOptions {
+                    message,
+                    dry_run,
+                    out,
+                    repo,
+                    review,
+                    allow_finding,
+                    force,
+                },
+            )
+            .await
+        }
         Commands::Pull {
             apply,
             force,
@@ -729,6 +785,127 @@ async fn cmd_status(config_path: PathBuf) -> Result<()> {
 
         status.print_detailed();
     }
+
+    Ok(())
+}
+
+/// Builds the sanitized public mirror and, unless asked to stop early,
+/// pushes it to its own public repository.
+///
+/// The scan is not advisory. If it reports anything, this returns an error and
+/// nothing is written or pushed, so a gap in the redaction rules costs a failed
+/// command rather than a disclosure.
+/// Flags for `dotdipper publish`, grouped so the handler keeps one argument.
+struct PublishOptions {
+    message: Option<String>,
+    dry_run: bool,
+    out: Option<PathBuf>,
+    repo: Option<String>,
+    review: bool,
+    allow_finding: Vec<String>,
+    force: bool,
+}
+
+async fn cmd_publish(config_path: PathBuf, opts: PublishOptions) -> Result<()> {
+    let PublishOptions {
+        message,
+        dry_run,
+        out,
+        repo,
+        review,
+        allow_finding,
+        force,
+    } = opts;
+    let mut config = cfg::load(&config_path)?;
+
+    // CLI allowances are additive to the reviewed ones in config.
+    if !allow_finding.is_empty() {
+        let mut public = config.public.clone().unwrap_or_default();
+        public.allow.extend(allow_finding);
+        config.public = Some(public);
+    }
+
+    let source = dotdipper::paths::compiled_dir()?;
+    if !source.exists() {
+        anyhow::bail!(
+            "No compiled store at {}. Run 'dotdipper push' or 'dotdipper snapshot create' first.",
+            source.display()
+        );
+    }
+
+    // Resolve the target before doing any work, so a misconfiguration fails
+    // before we spend time building a tree that cannot be pushed.
+    if !dry_run && !review && out.is_none() {
+        vcs::resolve_public_repo(&config, repo.as_deref())?;
+    }
+
+    let list_path = publish::allowlist_path(&config)?;
+    let allowlist = publish::Allowlist::load(&list_path)?;
+
+    if allowlist.is_none() && !review {
+        anyhow::bail!(
+            "No allowlist at {}. Nothing is published until you have reviewed what would be.\n               Run 'dotdipper publish --review' to generate it, read it, then publish.",
+            list_path.display()
+        );
+    }
+
+    // --review derives the full picture, so it must not be filtered by the
+    // allowlist it is about to rewrite.
+    let effective = if review { None } else { allowlist.as_ref() };
+
+    let dest = if dry_run || review {
+        None
+    } else {
+        Some(match &out {
+            Some(dir) => dir.clone(),
+            None => publish::public_dir()?,
+        })
+    };
+
+    ui::info("Building sanitized public mirror...");
+    let plan = publish::build(&source, dest.as_deref(), &config, effective)?;
+    publish::report(&plan);
+
+    if !plan.is_clean() {
+        publish::report_findings(&plan);
+        anyhow::bail!(
+            "Publish aborted: {} unresolved finding(s). Nothing was written or pushed.",
+            plan.findings.len()
+        );
+    }
+
+    ui::success("Scan clean");
+
+    if review {
+        let generated = plan.to_allowlist();
+        let count = generated.files.len();
+        generated.save(&list_path)?;
+        ui::success(&format!(
+            "Allowlist written to {} ({} file(s) approved for publication)",
+            list_path.display(),
+            count
+        ));
+        ui::hint(
+            "Read it, remove anything that should stay private, then run 'dotdipper publish'.",
+        );
+        return Ok(());
+    }
+
+    if dry_run {
+        ui::info("Dry run: nothing written or pushed");
+        return Ok(());
+    }
+
+    let dest = dest.expect("dest is set when not a dry run");
+
+    if out.is_some() {
+        ui::success(&format!("Public tree written to {}", dest.display()));
+        return Ok(());
+    }
+
+    let repo_name = vcs::resolve_public_repo(&config, repo.as_deref())?.1;
+    let pushed = vcs::publish_push(&config, &dest, &repo_name, message, force)?;
+    ui::success(&format!("Published to {}", pushed));
 
     Ok(())
 }
