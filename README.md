@@ -21,6 +21,7 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 - 🤖 **Auto-Sync Daemon** - Watch files and auto-snapshot on changes
 - 🪝 **Hooks System** - Automate workflows with pre/post hooks
 - 🔄 **GitHub Sync** - Push/pull dotfiles to/from GitHub
+- 🪞 **Public Mirror** - Publish a sanitized copy to a separate public repo, driven by a generated allowlist and a fail-closed secret scan
 - 📦 **Package Management** - Auto-discover and install system packages from dotfiles
 - 🔍 **Smart Diff** - Git-style diffs before applying changes
 - 🛡️ **Safety First** - Backups, confirmations, and HOME boundary enforcement
@@ -31,14 +32,13 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 
 ### Installation
 
-#### macOS (Homebrew) - Recommended
+#### Homebrew (macOS and Linux) - Recommended
 
 ```bash
-brew tap psyysp/dotdipper
-brew install dotdipper
+brew install psyysp/dotdipper/dotdipper
 ```
 
-This will also install `age` (required for secrets encryption) as a dependency.
+One command — the three-part name taps and installs in a single step. This also installs `age`, required for secrets encryption.
 
 #### Arch Linux (AUR)
 
@@ -511,6 +511,75 @@ post_snapshot = ["git add -A && git commit -m 'Snapshot' || true"]
 
 ---
 
+### 🪞 Public Mirror
+
+Your private backup has to contain the things a restore actually needs — `.ssh/config`, `.gitconfig`, the Brewfile, the app manifest. Those are the same things you cannot make public. `dotdipper publish` derives a **separate, sanitized repository** from the same store, so you keep one complete private backup and one safe public copy.
+
+Visibility on GitHub is per-repository, so the public copy needs its own repo:
+
+```bash
+dotdipper config --set github.public_repo_name=dotfiles-public
+```
+
+**Review first, publish second.** Nothing is published until you have seen what would be:
+
+```bash
+dotdipper publish --review     # writes public-allowlist.toml — read it
+dotdipper publish --dry-run    # show the plan
+dotdipper publish              # push the sanitized mirror
+```
+
+`--review` writes an allowlist recording every approved path and what was scrubbed from it:
+
+```toml
+[[files]]
+path = ".gitconfig"
+redactions = ["gitconfig-identity x4"]
+
+[[withheld]]
+path = ".ssh/config"
+redactions = ["public.exclude '.ssh/**'"]
+```
+
+Commit that file. It is a diffable record of exactly what is public, and if an entry ever loses its redactions in a diff, a rule stopped matching.
+
+**Three layers, each covering the previous one's gap:**
+
+| Layer | Gates | Why it exists |
+|-------|-------|---------------|
+| Allowlist | which **paths** publish | A dotfile captured after your last review is withheld and reported as pending, instead of publishing itself |
+| Redactors | file **content** | Strips git identity (including commented-out lines), hostnames, SSH endpoints, Tailscale names, home paths (rewritten to `$HOME`), emails, and the literal username / device name read from your environment |
+| Scanner | the **finished tree** | Runs last and aborts the publish on any secret or PII it still finds. Nothing is written or pushed unless it comes back clean |
+
+The third layer is the important one. Redaction rules are a denylist and denylists have gaps; the scan turns a gap into a failed command rather than a leak. Binary files are withheld outright, since they can be neither redacted nor meaningfully scanned.
+
+Each finding gets a stable id. After reviewing one you can accept it explicitly:
+
+```bash
+dotdipper publish --allow-finding a1b2c3d4
+```
+
+Add project-specific rules with `[[public.redact]]` — see `example-config.toml`.
+
+**The app inventory publishes as a script, not as itself.** The point of the mirror is that a new machine can install the same tools. The captured `Brewfile` and `apps_manifest.toml` do that, but they also record the machine's name, when the capture ran, the exact version of everything installed, and the applications that were installed by hand — none of which helps install anything. A version list in particular is a vulnerability list, and a hand-installed app list describes its owner rather than their toolchain.
+
+So `publish` withholds both files and ships a generated `install-apps.sh` instead:
+
+```bash
+./install-apps.sh          # taps, formulae, casks, App Store titles — idempotent
+```
+
+Packages under your own Homebrew tap are dropped from the public copy and the omission is stated in the script, since a tap names its owner. Your **private** repo still has the real `Brewfile` and manifest, so your own new machine loses nothing. Generate the same script from the private store at any time:
+
+```bash
+dotdipper install apps-script              # keeps your personal tap
+dotdipper install apps-script --shareable  # drops it, as the mirror does
+```
+
+Turn the whole behaviour off with `[public] apps_script = false`, which publishes the two files as they are.
+
+---
+
 ## ⚙️ Configuration
 
 Configuration is stored in `~/.config/dotdipper/config.toml` (or `$XDG_CONFIG_HOME/dotdipper/config.toml`). You can override the base directory by setting the `DOTDIPPER_HOME` environment variable.
@@ -577,7 +646,9 @@ dotdipper init                    # Initialize dotdipper
 dotdipper discover [--write]      # Find dotfiles
 dotdipper discover --packages     # Discover required packages from dotfiles
 dotdipper snapshot create [-m "msg"]  # Create snapshot
-dotdipper status [--detailed]     # Check status
+dotdipper status                  # List changed file paths
+dotdipper publish --review        # Generate the public allowlist, then read it
+dotdipper publish [--dry-run]     # Push the sanitized public mirror
 dotdipper config --show | --edit  # View/edit config
 dotdipper doctor [--fix]          # Health check
 ```
@@ -901,6 +972,6 @@ MIT License - See LICENSE file for details
 **Version:** 0.7.3  
 **Status:** Production-ready  
 **Last Updated:** March 14, 2026  
-**Installation:** `brew tap psyysp/dotdipper && brew install dotdipper`
+**Installation:** `brew install psyysp/dotdipper/dotdipper`
 
 **Happy dotfile management! 🚀**

@@ -52,6 +52,10 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apps: Option<AppsConfig>,
 
+    // Sanitized public mirror (`dotdipper publish`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public: Option<PublicConfig>,
+
     // Legacy field for compatibility
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dotfiles: Option<DotfilesConfig>,
@@ -112,6 +116,11 @@ pub struct GitHubConfig {
     /// other profiles use `dotdipper/<name>`. Independent of `repo_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Separate repository for the sanitized public copy. Visibility is a
+    /// per-repository property, so the public copy cannot be a branch of the
+    /// private repo — it needs its own repo with its own history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_repo_name: Option<String>,
     #[serde(default = "default_private")]
     pub private: bool,
 }
@@ -222,6 +231,108 @@ impl Default for AppsConfig {
     }
 }
 
+/// Settings for the sanitized public mirror produced by `dotdipper publish`.
+///
+/// The private store stays the source of truth. Publish derives a separate
+/// tree from it: files matching `exclude` are withheld entirely, the rest are
+/// rewritten by the built-in redactors plus any `redact` rules. A secret and
+/// PII scan then runs over the result and aborts the publish on any hit, so
+/// a gap in the rules fails closed instead of leaking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicConfig {
+    /// Glob patterns, relative to the store root, never published.
+    #[serde(default = "default_public_exclude")]
+    pub exclude: Vec<String>,
+
+    /// Apply the built-in redactors (identity, hostnames, home paths, tailnet
+    /// names, email addresses). Turning this off is rarely right.
+    #[serde(default = "default_true")]
+    pub builtin_redactors: bool,
+
+    /// Extra project-specific redaction rules, applied after the built-ins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redact: Vec<RedactRule>,
+
+    /// Scanner finding ids that have been reviewed and accepted. Each entry
+    /// suppresses exactly one finding; anything else still aborts the publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+
+    /// Synthesise an install script from the captured `Brewfile` and
+    /// `apps_manifest.toml` and publish that instead of the files
+    /// themselves. The script installs the same tools without reproducing
+    /// the machine name, capture time, installed versions, or applications
+    /// that were installed by hand and cannot be installed from a script.
+    #[serde(default = "default_true")]
+    pub apps_script: bool,
+
+    /// Where the generated script lands in the public tree.
+    #[serde(default = "default_apps_script_path")]
+    pub apps_script_path: String,
+
+    /// Allowlist file, relative to the dotdipper base dir. It records every
+    /// path approved for publication and the redactions applied to each, and
+    /// `dotdipper publish --review` generates it. A path missing from it is
+    /// withheld, so a newly captured file cannot publish itself unnoticed.
+    #[serde(default = "default_allowlist_path")]
+    pub allowlist: String,
+}
+
+fn default_allowlist_path() -> String {
+    "public-allowlist.toml".to_string()
+}
+
+fn default_apps_script_path() -> String {
+    "install-apps.sh".to_string()
+}
+
+impl Default for PublicConfig {
+    fn default() -> Self {
+        PublicConfig {
+            exclude: default_public_exclude(),
+            builtin_redactors: true,
+            redact: Vec::new(),
+            allow: Vec::new(),
+            apps_script: true,
+            apps_script_path: default_apps_script_path(),
+            allowlist: default_allowlist_path(),
+        }
+    }
+}
+
+/// A user-supplied redaction: within files matching `path`, every match of
+/// `pattern` becomes `replacement`. Capture groups are available as `${1}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedactRule {
+    /// Short identifier, shown in publish output.
+    pub name: String,
+    /// Glob matched against the store-relative path. Omit for every file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Regular expression to replace.
+    pub pattern: String,
+    /// Replacement text.
+    pub replacement: String,
+}
+
+/// Withheld by default: the SSH config maps private network topology, and the
+/// manifest is an index of the private file set, including the names of files
+/// that were deliberately excluded.
+fn default_public_exclude() -> Vec<String> {
+    vec![
+        ".ssh/**".to_string(),
+        "manifest.lock".to_string(),
+        ".gitignore".to_string(),
+        // The allowlist's [[withheld]] section is a complete index of every
+        // private path and why each was held back. `manifest.lock` is
+        // excluded for exactly that reason; this file says the same thing
+        // more legibly. Both spellings, since the store layout depends on
+        // DOTDIPPER_HOME / XDG_CONFIG_HOME.
+        "**/public-allowlist.toml".to_string(),
+        "public-allowlist.toml".to_string(),
+    ]
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteConfig {
     /// Kind: "github", "s3", "gcs", "webdav"
@@ -256,6 +367,7 @@ impl Default for Config {
             auto_prune: None,
             remote: None,
             apps: None,
+            public: None,
             dotfiles: None,
         }
     }
@@ -288,6 +400,7 @@ impl Default for GitHubConfig {
             username: None,
             repo_name: None,
             branch: None,
+            public_repo_name: None,
             private: default_private(),
         }
     }
@@ -810,19 +923,51 @@ pub fn check_exists(config_path: &Path) -> Result<()> {
     }
 }
 
+/// Strips a `~/` prefix so a pattern anchors to the compiled store root, which
+/// mirrors $HOME. Patterns without the prefix are passed through untouched.
+fn push_ignore_pattern(pattern: &str) -> String {
+    pattern
+        .strip_prefix("~/")
+        .map(|rest| rest.to_string())
+        .unwrap_or_else(|| pattern.to_string())
+}
+
+/// Reads `.dotdipperignore` and returns its patterns in push-ignore form.
+///
+/// `.dotdipperignore` used to gate discovery only, so a pattern written there
+/// never stopped an already-tracked file from being pushed. Feeding it here
+/// makes one ignore list govern both discovery and push.
+fn ignore_file_patterns() -> Result<Vec<String>> {
+    let path = crate::paths::ignore_file()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(&path)
+        .context("Failed to read .dotdipperignore for push-ignore")?;
+
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        // Negations are dropped on purpose. A `!pattern` only means anything
+        // relative to the positive pattern it re-includes, and the caller
+        // merges three sources then sorts, so that order cannot survive.
+        // Emitting them anyway would silently re-include ignored files.
+        .filter(|line| !line.starts_with('!'))
+        .map(push_ignore_pattern)
+        .collect())
+}
+
 /// Returns relative paths (relative to $HOME) that should be excluded from git push.
-/// Combines top-level `push_ignore` patterns and per-file `local_only` entries.
+/// Combines `.dotdipperignore`, top-level `push_ignore` patterns, and per-file
+/// `local_only` entries.
 pub fn resolve_push_ignored_paths(config: &Config) -> Result<Vec<String>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
-    let mut ignored = Vec::new();
+    let mut ignored = ignore_file_patterns().unwrap_or_default();
 
     for pattern in &config.push_ignore {
-        let expanded = if let Some(rest) = pattern.strip_prefix("~/") {
-            rest.to_string()
-        } else {
-            pattern.clone()
-        };
-        ignored.push(expanded);
+        ignored.push(push_ignore_pattern(pattern));
     }
 
     for (file_path, file_override) in &config.files {
@@ -925,6 +1070,66 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn push_ignore_includes_dotdipperignore_patterns() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join(".dotdipperignore"),
+            "# comment\n\n~/.config/gcloud/**\n**/backup-*\n!**/backup-keep\n",
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let config = Config {
+            push_ignore: vec!["~/.config/stripe/**".to_string()],
+            ..Default::default()
+        };
+
+        let resolved = resolve_push_ignored_paths(&config).unwrap();
+
+        // `.dotdipperignore` used to gate discovery only; it must now also
+        // reach the generated .gitignore, alongside explicit push_ignore.
+        assert!(resolved.contains(&".config/gcloud/**".to_string()));
+        assert!(resolved.contains(&"**/backup-*".to_string()));
+        assert!(resolved.contains(&".config/stripe/**".to_string()));
+        // Comments and blank lines are dropped.
+        assert!(!resolved.iter().any(|p| p.starts_with('#') || p.is_empty()));
+        // Negations are dropped: the merged list is sorted, so a `!` pattern
+        // would land before the rule it means to undo and silently re-include
+        // an ignored file.
+        assert!(!resolved.iter().any(|p| p.starts_with('!')));
+    }
+
+    #[test]
+    #[serial]
+    fn push_ignore_survives_missing_dotdipperignore() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        std::fs::create_dir_all(&base).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let config = Config {
+            push_ignore: vec!["~/.aws/**".to_string()],
+            ..Default::default()
+        };
+
+        let resolved = resolve_push_ignored_paths(&config).unwrap();
+        assert_eq!(resolved, vec![".aws/**".to_string()]);
+    }
 
     fn merge_from_toml(base: &str, overlay: &str) -> Config {
         let mut overlay_value: toml::Value = toml::from_str(overlay).unwrap();

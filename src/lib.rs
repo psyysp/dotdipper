@@ -17,6 +17,7 @@ pub mod hash;
 pub mod install;
 pub mod paths;
 pub mod profiles;
+pub mod publish;
 pub mod remote;
 pub mod repo;
 pub mod scan;

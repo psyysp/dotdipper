@@ -5,21 +5,6 @@ use std::process::Command;
 use crate::cfg::Config;
 use crate::ui;
 
-const BASE_GITIGNORE: &str = r#"# Temporary files
-*.tmp
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Backup files
-*.bak
-*.backup
-"#;
-
 pub fn check_git() -> Result<()> {
     let output = Command::new("git")
         .arg("--version")
@@ -85,13 +70,18 @@ pub fn init_repo(repo_path: &Path, branch: &str) -> Result<()> {
         }
     }
 
-    std::fs::write(repo_path.join(".gitignore"), BASE_GITIGNORE)?;
+    std::fs::write(repo_path.join(".gitignore"), crate::repo::BASE_GITIGNORE)?;
     ensure_commit_identity(repo_path)?;
 
     Ok(())
 }
 
 /// Ensure the compiled git repo can commit even when HOME has no global git identity.
+/// Author identity used for commits in the public mirror, so that no
+/// personal name or address is recorded in its history.
+const PUBLISH_IDENTITY_NAME: &str = "dotdipper";
+const PUBLISH_IDENTITY_EMAIL: &str = "dotdipper@localhost";
+
 fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
     let name_ok = Command::new("git")
         .args(["config", "--get", "user.name"])
@@ -135,6 +125,55 @@ fn ensure_commit_identity(repo_path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Pins the commit identity for a tree that is destined to become public.
+///
+/// [`ensure_commit_identity`] only fills in a *missing* identity, and
+/// `git config --get` resolves through the global config, so on a normal
+/// machine it finds the user's real name and address and leaves them in
+/// place. Commit metadata is not file content, so no redaction rule can
+/// reach it: the address would ship in every commit of the public mirror.
+/// The public tree therefore gets the neutral identity written
+/// unconditionally into its local config.
+fn force_publish_identity(repo_path: &Path) -> Result<()> {
+    for (key, value) in [
+        ("user.name", PUBLISH_IDENTITY_NAME),
+        ("user.email", PUBLISH_IDENTITY_EMAIL),
+        // A signature carries the signer's key identity, which is as
+        // personal as the address it accompanies.
+        ("commit.gpgsign", "false"),
+    ] {
+        // Config alone is not enough — see `publish_env`.
+        let output = Command::new("git")
+            .args(["config", key, value])
+            .current_dir(repo_path)
+            .output()
+            .with_context(|| format!("Failed to set local git {}", key))?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set git {}: {}",
+                key,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Environment that pins the commit identity beyond the reach of config.
+///
+/// git resolves `GIT_AUTHOR_*` and `GIT_COMMITTER_*` ahead of every config
+/// file, so writing the local config is necessary but not sufficient: a
+/// user with those exported (direnv, a wrapper, CI) would put their real
+/// address back into every public commit, and no redactor can reach commit
+/// metadata. Applied to the command, not the process, so nothing leaks into
+/// unrelated git calls.
+fn publish_env(cmd: &mut Command) {
+    cmd.env("GIT_AUTHOR_NAME", PUBLISH_IDENTITY_NAME)
+        .env("GIT_AUTHOR_EMAIL", PUBLISH_IDENTITY_EMAIL)
+        .env("GIT_COMMITTER_NAME", PUBLISH_IDENTITY_NAME)
+        .env("GIT_COMMITTER_EMAIL", PUBLISH_IDENTITY_EMAIL);
 }
 
 /// Resolved GitHub push/pull target. Branch and repo are independent:
@@ -192,7 +231,7 @@ pub fn push(
 
     // Ensure git is initialized on the profile branch
     init_repo(&repo_path, &target.branch)?;
-    write_push_gitignore(&repo_path, config)?;
+    crate::repo::write_push_gitignore(&repo_path, config)?;
     checkout_or_create_branch(&repo_path, &target.branch)?;
 
     ui::info(&format!(
@@ -250,7 +289,12 @@ pub fn push(
         ui::success("Changes committed");
     }
 
-    if let Err(e) = ensure_github_repo(config, &repo_path, &target.username, &target.repo_name) {
+    if let Err(e) = ensure_github_repo(
+        config.github.private,
+        &repo_path,
+        &target.username,
+        &target.repo_name,
+    ) {
         ui::hint("Create a GitHub repository manually and add it as a remote");
         anyhow::bail!(
             "Changes were committed locally but NOT pushed: could not prepare GitHub repo/remote: {:#}",
@@ -334,6 +378,137 @@ pub fn push(
     }
 
     Ok(target.repo_name)
+}
+
+/// Resolves the public mirror's repository name.
+pub fn resolve_public_repo(
+    config: &Config,
+    repo_override: Option<&str>,
+) -> Result<(String, String)> {
+    let username = resolve_git_target(config, None)?.username;
+    let repo_name = repo_override
+        .map(ToOwned::to_owned)
+        .or_else(|| config.github.public_repo_name.clone())
+        .context(
+            "No public repository configured. Set one with:\n  \
+             dotdipper config --set github.public_repo_name=<name>",
+        )?;
+
+    let private_repo = config.github.repo_name.clone().unwrap_or_default();
+    if !private_repo.is_empty() && private_repo == repo_name {
+        anyhow::bail!(
+            "github.public_repo_name must differ from github.repo_name ('{}'). \
+             Repository visibility is per-repository, so the sanitized copy needs its own repo.",
+            private_repo
+        );
+    }
+
+    Ok((username, repo_name))
+}
+
+/// Commits and pushes the sanitized public tree to its own public repository.
+///
+/// Kept separate from `push` on purpose. The target is created **public**, and
+/// the tree is a distinct git repository, so no private history or blob can
+/// reach it even if the private store is later rewritten.
+pub fn publish_push(
+    config: &Config,
+    repo_path: &Path,
+    repo_name: &str,
+    message: Option<String>,
+    force: bool,
+) -> Result<String> {
+    let (username, repo_name) = {
+        let (u, r) = resolve_public_repo(config, Some(repo_name))?;
+        (u, r)
+    };
+    let branch = "main";
+
+    init_repo(repo_path, branch)?;
+    checkout_or_create_branch(repo_path, branch)?;
+
+    ui::info(&format!(
+        "Publishing to {}/{} ({}) — public",
+        username, repo_name, branch
+    ));
+
+    let output = Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to stage public tree")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Failed to stage public tree: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let status_output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to check public tree status")?;
+
+    if status_output.stdout.is_empty() {
+        ui::info("No changes to publish");
+    } else {
+        force_publish_identity(repo_path)?;
+        let commit_message = message.unwrap_or_else(|| {
+            format!(
+                "Update public dotfiles - {}",
+                chrono::Utc::now().format("%Y-%m-%d %H:%M:%S")
+            )
+        });
+        let mut commit = Command::new("git");
+        commit
+            .args(["commit", "-m", commit_message.as_str()])
+            .current_dir(repo_path);
+        publish_env(&mut commit);
+        let output = commit.output().context("Failed to commit public tree")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to commit public tree: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        ui::success("Public tree committed");
+    }
+
+    ensure_github_repo(false, repo_path, &username, &repo_name).context(
+        "Public tree was committed locally but NOT pushed: could not prepare the public repo",
+    )?;
+
+    let mut push_args = vec!["push", "origin", branch];
+    if force {
+        push_args.push("--force");
+    }
+    let output = Command::new("git")
+        .args(&push_args)
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to push public tree")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let retry = Command::new("git")
+            .args(["push", "--set-upstream", "origin", branch])
+            .current_dir(repo_path)
+            .output()
+            .context("Failed to set upstream for public tree")?;
+        if !retry.status.success() {
+            anyhow::bail!(
+                "Failed to push public tree: {}",
+                if stderr.is_empty() {
+                    String::from_utf8_lossy(&retry.stderr).to_string()
+                } else {
+                    stderr.to_string()
+                }
+            );
+        }
+    }
+
+    Ok(repo_name)
 }
 
 pub fn pull(config: &Config, force: bool, repo_override: Option<&str>) -> Result<String> {
@@ -831,8 +1006,11 @@ fn git_stdout(repo_path: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// `private` is passed explicitly rather than read from config: `publish`
+/// must create its target repository public even though `github.private` is
+/// true for the private store.
 fn ensure_github_repo(
-    config: &Config,
+    private: bool,
     repo_path: &Path,
     username: &str,
     repo_name: &str,
@@ -859,8 +1037,9 @@ fn ensure_github_repo(
         ui::info("Repository already exists on GitHub");
     } else {
         // Prompt to create repo
+        let visibility = if private { "private" } else { "public" };
         if ui::prompt_confirm(
-            &format!("Create private GitHub repository '{}'?", repo_name),
+            &format!("Create {} GitHub repository '{}'?", visibility, repo_name),
             true,
         ) {
             // Create the repo standalone (no --source): gh's --source flag tries
@@ -869,7 +1048,7 @@ fn ensure_github_repo(
             // wiring/retargeting origin idempotently.
             let mut create_args = vec!["repo", "create", repo_name];
 
-            if config.github.private {
+            if private {
                 create_args.push("--private");
             } else {
                 create_args.push("--public");
@@ -1038,24 +1217,6 @@ fn resolve_github_username(config: &Config) -> Result<String> {
     }
 
     Ok(username.trim().to_string())
-}
-
-fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
-    let mut content = BASE_GITIGNORE.trim_end().to_string();
-    let ignored = crate::cfg::resolve_push_ignored_paths(config)?;
-
-    if !ignored.is_empty() {
-        content.push_str("\n\n# Dotdipper push-ignore\n");
-        for pattern in ignored {
-            content.push_str(&pattern);
-            content.push('\n');
-        }
-    } else {
-        content.push('\n');
-    }
-
-    std::fs::write(repo_path.join(".gitignore"), content).context("Failed to update .gitignore")?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1348,6 +1509,65 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp_dir.path().join("keep.txt")).unwrap(),
             "keep\n"
+        );
+    }
+
+    #[test]
+    fn force_publish_identity_beats_both_config_and_environment() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path();
+        init_repo(repo);
+
+        // Stand in for the identity git would otherwise inherit.
+        for (key, value) in [
+            ("user.name", "Real Person"),
+            ("user.email", "real@person.tld"),
+        ] {
+            std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(repo)
+                .output()
+                .unwrap();
+        }
+
+        force_publish_identity(repo).unwrap();
+
+        std::fs::write(repo.join("f.txt"), "x\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+
+        // Config alone is not enough: git resolves GIT_AUTHOR_* and
+        // GIT_COMMITTER_* ahead of every config file, so a user with those
+        // exported would put their real address back into public history,
+        // where no redactor can reach it. Assert on the commit, not on the
+        // config, because the config is not what git actually obeys.
+        let mut commit = std::process::Command::new("git");
+        commit
+            .args(["commit", "-m", "test"])
+            .current_dir(repo)
+            .env("GIT_AUTHOR_NAME", "Real Person")
+            .env("GIT_AUTHOR_EMAIL", "real@person.tld")
+            .env("GIT_COMMITTER_NAME", "Real Person")
+            .env("GIT_COMMITTER_EMAIL", "real@person.tld");
+        publish_env(&mut commit);
+        assert!(commit.output().unwrap().status.success());
+
+        let out = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%an|%ae|%cn|%ce"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        let recorded = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(
+            recorded,
+            format!(
+                "{0}|{1}|{0}|{1}",
+                PUBLISH_IDENTITY_NAME, PUBLISH_IDENTITY_EMAIL
+            ),
+            "the real identity reached public commit metadata"
         );
     }
 }

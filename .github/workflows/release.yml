@@ -4,6 +4,18 @@ on:
   push:
     tags:
       - "v*"
+  # GitHub does not start a workflow from an event created with
+  # GITHUB_TOKEN, so the tag auto-release.yml pushes does NOT trigger the
+  # block above. Without this, an automated bump produces a tag with no
+  # binaries attached. Re-pushing the tag by hand works because that push
+  # comes from a real account; this input is the same thing without the
+  # tag surgery.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.8.0)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -191,7 +203,7 @@ jobs:
           body_path: release_notes.md
           files: release-assets/*
           draft: false
-          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+          prerelease: ${{ contains(inputs.tag || github.ref, '-rc') || contains(inputs.tag || github.ref, '-beta') || contains(inputs.tag || github.ref, '-alpha') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -199,7 +211,7 @@ jobs:
     name: Update Homebrew Formula
     needs: create-release
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
+    if: ${{ !contains(inputs.tag || github.ref, '-rc') && !contains(inputs.tag || github.ref, '-beta') && !contains(inputs.tag || github.ref, '-alpha') }}
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
@@ -207,6 +219,12 @@ jobs:
       - name: Skip notice when tap token is missing
         if: env.HOMEBREW_TAP_TOKEN == ''
         run: echo "HOMEBREW_TAP_TOKEN is not configured; skipping Homebrew tap update."
+
+      - name: Checkout dotdipper (for the formula generator)
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          path: dotdipper-src
 
       - name: Checkout tap repository
         if: env.HOMEBREW_TAP_TOKEN != ''
@@ -225,62 +243,14 @@ jobs:
       - name: Update formula
         if: env.HOMEBREW_TAP_TOKEN != ''
         run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          SHA256_MACOS_X86=$(cat artifacts/dotdipper-x86_64-apple-darwin/dotdipper-x86_64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-          SHA256_MACOS_ARM=$(cat artifacts/dotdipper-aarch64-apple-darwin/dotdipper-aarch64-apple-darwin.tar.gz.sha256 | awk '{print $1}')
-
-          echo "Updating formula to version $VERSION"
-          echo "  macOS x86_64: $SHA256_MACOS_X86"
-          echo "  macOS ARM64:  $SHA256_MACOS_ARM"
-
-          cat > homebrew-tap/Formula/dotdipper.rb << FORMULA
-          # Homebrew Formula for Dotdipper
-          # brew tap psyysp/dotdipper && brew install dotdipper
-
-          class Dotdipper < Formula
-            desc "A safe, deterministic, and feature-rich dotfiles manager built in Rust"
-            homepage "https://github.com/psyysp/dotdipper"
-            version "${VERSION}"
-            license "MIT"
-
-            on_macos do
-              on_arm do
-                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-aarch64-apple-darwin.tar.gz"
-                sha256 "${SHA256_MACOS_ARM}"
-              end
-              on_intel do
-                url "https://github.com/psyysp/dotdipper/releases/download/v${VERSION}/dotdipper-x86_64-apple-darwin.tar.gz"
-                sha256 "${SHA256_MACOS_X86}"
-              end
-            end
-
-            depends_on :macos
-            depends_on "age"
-
-            def install
-              bin.install "dotdipper"
-            end
-
-            def caveats
-              <<~EOS
-                Dotdipper has been installed!
-
-                To get started:
-                  dotdipper init
-
-                For help:
-                  dotdipper --help
-              EOS
-            end
-
-            test do
-              assert_match "dotdipper", shell_output("\#{bin}/dotdipper --version")
-            end
-          end
-          FORMULA
-
-          # Remove leading spaces from heredoc content (10 spaces)
-          sed -i 's/^          //' homebrew-tap/Formula/dotdipper.rb
+          VERSION=${RELEASE_VERSION}
+          # One generator, shared with scripts/update-formula.sh. This step
+          # used to carry its own macOS-only copy of the template, which
+          # meant a release would silently drop Linux support added by hand.
+          dotdipper-src/scripts/gen-formula.sh \
+            --version "$VERSION" \
+            --checksums artifacts \
+            > homebrew-tap/Formula/dotdipper.rb
 
           echo "Formula updated:"
           cat homebrew-tap/Formula/dotdipper.rb
@@ -293,14 +263,14 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/dotdipper.rb
           git diff --staged --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Update dotdipper to ${GITHUB_REF#refs/tags/v}"
+          git commit -m "Update dotdipper to ${RELEASE_VERSION}"
           git push
 
   publish-crates:
     name: Publish to crates.io
     needs: create-release
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.ref, '-rc') && !contains(github.ref, '-beta') && !contains(github.ref, '-alpha') }}
+    if: ${{ !contains(inputs.tag || github.ref, '-rc') && !contains(inputs.tag || github.ref, '-beta') && !contains(inputs.tag || github.ref, '-alpha') }}
 
     steps:
       - name: Checkout code
