@@ -181,13 +181,17 @@ jobs:
           done
           echo "$MISSING documented key(s) had no obvious match in src/cfg/mod.rs"
 
-      - name: CHANGELOG has an entry for the current version
+      # Deliberately not "the CHANGELOG has a section for Cargo.toml's
+      # version": auto-release bumps the version without touching the
+      # CHANGELOG, so that check would turn main red after every automated
+      # release. The release workflow enforces the stronger version at the
+      # point where it matters — see the resolve job in release.yml.
+      - name: CHANGELOG has somewhere to record the next release
         run: |
           set -euo pipefail
-          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          grep -q "## \[$VERSION\]" CHANGELOG.md \
-            || { echo "::error::CHANGELOG.md has no section for $VERSION"; exit 1; }
-          echo "CHANGELOG documents $VERSION"
+          grep -q '^## \[Unreleased\]' CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no [Unreleased] section"; exit 1; }
+          echo "CHANGELOG has an [Unreleased] section"
 
       - name: Check for broken links in markdown
         uses: gaurav-nelson/github-action-markdown-link-check@v1

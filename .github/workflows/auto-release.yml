@@ -224,7 +224,13 @@ jobs:
         run: |
           NEW_VERSION="${{ needs.analyze-commits.outputs.new_version }}"
           git add Cargo.toml Cargo.lock
-          git commit -m "chore(release): bump version to $NEW_VERSION [skip ci]"
+          # [no release], not [skip ci]. GitHub honours [skip ci] on the head
+          # commit of ANY push — including the tag push that follows — so the
+          # tag landed with no build attached even though the deploy key
+          # pushed it correctly. [no release] is understood only by this
+          # workflow's own guard above, so it stops the loop here without
+          # stopping GitHub from acting on the tag.
+          git commit -m "chore(release): bump version to $NEW_VERSION [no release]"
 
       - name: Create and push tag
         id: create_tag

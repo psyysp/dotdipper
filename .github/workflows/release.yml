@@ -82,6 +82,11 @@ jobs:
             echo "::error::tag says $EXPECTED but Cargo.toml at that tag says $ACTUAL"
             exit 1
           fi
+          if ! grep -q "^## \[$EXPECTED\]" CHANGELOG.md; then
+            echo "::warning::CHANGELOG.md has no '## [$EXPECTED]' section."
+            echo "The release notes will point at a CHANGELOG that does not mention this version."
+          fi
+
           echo "Releasing $EXPECTED from ${{ steps.v.outputs.tag }}"
 
   build-macos:
