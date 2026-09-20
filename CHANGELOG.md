@@ -17,7 +17,13 @@ All notable changes to dotdipper are documented here.
 
 - **`dotdipper pull --https` — consume a public mirror with no GitHub account.** Every remote was `git@github.com:…`, so pulling required an SSH key registered with GitHub even for a repository the whole world can read. That defeated the point of publishing a mirror: the machine most likely to want it is the one you have not signed in on. `--https` clones over anonymous HTTPS, and sets `GIT_TERMINAL_PROMPT=0` so a private repo fails immediately instead of parking on a credential prompt. Push, publish and undo still use SSH, because they write.
 
+### Added
+
+- **`scripts/bootstrap.sh` — one command from a bare Mac to a working environment.** Installs Homebrew, installs dotdipper, points it at a repository, pulls, applies, installs the tools and applies the macOS preferences. `--https` selects the anonymous transport for a public mirror. It holds a single `sudo` authorization open across the cask installs rather than prompting once per package, warns when an older `dotdipper` earlier on `PATH` shadows the Homebrew one, and regenerates the install script from a freshly pulled `Brewfile` so a stale copy from an earlier run cannot win.
+
 ### Fixed
+
+- **Pulling a mirror that withholds `manifest.lock` broke every later pull.** `pull` rebuilds the manifest by hashing the cloned tree and writes it into the clone — where it is untracked, because the mirror deliberately does not publish it. The pre-pull cleanliness check read that generated file as local work worth protecting, so the second pull refused and demanded `--force`. The rebuilt manifest is now added to the clone's `.git/info/exclude`, which is local to that checkout and never published. A remote that does track `manifest.lock` still reports changes to it.
 
 - **A preference the system refuses to set now says so.** `com.apple.universalaccess` is protected by TCC rather than by file permissions: the write fails for everyone until the terminal has Full Disk Access, and `sudo` does not help. The generated script emitted bare `defaults write` lines, so those two settings produced a raw `Could not write domain` from `defaults` and were otherwise indistinguishable from success. Writes now go through a `set_default` helper that collects refusals and reports them at the end, naming the domain and the actual remedy. Applying continues past a refusal, as it did before — one protected domain must not cost you the 49 settings that follow it.
 

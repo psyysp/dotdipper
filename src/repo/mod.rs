@@ -325,7 +325,49 @@ pub fn rebuild_manifest_from_compiled() -> Result<Manifest> {
 fn save_manifest_into_compiled(manifest: &Manifest) -> Result<()> {
     let compiled = get_compiled_path()?;
     fs::create_dir_all(&compiled)?;
-    manifest.save(&compiled.join("manifest.lock"))
+    manifest.save(&compiled.join("manifest.lock"))?;
+    ignore_untracked_manifest(&compiled)
+}
+
+/// Keep a locally rebuilt `manifest.lock` from dirtying the compiled clone.
+///
+/// A public mirror withholds `manifest.lock` — it indexes every private path —
+/// so `pull` rebuilds one by hashing the cloned tree and writes it here. That
+/// leaves an untracked file in the repository, which the pre-pull cleanliness
+/// check reads as local work worth protecting, and every later pull refuses
+/// until the user passes `--force`. The manifest is generated, not authored,
+/// so exclude it locally when the remote is not tracking it. `.git/info/exclude`
+/// is private to this clone and never published.
+fn ignore_untracked_manifest(compiled: &Path) -> Result<()> {
+    let git_dir = compiled.join(".git");
+    if !git_dir.is_dir() {
+        return Ok(());
+    }
+    // A remote that does track the manifest must keep reporting changes to it.
+    let tracked = std::process::Command::new("git")
+        .args(["ls-files", "--error-unmatch", "manifest.lock"])
+        .current_dir(compiled)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if tracked {
+        return Ok(());
+    }
+
+    let info = git_dir.join("info");
+    fs::create_dir_all(&info)?;
+    let exclude = info.join("exclude");
+    let current = fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|line| line.trim() == "/manifest.lock") {
+        return Ok(());
+    }
+    let mut next = current;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    next.push_str("# Rebuilt by dotdipper when the remote withholds it.\n/manifest.lock\n");
+    fs::write(&exclude, next).context("Failed to update .git/info/exclude")?;
+    Ok(())
 }
 
 /// Update config `tracked_files` from a pulled/rebuilt manifest so install/discover work.
@@ -785,6 +827,60 @@ mod tests {
 
         assert!(pruned.is_empty());
         assert!(compiled.join("secret.age").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn a_rebuilt_manifest_does_not_dirty_a_clone_that_withholds_it() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        let compiled = base.join("profiles").join("default").join("compiled");
+        std::fs::create_dir_all(&compiled).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        // A clone of a mirror: one tracked dotfile, no manifest.lock.
+        std::fs::write(compiled.join(".zshrc"), "export EDITOR=vim\n").unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", ".zshrc"],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "-m",
+                "seed",
+            ],
+        ] {
+            let ok = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&compiled)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        }
+
+        rebuild_manifest_from_compiled().unwrap();
+
+        assert!(compiled.join("manifest.lock").exists());
+        let status = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&compiled)
+            .output()
+            .unwrap();
+        assert!(
+            status.stdout.is_empty(),
+            "the rebuilt manifest left the clone dirty, so the next pull would refuse: {}",
+            String::from_utf8_lossy(&status.stdout)
+        );
     }
 
     #[test]
