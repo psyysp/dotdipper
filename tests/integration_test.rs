@@ -59,7 +59,10 @@ fn test_init_command() {
     let config_path = temp_dir.path().join("config.toml");
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("init")
+    cmd.env("HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("init")
         .arg("--config")
         .arg(&config_path)
         .assert()
@@ -84,7 +87,10 @@ fn test_init_fails_when_config_exists() {
     fs::write(&config_path, "test").unwrap();
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("init")
+    cmd.env("HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("init")
         .arg("--config")
         .arg(&config_path)
         .assert()
@@ -101,7 +107,10 @@ fn test_init_force_overwrites() {
     fs::write(&config_path, "test content").unwrap();
 
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("init")
+    cmd.env("HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("init")
         .arg("--config")
         .arg(&config_path)
         .arg("--force")
@@ -112,6 +121,42 @@ fn test_init_force_overwrites() {
     let content = fs::read_to_string(&config_path).unwrap();
     assert!(!content.contains("test content"));
     assert!(content.contains("[general]"));
+}
+
+/// `init --force` rewrites `.dotdipperignore` from the built-in default. It
+/// resolves that path from the base dir, which follows `$HOME` — not from
+/// `--config`. A test that passes only `--config` therefore overwrites the
+/// real user's ignore file, silently dropping every exclusion they added.
+/// That happened twice during a live privacy sweep, so pin the contract here:
+/// the default must land under the pinned HOME and nowhere else.
+#[test]
+fn test_init_force_writes_ignore_file_under_pinned_home() {
+    let temp_dir = TempDir::new().unwrap();
+    let config_path = temp_dir.path().join("config.toml");
+    let scoped_ignore = temp_dir
+        .path()
+        .join(".config")
+        .join("dotdipper")
+        .join(".dotdipperignore");
+
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("init")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--force")
+        .assert()
+        .success();
+
+    assert!(
+        scoped_ignore.exists(),
+        "init --force must write .dotdipperignore under the pinned HOME, \
+         not into the invoking user's real config directory"
+    );
+    let contents = fs::read_to_string(&scoped_ignore).unwrap();
+    assert!(contents.contains(".dotdipperignore"));
 }
 
 #[test]
@@ -311,7 +356,10 @@ fn test_doctor_command() {
 
     // Initialize first
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.arg("init")
+    cmd.env("HOME", temp_dir.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("init")
         .arg("--config")
         .arg(&config_path)
         .assert()
