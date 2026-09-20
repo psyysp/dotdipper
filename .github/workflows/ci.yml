@@ -127,19 +127,25 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Refreshed weekly rather than pinned to a version. A hard pin looks
+      # safer but is not: the advisory database moves forward independently,
+      # and an older cargo-audit eventually cannot parse a newly published
+      # advisory at all — 0.21 fails outright on RUSTSEC-2026-0180. Weekly
+      # keeps the rebuild cost off almost every run while bounding staleness.
+      - name: Week stamp for the cargo-audit cache
+        id: stamp
+        run: echo "week=$(date -u +%Y-%V)" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo-audit
         id: audit-cache
         uses: actions/cache@v4
         with:
           path: ~/.cargo/bin/cargo-audit
-          key: cargo-audit-${{ runner.os }}-v0.21
+          key: cargo-audit-${{ runner.os }}-${{ steps.stamp.outputs.week }}
 
       - name: Install cargo-audit
         if: steps.audit-cache.outputs.cache-hit != 'true'
-        # Pinned and --locked: an unpinned build from source breaks whenever
-        # an upstream dependency of cargo-audit does, failing a job that has
-        # nothing to say about this repository.
-        run: cargo install cargo-audit --version ^0.21 --locked
+        run: cargo install cargo-audit --locked
 
       - name: Run security audit
         run: cargo audit
