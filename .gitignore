@@ -80,3 +80,6 @@ README_FEATURES.md
 REMOTE_BACKENDS.md
 VERIFICATION_CHECKLIST.md
 README_VERIFICATION_REPORT.md
+
+# Session handoff notes — local only, names private repos and machine state
+handoff.md

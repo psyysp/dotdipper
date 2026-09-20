@@ -577,7 +577,7 @@ dotdipper init                    # Initialize dotdipper
 dotdipper discover [--write]      # Find dotfiles
 dotdipper discover --packages     # Discover required packages from dotfiles
 dotdipper snapshot create [-m "msg"]  # Create snapshot
-dotdipper status [--detailed]     # Check status
+dotdipper status                  # List changed file paths
 dotdipper config --show | --edit  # View/edit config
 dotdipper doctor [--fix]          # Health check
 ```

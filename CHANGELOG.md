@@ -4,8 +4,15 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- `status` lists modified, added, and deleted file paths by default (previously only with `--detailed`). `--detailed` is still accepted for compatibility but is hidden from help.
+
 ### Fixed
 
+- **Untracking a file now removes it from the push.** `snapshot` only ever copied tracked files into the compiled store and never took them back out, so a path that left `tracked_files` kept its stale copy there and `git add -A` re-committed it on every push. This let a credential file survive an ignore rule that had been in place for months. `snapshot` now prunes store files the manifest no longer covers, and refuses to prune against an empty manifest so a config that fails to resolve cannot erase the backup. Store metadata (`manifest.lock`, `Brewfile`, `apps_manifest.toml`, `.gitignore`, `.git/`) and encrypted blobs are never pruned.
+- **`.dotdipperignore` now governs push as well as discovery.** It previously fed only `discover`, so a pattern written there never stopped an already-tracked file from reaching GitHub — the generated `.gitignore` was built from the separate `push_ignore` list alone. Both sources now feed `resolve_push_ignored_paths`. Negation (`!`) lines from `.dotdipperignore` are dropped rather than emitted, because the merged list is sorted and a misordered negation would silently re-include an ignored file.
+- **One `.gitignore` writer instead of two.** `snapshot` and `vcs::push` each wrote the compiled store's `.gitignore` with different base content; push ran second and clobbered snapshot's version, so the two could drift unnoticed. There is now a single implementation.
 - Snapshot records the compiled file hash after copy, so skipping an empty home file over a non-empty store copy cannot poison `manifest.lock`.
 - `pull` refuses to check out remote 0-byte blobs over non-empty compiled files (symlink restore would empty `$HOME` immediately). Help text no longer claims `$HOME` is untouched until `--apply`.
 

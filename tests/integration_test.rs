@@ -223,24 +223,70 @@ tracked_files = []
         .success();
 }
 
-#[test]
-fn test_status_detailed() {
-    let temp_dir = TempDir::new().unwrap();
-    let dotdipper_dir = temp_dir.path().join(".config").join("dotdipper");
+fn write_status_config_with_tracked_file(home: &std::path::Path) -> std::path::PathBuf {
+    let dotdipper_dir = home.join(".config").join("dotdipper");
     fs::create_dir_all(&dotdipper_dir).unwrap();
     let config_path = dotdipper_dir.join("config.toml");
 
+    let tracked = home.join(".zshrc");
+    fs::write(&tracked, "export FOO=1\n").unwrap();
+
     fs::write(
         &config_path,
-        r#"
+        format!(
+            r#"
 [general]
-tracked_files = []
+tracked_files = ["{}"]
 "#,
+            tracked.display()
+        ),
     )
     .unwrap();
 
+    config_path
+}
+
+#[test]
+fn test_status_help_lists_changed_paths() {
     let mut cmd = Command::cargo_bin("dotdipper").unwrap();
-    cmd.env("HOME", temp_dir.path())
+    cmd.arg("status")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Show status of tracked files; lists changed paths by default",
+        ))
+        .stdout(predicate::str::contains("--detailed").not());
+}
+
+#[test]
+fn test_status_lists_changed_files_by_default() {
+    let temp_dir = TempDir::new().unwrap();
+    let home = temp_dir.path();
+    let config_path = write_status_config_with_tracked_file(home);
+
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("DOTDIPPER_HOME")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Changes detected"))
+        .stdout(predicate::str::contains("Added files"))
+        .stdout(predicate::str::contains("~/.zshrc"));
+}
+
+#[test]
+fn test_status_detailed() {
+    let temp_dir = TempDir::new().unwrap();
+    let home = temp_dir.path();
+    let config_path = write_status_config_with_tracked_file(home);
+
+    let mut cmd = Command::cargo_bin("dotdipper").unwrap();
+    cmd.env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("DOTDIPPER_HOME")
         .arg("--config")
@@ -248,7 +294,9 @@ tracked_files = []
         .arg("status")
         .arg("--detailed")
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("Changes detected"))
+        .stdout(predicate::str::contains(".zshrc"));
 }
 
 // ============================================

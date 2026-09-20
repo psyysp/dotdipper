@@ -810,19 +810,51 @@ pub fn check_exists(config_path: &Path) -> Result<()> {
     }
 }
 
+/// Strips a `~/` prefix so a pattern anchors to the compiled store root, which
+/// mirrors $HOME. Patterns without the prefix are passed through untouched.
+fn push_ignore_pattern(pattern: &str) -> String {
+    pattern
+        .strip_prefix("~/")
+        .map(|rest| rest.to_string())
+        .unwrap_or_else(|| pattern.to_string())
+}
+
+/// Reads `.dotdipperignore` and returns its patterns in push-ignore form.
+///
+/// `.dotdipperignore` used to gate discovery only, so a pattern written there
+/// never stopped an already-tracked file from being pushed. Feeding it here
+/// makes one ignore list govern both discovery and push.
+fn ignore_file_patterns() -> Result<Vec<String>> {
+    let path = crate::paths::ignore_file()?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let contents = std::fs::read_to_string(&path)
+        .context("Failed to read .dotdipperignore for push-ignore")?;
+
+    Ok(contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        // Negations are dropped on purpose. A `!pattern` only means anything
+        // relative to the positive pattern it re-includes, and the caller
+        // merges three sources then sorts, so that order cannot survive.
+        // Emitting them anyway would silently re-include ignored files.
+        .filter(|line| !line.starts_with('!'))
+        .map(push_ignore_pattern)
+        .collect())
+}
+
 /// Returns relative paths (relative to $HOME) that should be excluded from git push.
-/// Combines top-level `push_ignore` patterns and per-file `local_only` entries.
+/// Combines `.dotdipperignore`, top-level `push_ignore` patterns, and per-file
+/// `local_only` entries.
 pub fn resolve_push_ignored_paths(config: &Config) -> Result<Vec<String>> {
     let home = dirs::home_dir().context("Failed to find home directory")?;
-    let mut ignored = Vec::new();
+    let mut ignored = ignore_file_patterns().unwrap_or_default();
 
     for pattern in &config.push_ignore {
-        let expanded = if let Some(rest) = pattern.strip_prefix("~/") {
-            rest.to_string()
-        } else {
-            pattern.clone()
-        };
-        ignored.push(expanded);
+        ignored.push(push_ignore_pattern(pattern));
     }
 
     for (file_path, file_override) in &config.files {
@@ -925,6 +957,66 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn push_ignore_includes_dotdipperignore_patterns() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join(".dotdipperignore"),
+            "# comment\n\n~/.config/gcloud/**\n**/backup-*\n!**/backup-keep\n",
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let config = Config {
+            push_ignore: vec!["~/.config/stripe/**".to_string()],
+            ..Default::default()
+        };
+
+        let resolved = resolve_push_ignored_paths(&config).unwrap();
+
+        // `.dotdipperignore` used to gate discovery only; it must now also
+        // reach the generated .gitignore, alongside explicit push_ignore.
+        assert!(resolved.contains(&".config/gcloud/**".to_string()));
+        assert!(resolved.contains(&"**/backup-*".to_string()));
+        assert!(resolved.contains(&".config/stripe/**".to_string()));
+        // Comments and blank lines are dropped.
+        assert!(!resolved.iter().any(|p| p.starts_with('#') || p.is_empty()));
+        // Negations are dropped: the merged list is sorted, so a `!` pattern
+        // would land before the rule it means to undo and silently re-include
+        // an ignored file.
+        assert!(!resolved.iter().any(|p| p.starts_with('!')));
+    }
+
+    #[test]
+    #[serial]
+    fn push_ignore_survives_missing_dotdipperignore() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        let base = home.join(".config").join("dotdipper");
+        std::fs::create_dir_all(&base).unwrap();
+
+        std::env::set_var("HOME", home);
+        std::env::set_var("DOTDIPPER_HOME", &base);
+        std::env::remove_var("DOTDIPPER_PROFILE");
+        std::env::remove_var("XDG_CONFIG_HOME");
+
+        let config = Config {
+            push_ignore: vec!["~/.aws/**".to_string()],
+            ..Default::default()
+        };
+
+        let resolved = resolve_push_ignored_paths(&config).unwrap();
+        assert_eq!(resolved, vec![".aws/**".to_string()]);
+    }
 
     fn merge_from_toml(base: &str, overlay: &str) -> Config {
         let mut overlay_value: toml::Value = toml::from_str(overlay).unwrap();

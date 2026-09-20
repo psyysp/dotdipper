@@ -5,21 +5,6 @@ use std::process::Command;
 use crate::cfg::Config;
 use crate::ui;
 
-const BASE_GITIGNORE: &str = r#"# Temporary files
-*.tmp
-*.swp
-*.swo
-*~
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Backup files
-*.bak
-*.backup
-"#;
-
 pub fn check_git() -> Result<()> {
     let output = Command::new("git")
         .arg("--version")
@@ -85,7 +70,7 @@ pub fn init_repo(repo_path: &Path, branch: &str) -> Result<()> {
         }
     }
 
-    std::fs::write(repo_path.join(".gitignore"), BASE_GITIGNORE)?;
+    std::fs::write(repo_path.join(".gitignore"), crate::repo::BASE_GITIGNORE)?;
     ensure_commit_identity(repo_path)?;
 
     Ok(())
@@ -192,7 +177,7 @@ pub fn push(
 
     // Ensure git is initialized on the profile branch
     init_repo(&repo_path, &target.branch)?;
-    write_push_gitignore(&repo_path, config)?;
+    crate::repo::write_push_gitignore(&repo_path, config)?;
     checkout_or_create_branch(&repo_path, &target.branch)?;
 
     ui::info(&format!(
@@ -1038,24 +1023,6 @@ fn resolve_github_username(config: &Config) -> Result<String> {
     }
 
     Ok(username.trim().to_string())
-}
-
-fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
-    let mut content = BASE_GITIGNORE.trim_end().to_string();
-    let ignored = crate::cfg::resolve_push_ignored_paths(config)?;
-
-    if !ignored.is_empty() {
-        content.push_str("\n\n# Dotdipper push-ignore\n");
-        for pattern in ignored {
-            content.push_str(&pattern);
-            content.push('\n');
-        }
-    } else {
-        content.push('\n');
-    }
-
-    std::fs::write(repo_path.join(".gitignore"), content).context("Failed to update .gitignore")?;
-    Ok(())
 }
 
 #[cfg(test)]

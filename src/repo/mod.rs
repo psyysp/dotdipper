@@ -10,6 +10,21 @@ use crate::hash::{hash_file, Manifest};
 use crate::ui;
 
 /// Files that live in `compiled/` but are not user dotfiles.
+pub(crate) const BASE_GITIGNORE: &str = r#"# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.backup
+"#;
+
 pub(crate) fn is_store_metadata(rel_path: &Path) -> bool {
     let s = rel_path.to_string_lossy();
     s == "manifest.lock"
@@ -40,21 +55,21 @@ impl Status {
         if !self.modified.is_empty() {
             ui::section("Modified files:");
             for file in &self.modified {
-                println!("  M {}", file.display());
+                println!("  M {}", display_home_path(file));
             }
         }
 
         if !self.added.is_empty() {
             ui::section("Added files:");
             for file in &self.added {
-                println!("  A {}", file.display());
+                println!("  A {}", display_home_path(file));
             }
         }
 
         if !self.deleted.is_empty() {
             ui::section("Deleted files:");
             for file in &self.deleted {
-                println!("  D {}", file.display());
+                println!("  D {}", display_home_path(file));
             }
         }
     }
@@ -192,6 +207,19 @@ pub fn snapshot(config: &Config, force: bool) -> Result<Snapshot> {
     // Keep encrypted blobs already in the store so consumer machines can push
     // without re-hashing missing ~/file.age paths after decrypt-on-apply.
     preserve_encrypted_store_entries(&mut manifest, &repo_path)?;
+
+    // Drop store copies of files that are no longer tracked, so untracking a
+    // path (or ignoring it) actually removes it from the next push.
+    let pruned = prune_orphan_store_files(&repo_path, &manifest)?;
+    for rel in &pruned {
+        ui::hint(&format!("Pruned untracked store file {}", rel.display()));
+    }
+    if !pruned.is_empty() {
+        ui::info(&format!(
+            "Pruned {} untracked file(s) from the compiled store",
+            pruned.len()
+        ));
+    }
 
     // Save manifest outside and inside the git store so pull/apply work on new machines
     manifest.save(&manifest_path)?;
@@ -381,6 +409,73 @@ fn preserve_encrypted_store_entries(manifest: &mut Manifest, compiled: &Path) ->
     Ok(())
 }
 
+/// Deletes store files that the manifest no longer covers.
+///
+/// `snapshot` only ever copied tracked files *in*. Nothing took them back out,
+/// so a path that left `tracked_files` — because it was added to
+/// `.dotdipperignore`, or removed by hand — kept its stale copy in the store,
+/// and `git add -A` re-committed it on every push. That is how a credential
+/// file survived an ignore rule that had been in place for months.
+///
+/// Store metadata and encrypted blobs are never pruned; the latter are already
+/// folded into the manifest by `preserve_encrypted_store_entries`, which must
+/// run before this.
+fn prune_orphan_store_files(compiled: &Path, manifest: &Manifest) -> Result<Vec<PathBuf>> {
+    if !compiled.exists() {
+        return Ok(Vec::new());
+    }
+
+    // An empty manifest means the tracked set never resolved. Pruning against
+    // it would erase the whole store, so refuse rather than destroy the backup.
+    if manifest.files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut removed = Vec::new();
+    let mut dirs = Vec::new();
+
+    for entry in walkdir::WalkDir::new(compiled)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != std::ffi::OsStr::new(".git"))
+        .filter_map(|e| e.ok())
+    {
+        let Ok(rel) = entry.path().strip_prefix(compiled) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        if entry.file_type().is_dir() {
+            dirs.push(entry.path().to_path_buf());
+            continue;
+        }
+        if is_store_metadata(rel) || manifest.has_file(rel) {
+            continue;
+        }
+        fs::remove_file(entry.path())
+            .with_context(|| format!("Failed to prune stale store file {}", rel.display()))?;
+        removed.push(rel.to_path_buf());
+    }
+
+    // Deepest first, so a directory emptied by the pass above can also go.
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for dir in dirs {
+        let _ = fs::remove_dir(&dir);
+    }
+
+    removed.sort();
+    Ok(removed)
+}
+
+fn display_home_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(rel) = path.strip_prefix(&home) {
+            return format!("~/{}", rel.display());
+        }
+    }
+    path.display().to_string()
+}
+
 pub fn status(config: &Config) -> Result<Status> {
     let manifest_path = get_manifest_path()?;
 
@@ -474,38 +569,26 @@ fn get_compiled_path() -> Result<PathBuf> {
     crate::paths::compiled_dir()
 }
 
-fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
-    let push_ignored = crate::cfg::resolve_push_ignored_paths(config)?;
+/// The only `.gitignore` writer for the compiled store.
+///
+/// `snapshot` and `vcs::push` both used to write this file with different base
+/// content; push ran second and silently clobbered snapshot's version. One
+/// implementation keeps the two paths from diverging again.
+pub(crate) fn write_push_gitignore(repo_path: &Path, config: &Config) -> Result<()> {
+    let mut content = BASE_GITIGNORE.trim_end().to_string();
+    let ignored = crate::cfg::resolve_push_ignored_paths(config)?;
 
-    let mut lines = vec![
-        "# Auto-generated by dotdipper - do not edit manually",
-        "*.tmp",
-        "*.swp",
-        "*.swo",
-        "*~",
-        ".DS_Store",
-        "Thumbs.db",
-        "*.bak",
-        "*.backup",
-    ];
-
-    let ignored_lines: Vec<String>;
-    if !push_ignored.is_empty() {
-        ignored_lines = push_ignored;
-        lines.push("");
-        lines.push("# Local-only files (excluded from git push)");
+    if !ignored.is_empty() {
+        content.push_str("\n\n# Dotdipper push-ignore\n");
+        for pattern in ignored {
+            content.push_str(&pattern);
+            content.push('\n');
+        }
     } else {
-        ignored_lines = Vec::new();
-    }
-
-    let mut content: String = lines.join("\n");
-    for line in &ignored_lines {
         content.push('\n');
-        content.push_str(line);
     }
-    content.push('\n');
 
-    fs::write(repo_path.join(".gitignore"), content)?;
+    fs::write(repo_path.join(".gitignore"), content).context("Failed to update .gitignore")?;
     Ok(())
 }
 
@@ -592,6 +675,117 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial]
+    fn display_home_path_uses_tilde_prefix() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path();
+        std::env::set_var("HOME", home);
+
+        let nested = home.join(".config").join("yabai").join("yabairc");
+        assert_eq!(display_home_path(&nested), "~/.config/yabai/yabairc");
+
+        assert_eq!(display_home_path(Path::new("/tmp/outside")), "/tmp/outside");
+    }
+
+    /// Builds a store containing one tracked file, one orphan, one orphan
+    /// nested in its own directory, and the full set of store metadata.
+    fn store_with_orphans(compiled: &Path) -> Manifest {
+        fs::create_dir_all(compiled.join(".git").join("objects")).unwrap();
+        fs::write(compiled.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::write(compiled.join(".gitignore"), "*.tmp\n").unwrap();
+        fs::write(compiled.join("manifest.lock"), "{}\n").unwrap();
+        fs::write(compiled.join("Brewfile"), "brew \"git\"\n").unwrap();
+        fs::write(compiled.join("apps_manifest.toml"), "[meta]\n").unwrap();
+
+        fs::write(compiled.join(".zshrc"), "export Z=1\n").unwrap();
+
+        fs::create_dir_all(compiled.join(".config").join("neonctl")).unwrap();
+        fs::write(
+            compiled.join(".config").join("neonctl").join("creds.json"),
+            "{}\n",
+        )
+        .unwrap();
+        fs::write(compiled.join("old-yabairc"), "stale\n").unwrap();
+
+        let mut manifest = Manifest::new();
+        let mut tracked = hash_file(&compiled.join(".zshrc")).unwrap();
+        tracked.path = PathBuf::from(".zshrc");
+        manifest.add_file(tracked);
+        manifest
+    }
+
+    #[test]
+    #[serial]
+    fn prune_removes_orphans_but_keeps_tracked_and_metadata() {
+        let temp = TempDir::new().unwrap();
+        let compiled = temp.path().join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        let manifest = store_with_orphans(&compiled);
+
+        let pruned = prune_orphan_store_files(&compiled, &manifest).unwrap();
+
+        assert_eq!(
+            pruned,
+            vec![
+                PathBuf::from(".config/neonctl/creds.json"),
+                PathBuf::from("old-yabairc"),
+            ]
+        );
+        assert!(!compiled.join(".config").join("neonctl").exists());
+        assert!(!compiled.join("old-yabairc").exists());
+
+        // Tracked file and every metadata path survive.
+        assert!(compiled.join(".zshrc").exists());
+        assert!(compiled.join("manifest.lock").exists());
+        assert!(compiled.join(".gitignore").exists());
+        assert!(compiled.join("Brewfile").exists());
+        assert!(compiled.join("apps_manifest.toml").exists());
+        assert!(compiled.join(".git").join("HEAD").exists());
+    }
+
+    #[test]
+    #[serial]
+    fn prune_refuses_on_empty_manifest() {
+        let temp = TempDir::new().unwrap();
+        let compiled = temp.path().join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        store_with_orphans(&compiled);
+
+        // An empty manifest means the tracked set never resolved. Pruning then
+        // would erase the whole backup, so it must be a no-op.
+        let pruned = prune_orphan_store_files(&compiled, &Manifest::new()).unwrap();
+
+        assert!(pruned.is_empty());
+        assert!(compiled.join("old-yabairc").exists());
+        assert!(compiled
+            .join(".config")
+            .join("neonctl")
+            .join("creds.json")
+            .exists());
+    }
+
+    #[test]
+    #[serial]
+    fn prune_keeps_encrypted_store_entries_folded_into_manifest() {
+        let temp = TempDir::new().unwrap();
+        let compiled = temp.path().join("compiled");
+        fs::create_dir_all(&compiled).unwrap();
+        fs::write(compiled.join(".zshrc"), "export Z=1\n").unwrap();
+        fs::write(compiled.join("secret.age"), "age-encrypted\n").unwrap();
+
+        let mut manifest = Manifest::new();
+        let mut tracked = hash_file(&compiled.join(".zshrc")).unwrap();
+        tracked.path = PathBuf::from(".zshrc");
+        manifest.add_file(tracked);
+        preserve_encrypted_store_entries(&mut manifest, &compiled).unwrap();
+
+        let pruned = prune_orphan_store_files(&compiled, &manifest).unwrap();
+
+        assert!(pruned.is_empty());
+        assert!(compiled.join("secret.age").exists());
+    }
 
     #[test]
     #[serial]

@@ -72,10 +72,10 @@ enum Commands {
         validate: bool,
     },
 
-    /// Show status of dotfiles (changes since last snapshot)
+    /// Show status of tracked files; lists changed paths by default
     Status {
-        /// Show detailed diff
-        #[arg(long)]
+        /// Same as default; kept for compatibility
+        #[arg(long, hide = true)]
         detailed: bool,
     },
 
@@ -476,7 +476,7 @@ async fn main() -> Result<()> {
             )
             .await
         }
-        Commands::Status { detailed } => cmd_status(config_path, detailed).await,
+        Commands::Status { detailed: _ } => cmd_status(config_path).await,
         Commands::Diff { detailed } => cmd_diff(config_path, detailed).await,
         Commands::Apply {
             force,
@@ -712,7 +712,7 @@ async fn cmd_snapshot_create(
     Ok(())
 }
 
-async fn cmd_status(config_path: PathBuf, detailed: bool) -> Result<()> {
+async fn cmd_status(config_path: PathBuf) -> Result<()> {
     ui::info("Checking status...");
     let config = cfg::load(&config_path)?;
     let status = repo::status(&config)?;
@@ -727,9 +727,7 @@ async fn cmd_status(config_path: PathBuf, detailed: bool) -> Result<()> {
             status.deleted.len()
         ));
 
-        if detailed {
-            status.print_detailed();
-        }
+        status.print_detailed();
     }
 
     Ok(())
