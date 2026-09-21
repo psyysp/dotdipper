@@ -328,6 +328,56 @@ if [[ ${#MAS_IDS[@]} -gt 0 ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# System and driver extensions.
+#
+# `brew install --cask` reports success once the app is in place, but an app
+# that ships a driver extension is not finished at that point: macOS will not
+# load the extension until a human approves it, and some apps do not even
+# submit it for approval until the app itself has been run once. An unattended
+# install therefore leaves a working-looking machine where the extension does
+# nothing. Report that here rather than let it pass as success.
+#
+# This stage never activates anything. Activation opens a GUI approval dialog
+# and, for Karabiner, a file:// URL — neither belongs in an unattended run.
+# ---------------------------------------------------------------------------
+extension_state() {
+  systemextensionsctl list 2>/dev/null | grep -F "$1" | head -1
+}
+
+check_extensions() {
+  command -v systemextensionsctl >/dev/null 2>&1 || return 0
+  local pending=()
+
+  # Any extension already known to macOS but not yet enabled is awaiting a
+  # human. This catches every vendor, not just the ones named below.
+  while IFS= read -r line; do
+    case "$line" in
+      *"[activated enabled]"*) ;;
+      *"[activated"*|*"[terminated"*)
+        pending+=("$(printf '%s' "$line" | awk -F'\t' '{print $4}')")
+        ;;
+    esac
+  done < <(systemextensionsctl list 2>/dev/null | grep -E '^\*|^ ' || true)
+
+  # Karabiner submits its DriverKit extension only when the app or its helper
+  # runs, so a fresh unattended install leaves no row at all to detect.
+  local km="/Applications/.Karabiner-VirtualHIDDevice-Manager.app/Contents/MacOS/Karabiner-VirtualHIDDevice-Manager"
+  if [[ -x "$km" ]] && [[ -z "$(extension_state org.pqrs.Karabiner-DriverKit-VirtualHIDDevice)" ]]; then
+    warn "Karabiner installed its driver extension but never submitted it."
+    warn "  Run: \"$km\" activate"
+    warn "  Then approve it, and note that Karabiner also needs Input Monitoring."
+  fi
+
+  if [[ ${#pending[@]} -gt 0 ]]; then
+    warn "${#pending[@]} system extension(s) are installed but not enabled:"
+    for ext in "${pending[@]}"; do warn "  $ext"; done
+    warn "Approve them in System Settings > General > Login Items & Extensions."
+  fi
+}
+
+[[ "$(uname -s)" == "Darwin" ]] && check_extensions
+
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   warn "${#FAILED[@]} item(s) did not install:"
   for item in "${FAILED[@]}"; do warn "  $item"; done
@@ -508,6 +558,57 @@ name = "kitty"
         assert_syntax_ok(&script);
         assert!(script.contains(r"'od'\''d; rm -rf /'"));
         assert!(script.contains("'$(id)'"));
+    }
+
+    #[test]
+    fn the_extension_check_reports_both_ways_an_extension_can_be_unusable() {
+        // A driver extension fails silently in two distinct ways after an
+        // unattended cask install, and `brew` calls both of them success.
+        let script = generate(
+            &Inventory {
+                brewfile: None,
+                apps: None,
+            },
+            &[],
+        );
+        assert_syntax_ok(&script);
+
+        // Submitted but not approved — found by state, for any vendor.
+        assert!(script.contains("[activated enabled]"), "{script}");
+        assert!(
+            script.contains("System Settings > General > Login Items & Extensions"),
+            "must name the pane that actually holds the control on current macOS"
+        );
+        // Never submitted — invisible to systemextensionsctl, so it is found
+        // by the helper's presence instead.
+        assert!(
+            script.contains("org.pqrs.Karabiner-DriverKit-VirtualHIDDevice"),
+            "{script}"
+        );
+        assert!(
+            script.contains("Karabiner-VirtualHIDDevice-Manager"),
+            "{script}"
+        );
+
+        // The stage must never activate: activation raises a GUI prompt and
+        // opens a file:// URL, neither of which belongs in an unattended run.
+        // Naming the command inside a warning is the point; running it is the
+        // defect, so judge each line by whether it executes or reports.
+        for line in script.lines() {
+            let trimmed = line.trim();
+            if !trimmed.contains("activate") {
+                continue;
+            }
+            let reports = trimmed.starts_with('#')
+                || trimmed.starts_with("warn ")
+                || trimmed.starts_with("log ")
+                || trimmed.contains("[activated")
+                || trimmed.contains("*\"[activated");
+            assert!(
+                reports,
+                "this line runs an activation instead of reporting it: {trimmed}"
+            );
+        }
     }
 
     /// Parses the script with the system bash. A generated shell script that
