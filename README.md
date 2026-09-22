@@ -338,6 +338,8 @@ Because the overlay wins on load, a key defined in both files makes the global c
 - `config --show` and `doctor` both report shadowed keys.
 - Discovery writes `tracked_files` and `packages.common` to the overlay and removes the stale global copy, so exactly one file owns each key.
 
+**Auditing a machine against the repository:** `scripts/audit-apps.sh` compares the captured inventory against what is actually installed, separating casks brew manages, casks present but installed by hand, and casks genuinely absent — the distinction matters, because only the last is a problem. It also reports App Store titles that went unchecked because `mas` is missing or signed out, and application bundles that are symlinks to nowhere.
+
 **Bootstrapping a new machine:** `scripts/bootstrap.sh --user <gh-user> --repo <repo> [--https]` takes a bare Mac from nothing to a working environment — Homebrew, dotdipper, the dotfiles, the tools and the macOS preferences. Add `--https` for a public mirror on a machine with no GitHub sign-in. `--no-apps` and `--no-macos` skip those stages. Re-running is safe.
 
 **Consuming a public mirror:** `dotdipper pull --https` clones over anonymous HTTPS, so a machine with no GitHub sign-in and no SSH key can use a published mirror. The mirror withholds `manifest.lock`; `pull` rebuilds it by hashing the cloned tree.
