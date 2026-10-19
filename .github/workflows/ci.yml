@@ -31,16 +31,16 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
         with:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
 
       - name: Cache cargo and target
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -102,16 +102,18 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
+        with:
+          toolchain: stable
 
       - name: Build release
         run: cargo build --release --locked --verbose
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dotdipper-${{ matrix.os }}
           path: target/release/dotdipper
@@ -122,10 +124,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
+        with:
+          toolchain: stable
 
       # Refreshed weekly rather than pinned to a version. A hard pin looks
       # safer but is not: the advisory database moves forward independently,
@@ -138,7 +142,7 @@ jobs:
 
       - name: Cache cargo-audit
         id: audit-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cargo/bin/cargo-audit
           key: cargo-audit-${{ runner.os }}-${{ steps.stamp.outputs.week }}
@@ -150,13 +154,27 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
+  dependency-policy:
+    name: Dependency Policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features
+
   docs:
     name: Documentation Check
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Check documentation files exist
         run: |
@@ -200,7 +218,7 @@ jobs:
           echo "CHANGELOG has an [Unreleased] section"
 
       - name: Check for broken links in markdown
-        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        uses: gaurav-nelson/github-action-markdown-link-check@5c5dfc0ac2e225883c0e5f03a85311ec2830d368 # v1
         continue-on-error: true
         with:
           use-quiet-mode: "yes"

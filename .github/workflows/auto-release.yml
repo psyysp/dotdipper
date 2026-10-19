@@ -22,8 +22,10 @@ concurrency:
   group: auto-release
   cancel-in-progress: false
 
+# Read-only by default. The tag and version commit are pushed with a deploy
+# key (RELEASE_SSH_KEY), which is not governed by GITHUB_TOKEN permissions.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   analyze-commits:
@@ -42,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -189,7 +191,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           # A deploy key, not GITHUB_TOKEN. GitHub does not start a workflow

@@ -68,7 +68,7 @@ jobs:
           esac
 
       - name: Check out the tag itself
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ steps.v.outputs.tag }}
 
@@ -105,17 +105,18 @@ jobs:
 
     steps:
       - name: Checkout the tagged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -139,7 +140,7 @@ jobs:
           shasum -a 256 "${{ matrix.artifact_name }}.tar.gz" > "${{ matrix.artifact_name }}.tar.gz.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -160,13 +161,14 @@ jobs:
 
     steps:
       - name: Checkout the tagged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools
@@ -176,7 +178,7 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -208,7 +210,7 @@ jobs:
           sha256sum "${{ matrix.artifact_name }}.tar.gz" > "${{ matrix.artifact_name }}.tar.gz.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact_name }}
           path: |
@@ -219,12 +221,17 @@ jobs:
     name: Create GitHub Release
     needs: [resolve, build-macos, build-linux]
     runs-on: ubuntu-latest
+    # contents: write publishes the release. id-token and attestations let
+    # actions/attest-build-provenance sign and store the provenance. They are
+    # granted to this job alone.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -254,6 +261,14 @@ jobs:
             fi
             echo "ok  $f"
           done
+
+      # Signed SLSA provenance, bound to the digest of each tarball as it will
+      # be uploaded. Consumers check it with `gh attestation verify`, which
+      # (unlike the .sha256 sidecar) does not trust the release page itself.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: release-assets/*.tar.gz
 
       - name: Generate release notes
         env:
@@ -287,12 +302,16 @@ jobs:
           A SHA-256 sidecar accompanies every binary, and each is verified
           against its artifact before this release is published.
 
+          ### Provenance
+          Each tarball carries a signed build attestation. Verify one with
+          \`gh attestation verify <file> --repo psyysp/dotdipper\`.
+
           ### What's Changed
           See the [CHANGELOG](https://github.com/psyysp/dotdipper/blob/main/CHANGELOG.md) for details.
           EOF
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           # Explicit. Without it the action falls back to github.ref, which
           # under workflow_dispatch is a branch: it would create a second,
@@ -322,13 +341,13 @@ jobs:
           exit 1
 
       - name: Checkout dotdipper at the tag (for the formula generator)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.resolve.outputs.tag }}
           path: dotdipper-src
 
       - name: Checkout tap repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: psyysp/homebrew-dotdipper
           # A deploy key scoped to this one repository. A PAT cannot be
@@ -337,7 +356,7 @@ jobs:
           path: homebrew-tap
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -399,13 +418,15 @@ jobs:
 
       - name: Checkout the tagged commit
         if: steps.gate.outputs.publish == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.resolve.outputs.tag }}
 
       - name: Install Rust
         if: steps.gate.outputs.publish == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, resolved 2026-10-19
+        with:
+          toolchain: stable
 
       # The token is read from the environment, never passed as an argument.
       # Arguments are visible in the process list to anything else running in
