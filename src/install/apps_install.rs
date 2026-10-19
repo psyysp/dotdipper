@@ -895,7 +895,7 @@ pub fn triage(items: Vec<Item>, filters: &Filters) -> Triage {
     }
 
     let mut items = items;
-    items.sort_by(|a, b| (a.kind, a.display_name()).cmp(&(b.kind, b.display_name())));
+    items.sort_by_key(|i| (i.kind, i.display_name()));
     for item in items {
         if item.installed {
             t.present.push(item);
