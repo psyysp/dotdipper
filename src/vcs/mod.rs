@@ -184,6 +184,9 @@ pub struct GitTarget {
     pub username: String,
     pub repo_name: String,
     pub branch: String,
+    /// Full URL from `[github].url`, already validated. When set, it is the
+    /// remote; `username`/`repo_name` are only labels taken from it.
+    pub url: Option<String>,
 }
 
 impl GitTarget {
@@ -213,8 +216,22 @@ pub fn default_branch_for_profile(profile: &str) -> String {
 }
 
 pub fn resolve_git_target(config: &Config, repo_override: Option<&str>) -> Result<GitTarget> {
-    let username = resolve_github_username(config)?;
-    let repo_name = resolve_repo_name(config, repo_override);
+    // An explicit `--repo` names a repository under the configured account,
+    // so it means the user is not following `[github].url` this time.
+    let source = match config.github.url.as_deref().map(str::trim) {
+        Some(url) if !url.is_empty() && repo_override.is_none() => Some(
+            crate::source::validate_url(url)
+                .context("[github].url in config is not an accepted repository URL")?,
+        ),
+        _ => None,
+    };
+    let (username, repo_name) = match &source {
+        Some(src) => (src.owner.clone(), src.repo.clone()),
+        None => (
+            resolve_github_username(config)?,
+            resolve_repo_name(config, repo_override),
+        ),
+    };
     let profile =
         crate::profiles::resolve_active_profile_name().unwrap_or_else(|_| "default".into());
     let branch = config
@@ -229,6 +246,7 @@ pub fn resolve_git_target(config: &Config, repo_override: Option<&str>) -> Resul
         username,
         repo_name,
         branch,
+        url: source.map(|src| src.url),
     })
 }
 
@@ -532,6 +550,13 @@ pub fn pull(
     let repo_path = crate::paths::compiled_dir()?;
     let target = resolve_git_target(config, repo_override)?;
     let origin_ref = target.origin_ref();
+    // A configured URL already says how it is reached.
+    let transport = match target.url.as_deref() {
+        Some(url) if url.starts_with("https://") => Transport::HttpsAnonymous,
+        Some(_) => Transport::Ssh,
+        None => transport,
+    };
+    let remote_url = target_url(&target, transport);
 
     ui::info(&format!(
         "Pulling from {}/{} ({})",
@@ -540,16 +565,10 @@ pub fn pull(
 
     // If repo doesn't exist, clone it
     if !repo_path.join(".git").exists() {
-        clone_repo(
-            &target.username,
-            &target.repo_name,
-            &target.branch,
-            &repo_path,
-            transport,
-        )?;
+        clone_repo(&remote_url, &target.branch, &repo_path, transport)?;
     } else {
         // Ensure current origin points at the selected repo
-        add_remote(&target.username, &target.repo_name, &repo_path, transport)?;
+        add_remote(&remote_url, &repo_path)?;
 
         let dirty = has_uncommitted_changes(&repo_path)?;
         if dirty && !force {
@@ -778,21 +797,11 @@ pub fn undo_last_push(config: &Config, force: bool, repo_override: Option<&str>)
     let target = resolve_git_target(config, repo_override)?;
     let origin_ref = target.origin_ref();
 
+    let remote_url = target_url(&target, Transport::Ssh);
     if !repo_path.join(".git").exists() {
-        clone_repo(
-            &target.username,
-            &target.repo_name,
-            &target.branch,
-            &repo_path,
-            Transport::Ssh,
-        )?;
+        clone_repo(&remote_url, &target.branch, &repo_path, Transport::Ssh)?;
     } else {
-        add_remote(
-            &target.username,
-            &target.repo_name,
-            &repo_path,
-            Transport::Ssh,
-        )?;
+        add_remote(&remote_url, &repo_path)?;
     }
 
     ensure_clean_worktree(&repo_path)?;
@@ -1041,7 +1050,10 @@ fn ensure_github_repo(
 ) -> Result<()> {
     // Tests can point at a local bare repo via DOTDIPPER_TEST_REMOTE and skip gh.
     if std::env::var_os("DOTDIPPER_TEST_REMOTE").is_some() {
-        add_remote(username, repo_name, repo_path, Transport::Ssh)?;
+        add_remote(
+            &resolve_remote_url(username, repo_name, Transport::Ssh),
+            repo_path,
+        )?;
         return Ok(());
     }
 
@@ -1101,7 +1113,10 @@ fn ensure_github_repo(
     }
 
     // Always ensure remote URL matches selected repo
-    add_remote(username, repo_name, repo_path, Transport::Ssh)?;
+    add_remote(
+        &resolve_remote_url(username, repo_name, Transport::Ssh),
+        repo_path,
+    )?;
 
     Ok(())
 }
@@ -1119,6 +1134,103 @@ fn resolve_remote_url(username: &str, repo_name: &str, transport: Transport) -> 
     }
 }
 
+/// Limits a clone to HTTPS and SSH, including any redirect or submodule URL
+/// git follows on the way. The source was validated already; this holds even
+/// if a server redirects elsewhere. The test override points at a local bare
+/// repository, which is the one case that needs `file`.
+fn restrict_clone_protocols(cmd: &mut Command) {
+    if std::env::var_os("DOTDIPPER_TEST_REMOTE").is_none() {
+        cmd.env("GIT_ALLOW_PROTOCOL", "https:ssh");
+    }
+}
+
+/// The branch a remote's `HEAD` points at, so a repository whose default is
+/// `master` (or anything else) is followed on that branch instead of a
+/// `main` that does not exist. `None` when the remote does not say.
+pub fn remote_default_branch(source_url: &str) -> Result<Option<String>> {
+    let url = match std::env::var("DOTDIPPER_TEST_REMOTE") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => source_url.to_string(),
+    };
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-remote", "--symref", "--", &url, "HEAD"]);
+    if url.starts_with("https://") {
+        apply_transport_env(&mut cmd, Transport::HttpsAnonymous);
+    }
+    restrict_clone_protocols(&mut cmd);
+    let output = cmd.output().context("Failed to query the remote")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "Could not reach {}: {}",
+            source_url,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(parse_symref_head(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Reads `ref: refs/heads/<branch>\tHEAD` from `git ls-remote --symref`.
+fn parse_symref_head(out: &str) -> Option<String> {
+    out.lines().find_map(|line| {
+        let rest = line.strip_prefix("ref: refs/heads/")?;
+        let (branch, name) = rest.split_once('\t')?;
+        (name.trim() == "HEAD" && !branch.is_empty()).then(|| branch.to_string())
+    })
+}
+
+/// Moves a freshly cloned branch back to an exact commit the user audited.
+///
+/// The commit must already be on the branch: pinning to a commit the branch
+/// never contained would mean trusting a fetch of arbitrary objects. Returns
+/// the full commit id.
+pub fn pin_to_commit(repo_path: &Path, rev: &str) -> Result<String> {
+    let rev = rev.trim();
+    if rev.is_empty()
+        || rev.starts_with('-')
+        || !rev
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '_' | '-'))
+    {
+        anyhow::bail!("'{rev}' is not a commit id, tag or branch name");
+    }
+    let resolved = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{rev}^{{commit}}"),
+        ])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to resolve the pinned commit")?;
+    if !resolved.status.success() {
+        anyhow::bail!("Commit '{rev}' is not in the cloned branch");
+    }
+    let sha = String::from_utf8_lossy(&resolved.stdout).trim().to_string();
+
+    let reachable = Command::new("git")
+        .args(["merge-base", "--is-ancestor", &sha, "HEAD"])
+        .current_dir(repo_path)
+        .status()
+        .context("Failed to check the pinned commit")?;
+    if !reachable.success() {
+        anyhow::bail!("Commit '{rev}' is not part of the branch history");
+    }
+
+    let reset = Command::new("git")
+        .args(["reset", "--hard", &sha])
+        .current_dir(repo_path)
+        .output()
+        .context("Failed to check out the pinned commit")?;
+    if !reset.status.success() {
+        anyhow::bail!(
+            "Failed to check out {sha}: {}",
+            String::from_utf8_lossy(&reset.stderr)
+        );
+    }
+    Ok(sha)
+}
+
 /// Anonymous HTTPS must fail rather than sit at a credential prompt: a private
 /// repo over this transport is a configuration mistake, not something to ask
 /// the user to authenticate their way out of.
@@ -1128,16 +1240,22 @@ fn apply_transport_env(cmd: &mut Command, transport: Transport) {
     }
 }
 
-fn add_remote(
-    username: &str,
-    repo_name: &str,
-    repo_path: &Path,
-    transport: Transport,
-) -> Result<()> {
-    let remote_url = resolve_remote_url(username, repo_name, transport);
+/// The URL a target is fetched from. The test override wins so the suite
+/// never reaches the network; then a configured `[github].url`; then the
+/// GitHub URL built from account and repository.
+fn target_url(target: &GitTarget, transport: Transport) -> String {
+    let test_override = std::env::var("DOTDIPPER_TEST_REMOTE")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false);
+    match &target.url {
+        Some(url) if !test_override => url.clone(),
+        _ => resolve_remote_url(&target.username, &target.repo_name, transport),
+    }
+}
 
+fn add_remote(remote_url: &str, repo_path: &Path) -> Result<()> {
     let output = Command::new("git")
-        .args(["remote", "add", "origin", remote_url.as_str()])
+        .args(["remote", "add", "origin", remote_url])
         .current_dir(repo_path)
         .output()
         .context("Failed to add remote")?;
@@ -1147,7 +1265,7 @@ fn add_remote(
         if stderr.contains("already exists") {
             // Update existing remote
             let output = Command::new("git")
-                .args(["remote", "set-url", "origin", remote_url.as_str()])
+                .args(["remote", "set-url", "origin", remote_url])
                 .current_dir(repo_path)
                 .output()
                 .context("Failed to update remote")?;
@@ -1166,15 +1284,7 @@ fn add_remote(
     Ok(())
 }
 
-fn clone_repo(
-    username: &str,
-    repo_name: &str,
-    branch: &str,
-    dest_path: &Path,
-    transport: Transport,
-) -> Result<()> {
-    let repo_url = resolve_remote_url(username, repo_name, transport);
-
+fn clone_repo(repo_url: &str, branch: &str, dest_path: &Path, transport: Transport) -> Result<()> {
     ui::info(&format!(
         "Cloning repository from {} ({})",
         repo_url, branch
@@ -1194,10 +1304,12 @@ fn clone_repo(
         "--branch",
         branch,
         "--single-branch",
-        repo_url.as_str(),
+        "--",
+        repo_url,
         dest,
     ]);
     apply_transport_env(&mut clone, transport);
+    restrict_clone_protocols(&mut clone);
     let mut output = clone.output().context("Failed to clone repository")?;
 
     if !output.status.success() {
@@ -1207,8 +1319,9 @@ fn clone_repo(
             branch
         ));
         let mut fallback = Command::new("git");
-        fallback.args(["clone", repo_url.as_str(), dest]);
+        fallback.args(["clone", "--", repo_url, dest]);
         apply_transport_env(&mut fallback, transport);
+        restrict_clone_protocols(&mut fallback);
         output = fallback.output().context("Failed to clone repository")?;
         if !output.status.success() {
             anyhow::bail!(
@@ -1557,6 +1670,13 @@ mod tests {
             fs::read_to_string(temp_dir.path().join("keep.txt")).unwrap(),
             "keep\n"
         );
+    }
+
+    #[test]
+    fn the_remote_default_branch_is_read_from_ls_remote() {
+        let out = "ref: refs/heads/master\tHEAD\n1234abcd\tHEAD\n";
+        assert_eq!(parse_symref_head(out), Some("master".to_string()));
+        assert_eq!(parse_symref_head("1234abcd\tHEAD\n"), None);
     }
 
     #[test]

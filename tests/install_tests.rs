@@ -339,11 +339,17 @@ mod install_script_tests {
             macos_pkg.content.contains("command -v brew"),
             "must guard Homebrew installation with command -v brew"
         );
+        // A Brewfile is Ruby and `brew bundle` evaluates it, so a pulled one
+        // is parsed as text and installed name by name instead.
         assert!(
             macos_pkg
                 .content
-                .contains(r#"brew bundle --file="$COMPILED_DIR/Brewfile""#),
-            "must run brew bundle against the compiled Brewfile"
+                .contains(r#"install_from_brewfile "$COMPILED_DIR/Brewfile""#),
+            "must install from the compiled Brewfile without evaluating it"
+        );
+        assert!(
+            !macos_pkg.content.contains("brew bundle"),
+            "must never hand a pulled Brewfile to brew bundle"
         );
         assert!(
             macos_pkg.content.contains("grep -q '^mas '"),

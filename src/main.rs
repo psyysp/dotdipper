@@ -39,11 +39,40 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize dotdipper in the current directory
+    /// Initialize dotdipper, optionally from an existing dotfiles repository
+    ///
+    /// With a source, clones it, shows what it would write into $HOME, and
+    /// with --apply writes it after you confirm.
     Init {
+        /// Repository to set up from: owner, owner/repo, host/owner/repo,
+        /// or an https:// or git@ URL. Anonymous HTTPS unless the URL says SSH.
+        source: Option<String>,
+
         /// Force initialization even if config exists
         #[arg(short, long)]
         force: bool,
+
+        /// Apply the repository's dotfiles to $HOME after the preview
+        #[arg(long, requires = "source")]
+        apply: bool,
+
+        /// Branch to follow (default: the repository's default branch)
+        #[arg(long, requires = "source")]
+        branch: Option<String>,
+
+        /// Use this exact commit (or tag) instead of the branch tip, so what
+        /// is applied is what you reviewed
+        #[arg(long = "ref", value_name = "COMMIT", requires = "source")]
+        pin: Option<String>,
+
+        /// Skip the confirmation before applying (for unattended runs)
+        #[arg(short = 'y', long, requires = "apply")]
+        yes: bool,
+
+        /// After applying, install the repository's Homebrew packages and
+        /// App Store titles with `install apps` (macOS only)
+        #[arg(long, requires = "apply")]
+        install: bool,
     },
 
     /// Discover dotfiles on the system
@@ -480,6 +509,38 @@ enum InstallCommands {
         #[arg(long)]
         shareable: bool,
     },
+
+    /// Install the captured Homebrew packages and App Store titles (macOS).
+    ///
+    /// Looks every entry up first, shows one filterable checklist with what
+    /// each item is and what installing it involves, asks for confirmation
+    /// and at most one password, then installs unattended and reports.
+    Apps {
+        /// No picker: install the default selection (everything except
+        /// third-party taps and deprecated, disabled or unknown packages)
+        #[arg(long, conflicts_with = "only")]
+        all: bool,
+
+        /// Install exactly these items (comma-separated names or App Store ids)
+        #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+        only: Vec<String>,
+
+        /// Leave these items out for this run (comma-separated)
+        #[arg(long, value_delimiter = ',', value_name = "NAMES")]
+        skip: Vec<String>,
+
+        /// Resolve and print the plan; install nothing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation; without a terminal, use the default selection
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Offer items deselected on an earlier run again
+        #[arg(long)]
+        reselect: bool,
+    },
 }
 
 #[cfg(target_os = "macos")]
@@ -505,9 +566,9 @@ enum AppsCommands {
     /// Show the captured apps manifest
     List,
 
-    /// Restore Homebrew packages from the captured Brewfile
+    /// Install the captured Homebrew packages and App Store titles (same as `install apps`)
     Install {
-        /// Print what would be installed without running brew bundle
+        /// Print what the Brewfile lists without installing anything
         #[arg(long)]
         dry_run: bool,
     },
@@ -531,7 +592,32 @@ async fn main() -> Result<()> {
     });
 
     let result = match cli.command {
-        Commands::Init { force } => cmd_init(config_path, force).await,
+        Commands::Init {
+            source,
+            force,
+            apply,
+            branch,
+            pin,
+            yes,
+            install,
+        } => match source {
+            Some(source) => {
+                cmd_init_from(
+                    config_path,
+                    InitFrom {
+                        source,
+                        force,
+                        apply,
+                        branch,
+                        pin,
+                        yes,
+                        install,
+                    },
+                )
+                .await
+            }
+            None => cmd_init(config_path, force).await,
+        },
         Commands::Discover {
             write,
             all,
@@ -629,6 +715,21 @@ async fn main() -> Result<()> {
             Some(InstallCommands::AppsScript { out, shareable }) => {
                 cmd_install_apps_script(config_path, out, shareable).await
             }
+            Some(InstallCommands::Apps {
+                all,
+                only,
+                skip,
+                dry_run,
+                yes,
+                reselect,
+            }) => cmd_install_apps(install::apps_install::Options {
+                all,
+                only,
+                skip,
+                dry_run,
+                yes,
+                reselect,
+            }),
             None => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
         },
         Commands::Doctor { fix } => cmd_doctor(config_path, fix).await,
@@ -659,6 +760,242 @@ async fn cmd_init(config_path: PathBuf, force: bool) -> Result<()> {
     ui::success("Dotdipper initialized successfully!");
     ui::hint("Run 'dotdipper discover --write' to find and add dotfiles to track");
     Ok(())
+}
+
+struct InitFrom {
+    source: String,
+    force: bool,
+    apply: bool,
+    branch: Option<String>,
+    pin: Option<String>,
+    yes: bool,
+    install: bool,
+}
+
+/// `dotdipper init <source>`: one command from an installed binary to a
+/// home directory set up from someone's repository.
+///
+/// The repository may not be the user's own, so nothing reaches `$HOME`
+/// until the user has seen exactly what will be written and agreed to it,
+/// and nothing in the repository is ever executed.
+async fn cmd_init_from(config_path: PathBuf, opts: InitFrom) -> Result<()> {
+    let source = dotdipper::source::parse(&opts.source)?;
+    ui::info(&format!("Setting up from {}", source.display()));
+
+    let compiled = dotdipper::paths::compiled_dir();
+    if let Ok(compiled) = &compiled {
+        if compiled.join(".git").exists() {
+            anyhow::bail!(
+                "A dotfiles store already exists at {}. Run 'dotdipper pull' to update it, \
+                 or move it aside to set up from a different repository.",
+                compiled.display()
+            );
+        }
+    }
+
+    if config_path.exists() && !opts.force {
+        ui::info(&format!(
+            "Keeping existing config at {}",
+            config_path.display()
+        ));
+    } else {
+        cfg::init(config_path.clone(), opts.force)?;
+        // Copies, not symlinks: with links, every later pull of a repository
+        // someone else controls would change live files with no apply step.
+        cfg::set_config_value(&config_path, "general.default_mode", "copy")?;
+    }
+
+    let branch = match opts.branch {
+        Some(b) => b,
+        None => vcs::remote_default_branch(&source.url)?.unwrap_or_else(|| "main".to_string()),
+    };
+    cfg::set_config_value(&config_path, "github.url", &source.url)?;
+    cfg::set_config_value(&config_path, "github.branch", &branch)?;
+
+    let config = cfg::load(&config_path)?;
+    vcs::pull(&config, false, None, vcs::Transport::HttpsAnonymous)?;
+    let compiled = dotdipper::paths::compiled_dir()?;
+
+    if let Some(rev) = &opts.pin {
+        let sha = vcs::pin_to_commit(&compiled, rev)?;
+        repo::sync_manifest_from_compiled()?;
+        ui::info(&format!("Pinned to commit {sha}"));
+    }
+
+    let layout = repo::store_layout(&compiled);
+    ui::info(&format!("Detected a {}", layout.describe()));
+    if !layout.is_applicable() {
+        explain_unsupported_layout(layout, &compiled);
+        if opts.apply {
+            anyhow::bail!(
+                "Nothing was applied: this repository does not map onto $HOME by position"
+            );
+        }
+        return Ok(());
+    }
+
+    let manifest = repo::load_manifest()?;
+    let _ = repo::sync_tracked_files_from_manifest(&config_path, &manifest);
+    let preview = preview_apply(&compiled, &manifest)?;
+
+    if !opts.apply {
+        ui::success("Repository cloned; $HOME is unchanged.");
+        ui::hint("Review the list above, then run 'dotdipper apply' (or 'dotdipper apply --interactive').");
+        return Ok(());
+    }
+    let install_apps = opts.install;
+    let yes = opts.yes;
+    if preview.changes == 0 {
+        ui::success("Every file already matches; nothing to apply.");
+        return install_apps_after_apply(install_apps, yes, &compiled);
+    }
+
+    if !opts.yes {
+        if !console::Term::stderr().is_term() {
+            anyhow::bail!(
+                "No terminal to confirm on. Review the list above, then re-run with --yes to apply."
+            );
+        }
+        let prompt = if preview.flagged > 0 {
+            format!(
+                "Apply {} file(s), including {} flagged above?",
+                preview.changes, preview.flagged
+            )
+        } else {
+            format!("Apply {} file(s) to $HOME?", preview.changes)
+        };
+        // Default to no when anything flagged is about to land.
+        if !ui::prompt_confirm(&prompt, preview.flagged == 0) {
+            ui::info(
+                "Nothing applied. The repository stays in the store; run 'dotdipper apply' later.",
+            );
+            return Ok(());
+        }
+    }
+
+    let config = cfg::load(&config_path)?;
+    let opts = repo::apply::ApplyOpts {
+        force: true,
+        allow_outside_home: false,
+    };
+    repo::apply::apply(&compiled, &manifest, &config, &opts)?;
+    ui::success("Dotfiles applied. Files that already existed were backed up with a .bak suffix.");
+    install_apps_after_apply(install_apps, yes, &compiled)?;
+    ui::hint("Open a new terminal so shell configuration takes effect.");
+    Ok(())
+}
+
+/// `init --install`: runs `install apps` once the dotfiles are in place.
+///
+/// Only on macOS and only when the store has something to install; a
+/// repository without a Brewfile or manifest is not an error here, since
+/// `--install` may be in a bootstrap command shared across repositories.
+fn install_apps_after_apply(requested: bool, yes: bool, compiled: &Path) -> Result<()> {
+    if !requested {
+        return Ok(());
+    }
+    if !cfg!(target_os = "macos") {
+        ui::info("Skipping --install: installing apps is macOS-only.");
+        return Ok(());
+    }
+    if !compiled.join("Brewfile").exists() && !compiled.join("apps_manifest.toml").exists() {
+        ui::info("Skipping --install: the repository has no Brewfile or apps_manifest.toml.");
+        return Ok(());
+    }
+    ui::section("Apps");
+    install::apps_install::run(
+        compiled,
+        &install::apps_install::Options {
+            yes,
+            ..Default::default()
+        },
+    )
+}
+
+fn explain_unsupported_layout(layout: repo::layout::Layout, compiled: &Path) {
+    use repo::layout::Layout;
+    match layout {
+        Layout::Stow => ui::warn(
+            "Stow packages (zsh/.zshrc) do not map onto $HOME by position, so nothing will be applied.",
+        ),
+        Layout::Chezmoi => ui::warn(
+            "chezmoi sources (dot_zshrc) need chezmoi to render them; nothing will be applied. \
+             Use 'chezmoi init --apply' for this repository.",
+        ),
+        _ => ui::warn("No top-level dotfiles were found to apply."),
+    }
+    if let Some(script) = repo::layout::install_script(compiled) {
+        ui::warn(&format!(
+            "The repository ships '{script}'. dotdipper never runs it; read it before running it yourself."
+        ));
+    }
+    ui::hint(&format!("The files are at {}", compiled.display()));
+}
+
+struct ApplyPreview {
+    /// Files that would be created or replaced.
+    changes: usize,
+    /// Of those, files that run code or grant access.
+    flagged: usize,
+}
+
+/// Lists what applying `manifest` would do to `$HOME`, flagged paths first,
+/// without touching anything.
+fn preview_apply(compiled: &Path, manifest: &hash::Manifest) -> Result<ApplyPreview> {
+    const SHOWN: usize = 40;
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+
+    let mut rows: Vec<(bool, Option<&'static str>, &Path)> = Vec::new();
+    let mut identical = 0usize;
+    for rel in manifest.files.keys() {
+        let target = home.join(rel);
+        let source = compiled.join(rel);
+        let same = match (std::fs::read(&target), std::fs::read(&source)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        if same {
+            identical += 1;
+            continue;
+        }
+        rows.push((target.exists(), repo::layout::risk(rel), rel.as_path()));
+    }
+    // Flagged first, then replacements, then new files.
+    rows.sort_by_key(|(exists, risk, path)| (risk.is_none(), !exists, path.to_path_buf()));
+
+    let flagged = rows.iter().filter(|(_, risk, _)| risk.is_some()).count();
+    let replaced = rows.iter().filter(|(exists, _, _)| *exists).count();
+    ui::section("What this repository would write into $HOME:");
+    println!(
+        "  {} new, {} replaced (backed up first), {} already identical",
+        rows.len() - replaced,
+        replaced,
+        identical
+    );
+    for (exists, risk, path) in rows.iter().take(SHOWN) {
+        let mark = if *exists { "~".yellow() } else { "+".green() };
+        match risk {
+            Some(why) => println!(
+                "  {} ~/{}  {}",
+                mark,
+                path.display(),
+                format!("[{why}]").red()
+            ),
+            None => println!("  {} ~/{}", mark, path.display()),
+        }
+    }
+    if rows.len() > SHOWN {
+        println!("  ... and {} more", rows.len() - SHOWN);
+    }
+    if flagged > 0 {
+        ui::warn(&format!(
+            "{flagged} file(s) can run code or grant access to this machine. Read them before applying a repository you do not control."
+        ));
+    }
+    Ok(ApplyPreview {
+        changes: rows.len(),
+        flagged,
+    })
 }
 
 async fn cmd_discover(
@@ -1298,6 +1635,13 @@ async fn cmd_macos(subcmd: MacosCommands) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// `dotdipper install apps`. The flow itself lives in the library so that
+/// `apps install` and `init --install` run exactly the same code.
+fn cmd_install_apps(opts: install::apps_install::Options) -> Result<()> {
+    let store = dotdipper::paths::compiled_dir()?;
+    install::apps_install::run(&store, &opts)
 }
 
 async fn cmd_install_apps_script(

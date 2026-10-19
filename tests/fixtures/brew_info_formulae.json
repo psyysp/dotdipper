@@ -1,0 +1,45 @@
+{
+  "formulae": [
+    {
+      "name": "jq",
+      "full_name": "jq",
+      "tap": "homebrew/core",
+      "aliases": [],
+      "desc": "Lightweight and flexible command-line JSON processor",
+      "license": "MIT",
+      "homepage": "https://jqlang.github.io/jq/",
+      "versions": {
+        "stable": "1.8.2",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "deprecated": false,
+      "deprecation_date": null,
+      "deprecation_reason": null,
+      "disabled": false,
+      "disable_date": null,
+      "disable_reason": null
+    },
+    {
+      "name": "git-prompt-kit",
+      "full_name": "olets/tap/git-prompt-kit",
+      "tap": "olets/tap",
+      "aliases": [],
+      "desc": "Configurable, feature rich, high performance Git components for zsh themes",
+      "license": null,
+      "homepage": "https://github.com/olets/git-prompt-kit",
+      "versions": {
+        "stable": "4.1.5",
+        "head": "HEAD",
+        "bottle": false
+      },
+      "deprecated": false,
+      "deprecation_date": null,
+      "deprecation_reason": null,
+      "disabled": false,
+      "disable_date": null,
+      "disable_reason": null
+    }
+  ],
+  "casks": []
+}

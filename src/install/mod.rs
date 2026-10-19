@@ -1,4 +1,5 @@
 pub mod analyzers;
+pub mod apps_install;
 pub mod apps_script;
 pub mod discover;
 pub mod package_map;
@@ -273,6 +274,81 @@ log_info "Package installation complete"
     })
 }
 
+/// Installs what a Brewfile lists without evaluating it.
+///
+/// The generated script used to run `brew bundle --file=<store>/Brewfile`.
+/// A Brewfile is Ruby and `brew bundle` evaluates it, so a pulled Brewfile
+/// carrying `system "..."` (or a name holding `#{...}` interpolation) ran
+/// code on the machine being set up. This reads the file as text instead:
+/// only `brew "name"`, `cask "name"` and `mas "Title", id: N` lines whose
+/// name passes the same charset as `apps_script::is_safe_token` are used,
+/// each is installed as argv after `--`, and everything else is counted and
+/// ignored. Any trailing options on a line (`args:`, `link:`) are dropped
+/// rather than interpreted.
+///
+/// Taps are the other way in. `brew install owner/tap/name` taps
+/// `owner/tap` on demand and evaluates its Ruby without asking, so a
+/// fully qualified name is installed only when its tap is official or
+/// already tapped on this machine. Anything else is listed with the two
+/// commands that install it deliberately. `tap` lines are never run.
+pub(crate) const SAFE_BREWFILE_FN: &str = r#"install_from_brewfile() {
+    local file="$1" line kind token tap rejected=0 failed=0 untrusted=0 tapped
+    local re='^[[:space:]]*(tap|brew|cask)[[:space:]]+"([A-Za-z0-9][A-Za-z0-9@._+-]*(/[A-Za-z0-9][A-Za-z0-9@._+-]*){0,2})"[[:space:]]*(,.*)?$'
+    local mas_re='^[[:space:]]*mas[[:space:]]+"[^"]*"[[:space:]]*,[[:space:]]*id:[[:space:]]*([0-9]+)[[:space:]]*$'
+    local mas_sudo=""
+    tapped="$(brew tap 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    if command -v mas >/dev/null 2>&1 && mas help install 2>&1 | grep -q 'Requires root'; then
+        mas_sudo="sudo"
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
+            continue
+        elif [[ "$line" =~ $re ]]; then
+            kind="${BASH_REMATCH[1]}"
+            token="${BASH_REMATCH[2]}"
+            [[ "$kind" == "tap" ]] && continue
+            if [[ "$token" == */*/* ]]; then
+                tap="$(printf '%s' "${token%/*}" | tr '[:upper:]' '[:lower:]')"
+                case "$tap" in
+                    homebrew/core|homebrew/cask) ;;
+                    *)
+                        if ! printf '%s
+' "$tapped" | grep -qxF -- "$tap"; then
+                            untrusted=$((untrusted + 1))
+                            log_warn "Skipped $token: its tap ${token%/*} is not tapped, and tapping runs its code."
+                            log_warn "  To install it deliberately: brew tap ${token%/*} && brew install $token"
+                            continue
+                        fi
+                        ;;
+                esac
+            fi
+            case "$kind" in
+                brew) brew install --formula -- "$token" || failed=$((failed + 1)) ;;
+                cask) brew install --cask -- "$token" || failed=$((failed + 1)) ;;
+            esac
+        elif [[ "$line" =~ $mas_re ]]; then
+            if command -v mas >/dev/null 2>&1; then
+                $mas_sudo mas install "${BASH_REMATCH[1]}" || failed=$((failed + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        else
+            rejected=$((rejected + 1))
+        fi
+    done < "$file"
+    if [[ "$rejected" -gt 0 ]]; then
+        log_warn "Ignored $rejected Brewfile line(s) that are not a plain brew, cask or mas entry."
+    fi
+    if [[ "$untrusted" -gt 0 ]]; then
+        log_warn "$untrusted package(s) from untapped third-party taps were skipped; see above."
+    fi
+    if [[ "$failed" -gt 0 ]]; then
+        log_warn "$failed package(s) did not install; continuing with remaining setup"
+    fi
+    return 0
+}
+"#;
+
 fn generate_macos_package_script(
     packages: &PackagesConfig,
     target_os: &str,
@@ -344,6 +420,7 @@ if ! command -v brew >/dev/null 2>&1; then
     exit 1
 fi
 
+{safe_brewfile_fn}
 # Prefer Brewfile from the compiled repo; fall back to config package lists
 if [[ -f "$COMPILED_DIR/Brewfile" ]]; then
     log_info "Found Brewfile at $COMPILED_DIR/Brewfile"
@@ -357,7 +434,7 @@ if [[ -f "$COMPILED_DIR/Brewfile" ]]; then
     fi
 
     log_info "Installing packages from Brewfile..."
-    brew bundle --file="$COMPILED_DIR/Brewfile" || log_warn "brew bundle reported errors; continuing with remaining setup"
+    install_from_brewfile "$COMPILED_DIR/Brewfile"
 else
     log_info "No Brewfile found; falling back to configured package lists"
     log_info "Updating package lists..."
@@ -432,7 +509,8 @@ fi
 log_info "Package installation complete"
 "#,
         target_os = target_os,
-        package_lines = package_lines
+        package_lines = package_lines,
+        safe_brewfile_fn = SAFE_BREWFILE_FN,
     );
 
     Ok(InstallScript {
@@ -789,4 +867,144 @@ pub fn run_scripts(scripts: &[InstallScript]) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod brewfile_safety_tests {
+    use super::SAFE_BREWFILE_FN;
+
+    /// Runs `install_from_brewfile` against `brewfile` with fake `brew` and
+    /// `mas` on PATH that record their argv. Returns the recorded calls and
+    /// whether the canary file exists afterwards.
+    fn run(brewfile: &str) -> ((Vec<String>, String), bool) {
+        run_full(brewfile)
+    }
+
+    fn run_full(brewfile: &str) -> ((Vec<String>, String), bool) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        for tool in ["brew", "mas"] {
+            let path = bin.join(tool);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/bash\n\
+                     [[ \"$1\" == tap && $# -eq 1 ]] && {{ echo Trusted/Tools; exit 0; }}\n\
+                     [[ \"$1\" == help ]] && exit 0\n\
+                     printf '{tool}' >> \"{log}\"\nprintf ' %s' \"$@\" >> \"{log}\"\necho >> \"{log}\"\n",
+                    log = log.display()
+                ),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let canary = dir.path().join("pwned");
+        let brewfile = brewfile.replace("CANARY", &canary.display().to_string());
+        let file = dir.path().join("Brewfile");
+        std::fs::write(&file, brewfile).unwrap();
+
+        let script = format!(
+            "set -euo pipefail\nlog_warn() {{ echo \"$1\" >&2; }}\n{SAFE_BREWFILE_FN}\ninstall_from_brewfile \"$1\"\n"
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .arg("bash")
+            .arg(&file)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let calls = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        (
+            (calls, String::from_utf8_lossy(&out.stderr).into_owned()),
+            canary.exists(),
+        )
+    }
+
+    #[test]
+    fn ruby_in_a_pulled_brewfile_never_runs_and_never_reaches_brew() {
+        let (calls, pwned) = run(concat!(
+            "# a comment\n",
+            "system \"touch CANARY\"\n",
+            "`touch CANARY`\n",
+            "brew \"git#{`touch CANARY`}\"\n",
+            "brew \"jq\", args: [system(\"touch CANARY\")]\n",
+            "cask \"--force\"\n",
+            "tap \"someone/tools\"\n",
+            "cask \"firefox\"\n",
+            "mas \"Xcode\", id: 497799835\n",
+            "mas \"Evil\", id: 1; touch CANARY\n",
+        ));
+        assert!(!pwned, "a Brewfile line executed");
+        assert_eq!(
+            calls.0,
+            vec![
+                "brew install --formula -- jq",
+                "brew install --cask -- firefox",
+                "mas install 497799835",
+            ]
+        );
+        assert!(calls.0.iter().all(|c| !c.contains("bundle")));
+    }
+
+    #[test]
+    fn a_package_from_an_untapped_third_party_tap_is_skipped_with_instructions() {
+        // `brew install evil/tools/x` would tap evil/tools on demand and run
+        // its Ruby without asking.
+        let ((calls, stderr), pwned) = run_full(concat!(
+            "brew \"evil/tools/x\"\n",
+            "cask \"Evil/Tools/y\"\n",
+            "brew \"trusted/tools/z\"\n",
+            "brew \"homebrew/core/jq\"\n",
+        ));
+        assert!(!pwned);
+        assert_eq!(
+            calls,
+            vec![
+                "brew install --formula -- trusted/tools/z",
+                "brew install --formula -- homebrew/core/jq",
+            ]
+        );
+        assert!(stderr.contains("Skipped evil/tools/x"), "{stderr}");
+        assert!(
+            stderr.contains("brew tap evil/tools && brew install evil/tools/x"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("Skipped Evil/Tools/y"), "{stderr}");
+        assert!(stderr.contains("2 package(s) from untapped third-party taps"));
+    }
+
+    #[test]
+    fn the_generated_package_script_no_longer_runs_brew_bundle() {
+        let script =
+            super::generate_macos_package_script(&crate::cfg::PackagesConfig::default(), "macos")
+                .unwrap()
+                .content;
+        assert!(!script.contains("brew bundle"), "{script}");
+        assert!(script.contains("install_from_brewfile \"$COMPILED_DIR/Brewfile\""));
+        let out = std::process::Command::new("bash")
+            .args(["-n", "-c", &script])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }

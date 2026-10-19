@@ -112,6 +112,11 @@ pub struct DotfilesConfig {
 pub struct GitHubConfig {
     pub username: Option<String>,
     pub repo_name: Option<String>,
+    /// Full git URL of the repository, set by `dotdipper init <source>`.
+    /// Takes precedence over `username`/`repo_name` when present, so a
+    /// repository on any host can be followed. Re-validated on every use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
     /// Optional git branch override. When unset, `default` uses `main` and
     /// other profiles use `dotdipper/<name>`. Independent of `repo_name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +404,7 @@ impl Default for GitHubConfig {
         GitHubConfig {
             username: None,
             repo_name: None,
+            url: None,
             branch: None,
             public_repo_name: None,
             private: default_private(),
@@ -1236,6 +1242,10 @@ pub fn set_config_value(config_path: &Path, key: &str, value: &str) -> Result<Pa
 fn parse_config_value(key: &str, value: &str) -> Result<toml::Value> {
     let parsed = match key {
         "github.username" | "github.repo_name" => toml::Value::String(value.to_string()),
+        "github.url" => {
+            let source = crate::source::validate_url(value)?;
+            toml::Value::String(source.url)
+        }
         "github.branch" => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
@@ -1259,7 +1269,7 @@ fn parse_config_value(key: &str, value: &str) -> Result<toml::Value> {
         ),
         _ => anyhow::bail!(
             "Unknown config key '{}'. Supported keys:\n  \
-             github.username, github.repo_name, github.branch, github.private,\n  \
+             github.username, github.repo_name, github.url, github.branch, github.private,\n  \
              general.default_mode, general.backup",
             key
         ),

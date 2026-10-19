@@ -30,6 +30,36 @@ Dotdipper is a comprehensive dotfiles manager that helps you synchronize, manage
 
 ## 🚀 Quick Start
 
+### One Command: Install and Set Up From a Repository
+
+```bash
+# Install the prebuilt binary (checksum-verified, no sudo, ~/.local/bin)
+curl -fsSL https://raw.githubusercontent.com/psyysp/dotdipper/main/install.sh | sh
+
+# ...or install and set up from any public dotfiles repository in one go
+curl -fsSL https://raw.githubusercontent.com/psyysp/dotdipper/main/install.sh | sh -s -- owner/repo --apply
+```
+
+With dotdipper already installed, the same thing is one command:
+
+```bash
+dotdipper init owner/repo --apply             # GitHub, anonymous HTTPS
+dotdipper init https://gitlab.com/owner/repo  # any host
+dotdipper init git@github.com:owner/repo.git  # SSH, for a private repository
+dotdipper init owner/repo --ref 1a2b3c4 --apply   # exactly the commit you reviewed
+```
+
+`init <source>` clones the repository, shows every file it would write into `$HOME`, and asks before writing. It works with dotdipper repositories and with plain dotfiles repositories laid out like `$HOME`; it skips `README.md`, `LICENSE`, `install.sh` and CI files. It recognises GNU Stow and chezmoi layouts and does not apply them, because those layouts do not map onto `$HOME` file for file.
+
+**Safety when the repository is not yours:**
+
+- **Nothing in the repository is ever executed.** If it ships an `install.sh`, dotdipper names it and leaves it alone.
+- **The preview flags risky files.** These are files that run code or grant access: shell startup files, `~/.ssh/`, login agents, git config and hooks, cloud credentials, and programs on `PATH`. When any are present, the confirmation defaults to *no*.
+- **Applying needs a confirmation.** Without a terminal to confirm on, applying requires an explicit `--yes`.
+- **Existing files are backed up** with a `.bak.<timestamp>` suffix.
+- **Files are copied, not symlinked**, so a later `pull` cannot change live files without an `apply`.
+- **Only `https://` and SSH sources are accepted.** `http://`, `file://`, local paths, git's `ext::` helper, credentials embedded in URLs and option-like arguments are refused before git runs.
+
 ### Installation
 
 #### Homebrew (macOS and Linux) - Recommended
@@ -340,7 +370,7 @@ Because the overlay wins on load, a key defined in both files makes the global c
 
 **Auditing a machine against the repository:** `scripts/audit-apps.sh` compares the captured inventory against what is actually installed, separating casks brew manages, casks present but installed by hand, and casks genuinely absent — the distinction matters, because only the last is a problem. It also reports App Store titles that went unchecked because `mas` is missing or signed out, and application bundles that are symlinks to nowhere.
 
-**Bootstrapping a new machine:** `scripts/bootstrap.sh --user <gh-user> --repo <repo> [--https]` takes a bare Mac from nothing to a working environment — Homebrew, dotdipper, the dotfiles, the tools and the macOS preferences. Add `--https` for a public mirror on a machine with no GitHub sign-in. `--no-apps` and `--no-macos` skip those stages. Re-running is safe.
+**Bootstrapping a new machine:** `scripts/bootstrap.sh <owner/repo or URL>` (or the older `--user <gh-user> --repo <repo> [--https]`) takes a bare Mac from nothing to a working environment — Homebrew, dotdipper, the dotfiles, the tools and the macOS preferences. Add `--https` for a public mirror on a machine with no GitHub sign-in. The tools stage runs `dotdipper install apps`, so every question is asked up front and the installs then run unattended. `--no-apps` and `--no-macos` skip those stages. Re-running is safe.
 
 **Consuming a public mirror:** `dotdipper pull --https` clones over anonymous HTTPS, so a machine with no GitHub sign-in and no SSH key can use a published mirror. The mirror withholds `manifest.lock`; `pull` rebuilds it by hashing the cloned tree.
 
@@ -776,7 +806,34 @@ dotdipper install [--dry-run]       # Install packages
 dotdipper install --target-os ubuntu  # Target specific OS
 dotdipper install script              # Print setup_dotfiles.sh (manifest / tracked files)
 dotdipper install script -o setup.sh  # Export to a file (creates parent dirs; marks executable)
+
+# Install the captured Homebrew packages and App Store titles (macOS)
+dotdipper install apps                # Look up, choose, confirm once, install unattended
+dotdipper install apps --dry-run      # Resolve and print the plan; install nothing
+dotdipper install apps --all          # No picker: the default selection
+dotdipper install apps --only jq,zoom # Exactly these (names or App Store ids)
+dotdipper install apps --skip zoom    # Leave these out for this run
+dotdipper install apps --reselect     # Offer items you deselected on an earlier run
+dotdipper install apps --yes          # No confirmation; without a terminal, the default selection
+dotdipper install apps-script [-o PATH] [--shareable]  # A standalone script, for sharing
+dotdipper init owner/repo --apply --install            # Apply dotfiles, then install apps
 ```
+
+#### Installing apps
+
+`dotdipper install apps` reads the store's `Brewfile` and `apps_manifest.toml` and works in three phases.
+
+1. **Resolve.** Every entry is looked up with `brew info --json=v2`, one call for formulae and one for casks. Items that are already installed are listed in the summary and not offered. Each remaining item shows its description, its homepage domain, and any of these flags:
+   - `third-party tap`: the item comes from a tap other than `homebrew/core` or `homebrew/cask`, and installing it runs that tap's Ruby code. Taps that are not already present are not looked up, because looking them up would tap them.
+   - `not found`, `deprecated`, `disabled`: Homebrew no longer offers the item, or plans to stop offering it.
+   - `unverified download`: the cask declares `sha256 :no_check`, so the download is not checked against a checksum.
+   - `needs password`: the cask runs Apple's installer (a `pkg` or `installer` artifact), or `mas` needs root to install.
+2. **Decide.** A single checklist is grouped as CLI tools, Apps and App Store. Type to filter, press space to toggle, press the right arrow to check every row the filter shows (this replaces the current selection), and press the left arrow to clear all checks. Everything starts checked except third-party, not found, deprecated and disabled items. Unchecked items are saved in `~/.config/dotdipper/apps-skip.toml` and are not offered again on this machine; `--reselect` offers them again. A review then shows how many items will install, how many need a password, the App Store sign-in status, and the flagged items. You confirm once.
+3. **Install.** If any selected item needs a password, `sudo -v` runs once and the authorization is kept alive until the run ends. `brew` itself never runs under `sudo`. Taps are added only for the selected items that need them. Failures are collected rather than fatal, and the final report lists what was installed, skipped, already present and failed, with the command that retries each failure.
+
+Without a terminal, the command refuses to guess: pass `--all`, `--only` or `--yes`. `mas` 7 no longer reports App Store sign-in, so with that version the review asks you to sign in before you continue instead of checking.
+
+**The Brewfile is never evaluated.** A Brewfile is Ruby, and `brew bundle` runs it, so a pulled Brewfile could execute code. dotdipper extracts `brew`, `cask` and `mas` entries with a pattern match, accepts only plain Homebrew names, and passes each one to `brew install` as an argument after `--`. `dotdipper apps install` and the generated `install` script follow the same rule. Because `brew install owner/tap/name` adds `owner/tap` without asking, a package from a third-party tap is installed only when you choose it by its full name or when its tap is already present. The shareable `install-apps.sh` adds third-party taps only when `DOTDIPPER_ALLOW_TAPS=1` is set.
 
 ---
 
@@ -971,6 +1028,20 @@ Contributions are welcome! Please:
 3. Write tests for new features
 4. Run `./scripts/check.sh` — formatting, clippy (with and without default features) and the tests, in the order CI runs them
 5. Submit a pull request
+
+### Trying a Change Locally
+
+`scripts/dev-install.sh` rebuilds the binary from your checkout and makes it the `dotdipper` on `PATH`:
+
+```bash
+scripts/dev-install.sh            # build once (release profile) and install
+scripts/dev-install.sh --watch    # rebuild and reinstall whenever src/ changes
+scripts/dev-install.sh --check    # run ./scripts/check.sh first; install only if it passes
+scripts/dev-install.sh --debug    # faster builds
+scripts/dev-install.sh --restore  # remove the dev build and return to Homebrew's
+```
+
+It installs to `~/.cargo/bin`. When Homebrew's copy would shadow the dev build, the script unlinks the formula; `--restore` links it back. Rebuilds reuse `target/`, so they are incremental. A failed build leaves the installed binary unchanged.
 
 ---
 

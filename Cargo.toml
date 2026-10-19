@@ -16,6 +16,8 @@ readme = "README.md"
 clap = { version = "4.5", features = ["derive", "env"] }
 indicatif = "0.18"
 dialoguer = "0.11"
+# Filterable multi-select for the app picker (see src/install/apps_install.rs).
+inquire = { version = "=0.9.4", default-features = false, features = ["crossterm"] }
 colored = "2.1"
 console = "0.15"
 
@@ -79,7 +81,7 @@ which = "6.0"
 
 # Cloud/remote storage (optional features)
 # rustls (not native-tls/openssl) so Linux release binaries cross-compile
-rust-s3 = { version = "0.37", optional = true, default-features = false, features = ["tokio-rustls-tls", "fail-on-err", "tags"] }
+rust-s3 = { version = "0.38", optional = true, default-features = false, features = ["tokio-rustls-tls", "fail-on-err", "tags"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
 async-trait = "0.1.89"
 

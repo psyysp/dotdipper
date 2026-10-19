@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use regex::Regex;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use super::resolve::strip_trailing_version;
@@ -65,21 +65,9 @@ pub fn list_available_casks() -> Result<Vec<String>> {
     Ok(parse_cask_list(&String::from_utf8_lossy(&output.stdout)))
 }
 
-/// Restore packages from a Brewfile, streaming brew output live.
-pub fn bundle_install(brewfile: &Path) -> Result<()> {
-    let brew = find_brew()?;
-    let file_arg = format!("--file={}", brewfile.display());
-    let status = Command::new(&brew)
-        .args(["bundle", &file_arg])
-        .status()
-        .context("Failed to run `brew bundle`")?;
-
-    if !status.success() {
-        anyhow::bail!("`brew bundle` failed with exit code {:?}", status.code());
-    }
-
-    Ok(())
-}
+// There is deliberately no `brew bundle` wrapper here. A Brewfile is Ruby,
+// and `brew bundle` evaluates it; installing from a pulled Brewfile goes
+// through `install::apps_install`, which parses it and never evaluates it.
 
 pub fn find_brew() -> Result<PathBuf> {
     if let Ok(path) = which::which("brew") {

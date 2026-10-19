@@ -1,0 +1,239 @@
+{
+  "formulae": [],
+  "casks": [
+    {
+      "token": "firefox",
+      "full_token": "firefox",
+      "tap": "homebrew/cask",
+      "name": [
+        "Mozilla Firefox"
+      ],
+      "desc": "Web browser",
+      "homepage": "https://www.mozilla.org/firefox/",
+      "url": "https://download-installer.cdn.mozilla.net/pub/firefox/releases/156.0/mac/en-US/Firefox%20156.0.dmg",
+      "version": "156.0",
+      "sha256": "fecc46103039ca4a77ecb2b2ef7b03892f922e13db0782f8570c512b2e458515",
+      "artifacts": [
+        {
+          "uninstall": [
+            {
+              "quit": "org.mozilla.firefox"
+            }
+          ]
+        },
+        {
+          "app": [
+            "Firefox.app"
+          ],
+          "target": "/Applications/Firefox.app"
+        },
+        {
+          "command_wrapper": [
+            "firefox",
+            {
+              "executable": "/Applications/Firefox.app/Contents/MacOS/firefox"
+            }
+          ],
+          "target": "/opt/homebrew/bin/firefox"
+        },
+        {
+          "zap": [
+            {
+              "trash": [
+                "/Library/Logs/DiagnosticReports/firefox_*",
+                "~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/org.mozilla.firefox.sfl*",
+                "~/Library/Application Support/CrashReporter/firefox_*",
+                "~/Library/Application Support/Firefox",
+                "~/Library/Caches/Firefox",
+                "~/Library/Caches/Mozilla/updates/Applications/Firefox",
+                "~/Library/Caches/org.mozilla.crashreporter",
+                "~/Library/Caches/org.mozilla.firefox",
+                "~/Library/Preferences/org.mozilla.crashreporter.plist",
+                "~/Library/Preferences/org.mozilla.firefox.plist",
+                "~/Library/Saved Application State/org.mozilla.firefox.savedState",
+                "~/Library/WebKit/org.mozilla.firefox"
+              ],
+              "rmdir": [
+                "~/Library/Application Support/Mozilla",
+                "~/Library/Caches/Mozilla",
+                "~/Library/Caches/Mozilla/updates",
+                "~/Library/Caches/Mozilla/updates/Applications"
+              ]
+            }
+          ]
+        }
+      ],
+      "deprecated": false,
+      "deprecation_date": null,
+      "deprecation_reason": null,
+      "disabled": false,
+      "disable_date": null,
+      "disable_reason": null
+    },
+    {
+      "token": "zoom",
+      "full_token": "zoom",
+      "tap": "homebrew/cask",
+      "name": [
+        "Zoom"
+      ],
+      "desc": "Video communication and virtual meeting platform",
+      "homepage": "https://www.zoom.us/",
+      "url": "https://cdn.zoom.us/prod/7.1.5.84650/arm64/zoomusInstallerFull.pkg",
+      "version": "7.1.5.84650",
+      "sha256": "49cf70af674176f3708b9d3b519f585424c442ccf744fd9659327967971c8279",
+      "artifacts": [
+        {
+          "uninstall": [
+            {
+              "launchctl": [
+                "us.zoom.updater",
+                "us.zoom.updater.login.check",
+                "us.zoom.ZoomDaemon"
+              ],
+              "signal": [
+                "KILL",
+                "us.zoom.xos"
+              ],
+              "pkgutil": "us.zoom.pkg.videomeeting",
+              "delete": [
+                "/Applications/zoom.us.app",
+                "/Library/Internet Plug-Ins/ZoomUsPlugIn.plugin",
+                "/Library/Logs/DiagnosticReports/zoom.us*",
+                "/Library/PrivilegedHelperTools/us.zoom.ZoomDaemon"
+              ]
+            }
+          ]
+        },
+        {
+          "pkg": [
+            "zoomusInstallerFull.pkg"
+          ]
+        },
+        {
+          "postflight_steps": [
+            {
+              "steps": [
+                {
+                  "name": "/Applications/zoom.us.app",
+                  "match": "full",
+                  "attempts": 3,
+                  "notices": [
+                    "The Zoom package postinstall script launches the Zoom app",
+                    "Attempting to close zoom.us.app to avoid unwanted user intervention"
+                  ],
+                  "failure_message": "Unable to forcibly close zoom.us.app",
+                  "type": "terminate_process"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "zap": [
+            {
+              "trash": [
+                "~/.zoomus",
+                "~/Desktop/Zoom",
+                "~/Documents/Zoom",
+                "~/Library/Application Scripts/*.ZoomClient3rd",
+                "~/Library/Application Support/CloudDocs/session/containers/iCloud.us.zoom.videomeetings",
+                "~/Library/Application Support/CloudDocs/session/containers/iCloud.us.zoom.videomeetings.plist",
+                "~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/us.zoom*.sfl*",
+                "~/Library/Application Support/CrashReporter/zoom.us*",
+                "~/Library/Application Support/zoom.us",
+                "~/Library/Application Support/ZoomUpdater",
+                "~/Library/Caches/us.zoom.xos",
+                "~/Library/Cookies/us.zoom.xos.binarycookies",
+                "~/Library/Group Containers/*.ZoomClient3rd",
+                "~/Library/HTTPStorages/us.zoom.xos",
+                "~/Library/HTTPStorages/us.zoom.xos.binarycookies",
+                "~/Library/Internet Plug-Ins/ZoomUsPlugIn.plugin",
+                "~/Library/Logs/zoom.us",
+                "~/Library/Logs/zoominstall.log",
+                "~/Library/Logs/ZoomPhone",
+                "~/Library/Preferences/us.zoom.*.plist",
+                "~/Library/Preferences/ZoomChat.plist",
+                "~/Library/Saved Application State/us.zoom.xos.savedState",
+                "~/Library/WebKit/us.zoom.xos"
+              ]
+            }
+          ]
+        }
+      ],
+      "deprecated": false,
+      "deprecation_date": null,
+      "deprecation_reason": null,
+      "disabled": false,
+      "disable_date": null,
+      "disable_reason": null
+    },
+    {
+      "token": "google-chrome",
+      "full_token": "google-chrome",
+      "tap": "homebrew/cask",
+      "name": [
+        "Google Chrome"
+      ],
+      "desc": "Web browser",
+      "homepage": "https://www.google.com/chrome/",
+      "url": "https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg",
+      "version": "153.0.8010.53",
+      "sha256": "no_check",
+      "artifacts": [
+        {
+          "app": [
+            "Google Chrome.app"
+          ],
+          "target": "/Applications/Google Chrome.app"
+        },
+        {
+          "zap": [
+            {
+              "launchctl": [
+                "com.google.keystone.agent",
+                "com.google.keystone.daemon"
+              ],
+              "trash": [
+                "/Library/Caches/com.google.SoftwareUpdate.*",
+                "/Library/Google/Google Chrome Brand.plist",
+                "/Library/Google/GoogleSoftwareUpdate",
+                "~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.google.chrome.app.*.sfl*",
+                "~/Library/Application Support/com.apple.sharedfilelist/com.apple.LSSharedFileList.ApplicationRecentDocuments/com.google.chrome.sfl*",
+                "~/Library/Application Support/Google/Chrome",
+                "~/Library/Caches/com.google.Chrome",
+                "~/Library/Caches/com.google.Chrome.helper.*",
+                "~/Library/Caches/com.google.Keystone",
+                "~/Library/Caches/com.google.Keystone.Agent",
+                "~/Library/Caches/com.google.SoftwareUpdate",
+                "~/Library/Caches/Google/Chrome",
+                "~/Library/Google/Google Chrome Brand.plist",
+                "~/Library/Google/GoogleSoftwareUpdate",
+                "~/Library/LaunchAgents/com.google.keystone.agent.plist",
+                "~/Library/LaunchAgents/com.google.keystone.xpcservice.plist",
+                "~/Library/Logs/GoogleSoftwareUpdateAgent.log",
+                "~/Library/Preferences/com.google.Chrome.plist",
+                "~/Library/Preferences/com.google.Keystone.Agent.plist",
+                "~/Library/Saved Application State/com.google.Chrome.app.*.savedState",
+                "~/Library/Saved Application State/com.google.Chrome.savedState",
+                "~/Library/WebKit/com.google.Chrome"
+              ],
+              "rmdir": [
+                "/Library/Google",
+                "~/Library/Application Support/Google",
+                "~/Library/Caches/Google",
+                "~/Library/Google"
+              ]
+            }
+          ]
+        }
+      ],
+      "deprecated": false,
+      "deprecation_date": null,
+      "deprecation_reason": null,
+      "disabled": false,
+      "disable_date": null,
+      "disable_reason": null
+    }
+  ]
+}

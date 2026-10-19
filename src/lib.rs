@@ -25,5 +25,6 @@ pub mod repo;
 pub mod scan;
 pub mod secrets;
 pub mod snapshots;
+pub mod source;
 pub mod ui;
 pub mod vcs;

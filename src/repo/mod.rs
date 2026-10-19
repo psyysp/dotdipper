@@ -1,4 +1,5 @@
 pub mod apply;
+pub mod layout;
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -264,7 +265,9 @@ pub fn sync_manifest_from_compiled() -> Result<Manifest> {
     let compiled_manifest = compiled.join("manifest.lock");
     let base = get_manifest_path()?;
 
-    if compiled_manifest.exists() {
+    // A manifest this machine generated describes the previous pull, not
+    // this one; trusting it would hide every file the remote added since.
+    if compiled_manifest.exists() && !manifest_is_generated(&compiled) {
         let manifest = Manifest::load(&compiled_manifest)?;
         if let Some(parent) = base.parent() {
             fs::create_dir_all(parent)?;
@@ -291,6 +294,7 @@ pub fn sync_manifest_from_compiled() -> Result<Manifest> {
 pub fn rebuild_manifest_from_compiled() -> Result<Manifest> {
     let compiled = get_compiled_path()?;
     let mut manifest = Manifest::new();
+    let layout = store_layout(&compiled);
 
     if compiled.exists() {
         for entry in walkdir::WalkDir::new(&compiled)
@@ -303,7 +307,7 @@ pub fn rebuild_manifest_from_compiled() -> Result<Manifest> {
             let Ok(rel_path) = entry.path().strip_prefix(&compiled) else {
                 continue;
             };
-            if is_store_metadata(rel_path) {
+            if is_store_metadata(rel_path) || !layout::belongs_in_home(layout, rel_path) {
                 continue;
             }
 
@@ -320,6 +324,27 @@ pub fn rebuild_manifest_from_compiled() -> Result<Manifest> {
     manifest.save(&base)?;
     save_manifest_into_compiled(&manifest)?;
     Ok(manifest)
+}
+
+/// The layout of the cloned store, ignoring a `manifest.lock` this machine
+/// generated: that file would otherwise mark any plain repository as
+/// dotdipper's after its first pull.
+pub fn store_layout(compiled: &Path) -> layout::Layout {
+    layout::detect_with(compiled, manifest_is_generated(compiled))
+}
+
+/// Whether `compiled/manifest.lock` was rebuilt here rather than pulled:
+/// the store is a clone and git does not track the file.
+fn manifest_is_generated(compiled: &Path) -> bool {
+    if !compiled.join(".git").is_dir() {
+        return false;
+    }
+    !std::process::Command::new("git")
+        .args(["ls-files", "--error-unmatch", "manifest.lock"])
+        .current_dir(compiled)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn save_manifest_into_compiled(manifest: &Manifest) -> Result<()> {

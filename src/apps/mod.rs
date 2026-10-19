@@ -254,28 +254,21 @@ pub fn capture(config: &Config) -> Result<CaptureResult> {
     })
 }
 
-/// Restore Homebrew packages from the compiled Brewfile, then report unmanaged apps.
+/// Restore Homebrew packages and App Store titles from the compiled store,
+/// then report unmanaged apps.
+///
+/// This used to run `brew bundle --file=<store>/Brewfile`. A Brewfile is
+/// Ruby and `brew bundle` evaluates it, so a pulled Brewfile could run
+/// arbitrary code. It now goes through `install apps`, which only parses
+/// the Brewfile and installs validated names as argv.
 pub fn install(_config: &Config) -> Result<()> {
-    let brewfile_path = compiled_brewfile()?;
-    if !brewfile_path.exists() {
-        anyhow::bail!(
-            "No Brewfile found at {}. Run 'dotdipper apps capture' first.",
-            brewfile_path.display()
-        );
-    }
-
-    ui::info(&format!(
-        "Running brew bundle --file={}",
-        brewfile_path.display()
-    ));
-    brew::bundle_install(&brewfile_path)?;
-    ui::success("Homebrew bundle completed");
-
+    let store = crate::paths::compiled_dir()?;
+    crate::install::apps_install::run(&store, &crate::install::apps_install::Options::default())?;
     report_unmanaged_apps()?;
     Ok(())
 }
 
-/// Print what `brew bundle` would install without running it.
+/// Print what the Brewfile lists without installing anything.
 pub fn dry_run_install() -> Result<()> {
     let brewfile_path = compiled_brewfile()?;
     if !brewfile_path.exists() {

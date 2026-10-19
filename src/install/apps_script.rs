@@ -118,7 +118,7 @@ pub struct Inventory<'a> {
 }
 
 /// One installable item, resolved from the inventory.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub taps: Vec<String>,
     pub formulae: Vec<String>,
@@ -128,6 +128,32 @@ pub struct Plan {
     pub mas: Vec<u64>,
     /// Entries dropped because they sit under an omitted namespace.
     pub omitted: usize,
+    /// Entries dropped because they are not a plain Homebrew name. See
+    /// [`is_safe_token`].
+    pub rejected: Vec<String>,
+}
+
+/// True when `token` is shaped like a Homebrew name and nothing else:
+/// `name`, `owner/tap`, or `owner/tap/name`, built from letters, digits and
+/// `@ . _ + -`, and starting with a letter or digit.
+///
+/// A Brewfile is Ruby. `brew bundle` evaluates it, so a pulled Brewfile
+/// carrying `system "..."`, or a name holding `#{...}` interpolation, runs
+/// code on the machine that installs it. dotdipper therefore never hands a
+/// pulled Brewfile to `brew bundle`; it extracts names with a regex and
+/// passes them to `brew install` as argv. This check is the second half of
+/// that: the regex extraction would happily capture `foo#{`id`}`, and a name
+/// beginning with `-` would be read as an option. Anything this function
+/// refuses never reaches brew.
+pub fn is_safe_token(token: &str) -> bool {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"^[A-Za-z0-9@._+-]+(/[A-Za-z0-9@._+-]+){0,2}$").expect("valid token regex")
+    });
+    token
+        .split('/')
+        .all(|segment| segment.starts_with(|c: char| c.is_ascii_alphanumeric()))
+        && re.is_match(token)
 }
 
 /// Resolves the inventory into a deduplicated, sorted plan.
@@ -140,11 +166,16 @@ pub struct Plan {
 pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
     let mut plan = Plan::default();
     let mut omitted = 0usize;
+    let mut rejected: Vec<String> = Vec::new();
 
     {
         // Applies to taps (`owner/tap`) and to fully-qualified packages
         // (`owner/tap/formula`) alike: in both, the first segment is the owner.
         let mut keep = |name: &str| {
+            if !is_safe_token(name) {
+                rejected.push(name.to_string());
+                return false;
+            }
             let namespace = name.split('/').next().unwrap_or_default();
             let owned = name.contains('/')
                 && omit_namespaces
@@ -179,6 +210,8 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
     }
 
     plan.omitted = omitted;
+    dedup_sorted(&mut rejected);
+    plan.rejected = rejected;
 
     dedup_sorted(&mut plan.taps);
     dedup_sorted(&mut plan.formulae);
@@ -211,6 +244,24 @@ pub fn render(plan: &Plan) -> String {
                 "entries"
             },
             if plan.omitted == 1 { "was" } else { "were" },
+        ));
+    }
+
+    if !plan.rejected.is_empty() {
+        // Count only: the names themselves are what was unsafe to emit.
+        s.push_str(&format!(
+            "# {} Brewfile or manifest {} not a plain Homebrew name and {} left out.\n\n",
+            plan.rejected.len(),
+            if plan.rejected.len() == 1 {
+                "entry was"
+            } else {
+                "entries were"
+            },
+            if plan.rejected.len() == 1 {
+                "was"
+            } else {
+                "were"
+            },
         ));
     }
 
@@ -291,40 +342,97 @@ const BODY: &str = r#"if ! command -v brew >/dev/null 2>&1; then
 fi
 command -v brew >/dev/null 2>&1 || die "Homebrew is installed but not on PATH."
 
+# ---------------------------------------------------------------------------
+# Taps. A third-party tap is someone's git repository of Ruby, evaluated with
+# your privileges whenever anything from it installs, and `brew install
+# owner/tap/name` taps on demand without asking. So third-party taps are
+# opt-in: set DOTDIPPER_ALLOW_TAPS=1 to tap them, and otherwise every package
+# under a tap that is not already present is skipped and listed.
+# ---------------------------------------------------------------------------
+SKIPPED=()
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+is_official_tap() {
+  case "$(lower "$1")" in homebrew/core|homebrew/cask) return 0 ;; esac
+  return 1
+}
+TAPPED="$(brew tap 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+is_tapped() { printf '%s\n' "$TAPPED" | grep -qxF -- "$(lower "$1")"; }
+
+TAPS_HELD=0
 for tap in ${TAPS[@]+"${TAPS[@]}"}; do
-  log "Tapping $tap"
-  brew tap "$tap" || FAILED+=("tap $tap")
+  if is_official_tap "$tap" || is_tapped "$tap"; then
+    continue
+  fi
+  if [[ "${DOTDIPPER_ALLOW_TAPS:-0}" == "1" ]]; then
+    log "Tapping $tap"
+    brew tap -- "$tap" || FAILED+=("tap $tap")
+  else
+    TAPS_HELD=1
+    warn "Not tapping $tap (third-party code)."
+  fi
 done
+if [[ "$TAPS_HELD" -eq 1 ]]; then
+  warn "Third-party taps were not added. Read them, then re-run with"
+  warn "DOTDIPPER_ALLOW_TAPS=1 to tap them and install what they provide."
+fi
+TAPPED="$(brew tap 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+
+# True when installing the name cannot tap anything new.
+installable() {
+  [[ "$1" == */*/* ]] || return 0
+  is_official_tap "${1%/*}" || is_tapped "${1%/*}"
+}
 
 for formula in ${FORMULAE[@]+"${FORMULAE[@]}"}; do
-  if brew list --formula "$formula" >/dev/null 2>&1; then
+  if ! installable "$formula"; then
+    SKIPPED+=("brew $formula (tap ${formula%/*} not tapped)")
+  elif brew list --formula -- "$formula" >/dev/null 2>&1; then
     log "Already installed: $formula"
   else
     log "Installing $formula"
-    brew install "$formula" || FAILED+=("brew $formula")
+    brew install --formula -- "$formula" || FAILED+=("brew $formula")
   fi
 done
 
 for cask in ${CASKS[@]+"${CASKS[@]}"}; do
-  if brew list --cask "$cask" >/dev/null 2>&1; then
+  if ! installable "$cask"; then
+    SKIPPED+=("cask $cask (tap ${cask%/*} not tapped)")
+  elif brew list --cask -- "$cask" >/dev/null 2>&1; then
     log "Already installed: $cask"
   else
     log "Installing cask $cask"
-    brew install --cask "$cask" || FAILED+=("cask $cask")
+    brew install --cask -- "$cask" || FAILED+=("cask $cask")
   fi
 done
 
+# ---------------------------------------------------------------------------
+# App Store. mas 7 removed `mas account`, so sign-in can only be ruled out
+# when an older mas says so; otherwise each install is attempted and a
+# failure is collected like any other. mas 2 and later install as root,
+# which `mas help install` states.
+# ---------------------------------------------------------------------------
 if [[ ${#MAS_IDS[@]} -gt 0 ]]; then
   if ! command -v mas >/dev/null 2>&1; then
     warn "mas is not installed; skipping Mac App Store titles."
-  elif ! mas account >/dev/null 2>&1; then
+  elif mas account 2>&1 | grep -qi 'not signed in'; then
     warn "Not signed in to the App Store; skipping Mac App Store titles."
     warn "Sign in, then re-run this script to install them."
   else
+    MAS_SUDO=""
+    if mas help install 2>&1 | grep -q 'Requires root'; then
+      MAS_SUDO="sudo"
+    fi
+    MAS_FAILED=0
     for id in "${MAS_IDS[@]}"; do
       log "Installing App Store title $id"
-      mas install "$id" || FAILED+=("mas $id")
+      if ! $MAS_SUDO mas install "$id"; then
+        FAILED+=("mas $id")
+        MAS_FAILED=1
+      fi
     done
+    if [[ "$MAS_FAILED" -eq 1 ]]; then
+      warn "If App Store installs failed, sign in with the App Store app and re-run."
+    fi
   fi
 fi
 
@@ -377,6 +485,12 @@ check_extensions() {
 }
 
 [[ "$(uname -s)" == "Darwin" ]] && check_extensions
+
+if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+  warn "${#SKIPPED[@]} item(s) skipped because their tap is not present:"
+  for item in "${SKIPPED[@]}"; do warn "  $item"; done
+  warn "Re-run with DOTDIPPER_ALLOW_TAPS=1 to tap and install them."
+fi
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   warn "${#FAILED[@]} item(s) did not install:"
@@ -540,12 +654,13 @@ name = "kitty"
     }
 
     #[test]
-    fn a_quoted_name_from_the_manifest_survives_into_valid_bash() {
-        // The escape test above builds a Plan directly. This one proves a
-        // hostile name reaches `array` through the real parse path and
-        // still leaves the script parseable.
+    fn a_hostile_name_from_the_manifest_is_left_out_and_counted() {
+        // The escape test above builds a Plan directly and still proves the
+        // quoting. Through the real parse path, a name that is not a plain
+        // Homebrew token no longer reaches the script at all: the same plan
+        // feeds `install apps`, where such a name would reach brew.
         let apps = AppsInventory::parse(
-            "[[casks]]\nname = \"od'd; rm -rf /\"\n\n[[casks]]\nname = \"$(id)\"\n",
+            "[[casks]]\nname = \"od'd; rm -rf /\"\n\n[[casks]]\nname = \"$(id)\"\n\n[[casks]]\nname = \"kitty\"\n",
         )
         .unwrap();
         let script = generate(
@@ -556,8 +671,54 @@ name = "kitty"
             &[],
         );
         assert_syntax_ok(&script);
-        assert!(script.contains(r"'od'\''d; rm -rf /'"));
-        assert!(script.contains("'$(id)'"));
+        assert!(script.contains("'kitty'"));
+        assert!(!script.contains("rm -rf"), "{script}");
+        assert!(!script.contains("$(id)"), "{script}");
+        assert!(script.contains("2 Brewfile or manifest entries were not a plain Homebrew name"));
+    }
+
+    #[test]
+    fn ruby_in_a_brewfile_never_becomes_an_install_entry() {
+        // `brew bundle` would execute every one of these lines.
+        let brewfile = concat!(
+            "system \"touch /tmp/pwned\"\n",
+            "brew \"git#{`touch /tmp/pwned`}\"\n",
+            "cask \"--force\"\n",
+            "brew \"../../etc\"\n",
+            "brew \"jq\"\n",
+            "tap \"olets/tap\"\n",
+        );
+        let p = plan(
+            &Inventory {
+                brewfile: Some(brewfile),
+                apps: None,
+            },
+            &[],
+        );
+        assert_eq!(p.formulae, vec!["jq".to_string()]);
+        assert_eq!(p.taps, vec!["olets/tap".to_string()]);
+        assert!(p.casks.is_empty());
+        assert_eq!(p.rejected.len(), 3, "{:?}", p.rejected);
+    }
+
+    #[test]
+    fn plain_homebrew_names_are_safe_tokens_and_nothing_else_is() {
+        for ok in [
+            "jq",
+            "python@3.13",
+            "c++utilities",
+            "olets/tap",
+            "olets/tap/git-prompt-kit",
+            "font-fira-code",
+        ] {
+            assert!(is_safe_token(ok), "{ok}");
+        }
+        for bad in [
+            "", "-v", "--force", "a/b/c/d", "git#{x}", "a b", "a;b", "$(id)", "../etc", "a/../b",
+            "/abs", "a/",
+        ] {
+            assert!(!is_safe_token(bad), "{bad}");
+        }
     }
 
     #[test]
@@ -609,6 +770,138 @@ name = "kitty"
                 "this line runs an activation instead of reporting it: {trimmed}"
             );
         }
+    }
+
+    #[test]
+    fn third_party_taps_are_opt_in_and_mas_is_driven_the_way_mas_7_needs() {
+        let script = generate(&Inventory::default(), &[]);
+        assert_syntax_ok(&script);
+        assert!(script.contains("DOTDIPPER_ALLOW_TAPS"));
+        assert!(script.contains("brew tap -- \"$tap\""));
+        assert!(
+            !script.contains("brew tap \"$tap\""),
+            "an unconditional tap"
+        );
+        assert!(script.contains("Requires root"));
+        assert!(
+            !script.contains("! mas account >/dev/null"),
+            "mas 7 has no `account`, so a failing `mas account` must not skip the App Store"
+        );
+    }
+
+    /// Runs the generated script with fake `brew`, `mas` and `sudo` that
+    /// record their argv. `brew tap` reports `trusted/tools` as present, and
+    /// `mas` behaves like 7.0: no `account`, and `install` requires root.
+    #[cfg(target_os = "macos")]
+    fn run_script(brewfile: &str, allow_taps: bool) -> (Vec<String>, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("calls.log");
+        let fakes = [
+            (
+                "brew",
+                "[[ \"$1\" == tap && $# -eq 1 ]] && { echo trusted/tools; exit 0; }\n\
+                 [[ \"$1\" == list ]] && exit 1\n",
+            ),
+            (
+                "mas",
+                "[[ \"$1\" == account ]] && { echo \"Error: Unexpected argument 'account'\" >&2; exit 64; }\n\
+                 [[ \"$1\" == help ]] && { echo 'Requires root privileges to install apps'; exit 0; }\n",
+            ),
+            ("sudo", ""),
+            ("systemextensionsctl", "exit 0\n"),
+        ];
+        for (tool, prelude) in fakes {
+            let path = bin.join(tool);
+            std::fs::write(
+                &path,
+                format!(
+                    "#!/bin/bash\n{prelude}printf '{tool}' >> '{log}'\nprintf ' %s' \"$@\" >> '{log}'\necho >> '{log}'\n",
+                    log = log.display()
+                ),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let script = generate(
+            &Inventory {
+                brewfile: Some(brewfile),
+                apps: None,
+            },
+            &[],
+        );
+        let file = dir.path().join("install-apps.sh");
+        std::fs::write(&file, script).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg(&file)
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("DOTDIPPER_ALLOW_TAPS", if allow_taps { "1" } else { "0" })
+            .output()
+            .unwrap();
+        let calls = std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.starts_with("systemextensionsctl"))
+            .map(str::to_string)
+            .collect();
+        (calls, String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+
+    #[cfg(target_os = "macos")]
+    const MIXED_TAPS: &str = concat!(
+        "tap \"homebrew/cask\"\n",
+        "tap \"trusted/tools\"\n",
+        "tap \"evil/tools\"\n",
+        "brew \"jq\"\n",
+        "brew \"trusted/tools/a\"\n",
+        "brew \"evil/tools/x\"\n",
+        "cask \"evil/tools/y\"\n",
+        "mas \"Xcode\", id: 497799835\n",
+    );
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_script_taps_nothing_third_party_by_default_and_skips_what_needs_it() {
+        let (calls, stderr) = run_script(MIXED_TAPS, false);
+        assert!(calls.iter().all(|c| !c.contains("evil")), "{calls:?}");
+        assert!(
+            calls.iter().all(|c| !c.starts_with("brew tap --")),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"brew install --formula -- jq".to_string()));
+        assert!(calls.contains(&"brew install --formula -- trusted/tools/a".to_string()));
+        // mas 7: no `account`, so the install is attempted, as root.
+        assert!(
+            calls.contains(&"sudo mas install 497799835".to_string()),
+            "{calls:?}"
+        );
+        assert!(stderr.contains("Not tapping evil/tools"), "{stderr}");
+        assert!(
+            stderr.contains("brew evil/tools/x (tap evil/tools not tapped)"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("cask evil/tools/y (tap evil/tools not tapped)"),
+            "{stderr}"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_script_taps_third_party_taps_only_when_allowed() {
+        let (calls, _) = run_script(MIXED_TAPS, true);
+        assert!(
+            calls.contains(&"brew tap -- evil/tools".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.contains("tap -- trusted/tools") || c.contains("tap -- homebrew/cask")),
+            "official and present taps are not re-tapped: {calls:?}"
+        );
     }
 
     /// Parses the script with the system bash. A generated shell script that

@@ -3,7 +3,11 @@
 # Bring a fresh Mac up on a dotdipper repository: Homebrew, dotdipper, the
 # dotfiles, the tools they expect, and the macOS preferences.
 #
+#   ./bootstrap.sh <source>
 #   ./bootstrap.sh --user <gh-user> --repo <repo> [--https]
+#
+# <source> is anything `dotdipper init` accepts: owner/repo, or an https://
+# or git@ URL on any host.
 #
 # --https clones over anonymous HTTPS, for a machine with no GitHub sign-in
 # and no SSH key. Without it the repo is reached over SSH, which is what a
@@ -13,6 +17,7 @@
 # stopped rather than starting over.
 set -euo pipefail
 
+SOURCE=""
 USER_NAME=""
 REPO_NAME=""
 HTTPS=0
@@ -25,13 +30,16 @@ die()  { printf '\033[0;31m==>\033[0m %s\n' "$1" >&2; exit 1; }
 
 usage() {
     cat <<'USAGE'
-Usage: bootstrap.sh --user <gh-user> --repo <repo> [options]
+Usage: bootstrap.sh <source> [options]
+       bootstrap.sh --user <gh-user> --repo <repo> [options]
 
+  <source>           owner/repo, or an https:// or git@ URL on any host
   --user <gh-user>   GitHub account that owns the dotfiles repository
   --repo <repo>      Repository name
   --https            Clone over anonymous HTTPS (no account, no SSH key).
                      Use this for a public mirror. Omit it for a private repo.
   --no-apps          Skip installing Homebrew packages and App Store titles
+                     (run 'dotdipper install apps' later to choose them)
   --no-macos         Skip applying macOS preferences
   -h, --help         Show this message
 USAGE
@@ -45,12 +53,21 @@ while [[ $# -gt 0 ]]; do
         --no-apps)  RUN_APPS=0; shift ;;
         --no-macos) RUN_MACOS=0; shift ;;
         -h|--help)  usage; exit 0 ;;
-        *)          usage >&2; die "Unknown argument: $1" ;;
+        -*)         usage >&2; die "Unknown argument: $1" ;;
+        *)          [[ -z "$SOURCE" ]] || die "Only one source may be given."
+                    SOURCE="$1"; shift ;;
     esac
 done
 
-[[ -n "$USER_NAME" ]] || { usage >&2; die "--user is required."; }
-[[ -n "$REPO_NAME" ]] || { usage >&2; die "--repo is required."; }
+if [[ -z "$SOURCE" ]]; then
+    [[ -n "$USER_NAME" ]] || { usage >&2; die "A source, or --user and --repo, is required."; }
+    [[ -n "$REPO_NAME" ]] || { usage >&2; die "--repo is required."; }
+    if [[ "$HTTPS" -eq 1 ]]; then
+        SOURCE="$USER_NAME/$REPO_NAME"
+    else
+        SOURCE="git@github.com:$USER_NAME/$REPO_NAME.git"
+    fi
+fi
 [[ "$(uname -s)" == "Darwin" ]] || die "This script targets macOS."
 
 # ---------------------------------------------------------------------------
@@ -98,61 +115,39 @@ DOTDIPPER="${BREW_DOTDIPPER:-dotdipper}"
 # ---------------------------------------------------------------------------
 # Configure and pull
 # ---------------------------------------------------------------------------
-CONFIG="${DOTDIPPER_HOME:-$HOME/.config/dotdipper}/config.toml"
-if [[ -f "$CONFIG" ]]; then
-    log "Config already present; leaving it in place"
-else
-    log "Initializing dotdipper"
-    "$DOTDIPPER" init
-fi
-
-"$DOTDIPPER" config --set "github.username=$USER_NAME" >/dev/null
-"$DOTDIPPER" config --set "github.repo_name=$REPO_NAME" >/dev/null
-log "Configured for $USER_NAME/$REPO_NAME"
-
-if [[ "$HTTPS" -eq 1 ]]; then
-    log "Pulling over anonymous HTTPS and applying"
-    "$DOTDIPPER" pull --https --apply
-else
-    log "Pulling over SSH and applying"
+# A first run clones through `init`, which previews what the repository
+# would write and asks before writing it. A re-run finds the store already
+# cloned and pulls instead, so the script stays idempotent.
+STORE_GIT="${DOTDIPPER_HOME:-$HOME/.config/dotdipper}/profiles/default/compiled/.git"
+if [[ -d "$STORE_GIT" ]]; then
+    log "Store already cloned; pulling and applying"
+    "$DOTDIPPER" config --set "github.url=$SOURCE" >/dev/null 2>&1 || true
     "$DOTDIPPER" pull --apply
+else
+    log "Setting up from $SOURCE"
+    "$DOTDIPPER" init "$SOURCE" --apply
 fi
 
 # ---------------------------------------------------------------------------
-# Tools. Cask installers that ship a .pkg each prompt for a password, so take
-# one authorization up front and refresh it while the run is in flight.
+# Tools. `dotdipper install apps` looks every entry up, shows one checklist,
+# asks for confirmation and at most one password up front, and then installs
+# unattended. It holds the sudo authorization itself, only when a selected
+# item needs it, and never runs brew under sudo. It reads the Brewfile as
+# text; nothing in the repository is evaluated.
 # ---------------------------------------------------------------------------
 if [[ "$RUN_APPS" -eq 1 ]]; then
-    # A public mirror publishes a ready-made install script; a private repo
-    # publishes the Brewfile it is derived from. Prefer regenerating from the
-    # Brewfile when one was pulled, so a stale script from an earlier run on
-    # this machine never wins over the inventory that just arrived.
-    APPS_SCRIPT="$HOME/install-apps.sh"
     STORE="${DOTDIPPER_HOME:-$HOME/.config/dotdipper}/profiles/default/compiled"
-    if [[ -f "$STORE/Brewfile" ]]; then
-        log "Generating the install script from the pulled Brewfile"
-        "$DOTDIPPER" install apps-script -o "$APPS_SCRIPT"
-    elif [[ ! -f "$APPS_SCRIPT" ]]; then
-        die "No install script and no Brewfile in the repository; re-run with --no-apps."
+    if [[ -f "$STORE/Brewfile" || -f "$STORE/apps_manifest.toml" ]]; then
+        log "Installing tools"
+        "$DOTDIPPER" install apps || warn "Some tools did not install; see the report above."
+    elif [[ -f "$HOME/install-apps.sh" ]]; then
+        # A public mirror ships a generated script instead of its inventory.
+        # It came from the repository, so it is not run on your behalf.
+        warn "The repository provides $HOME/install-apps.sh but no Brewfile."
+        warn "Read it, then run it yourself: bash ~/install-apps.sh"
     else
-        log "Using the install script published in the repository"
+        warn "No Brewfile or apps manifest in this repository; skipping tools."
     fi
-
-    log "Authorizing sudo for the cask installers"
-    sudo -v
-    while true; do
-        sudo -n true
-        sleep 60
-        kill -0 "$$" 2>/dev/null || exit
-    done &
-    SUDO_KEEPALIVE=$!
-    trap 'kill "$SUDO_KEEPALIVE" 2>/dev/null || true' EXIT
-
-    log "Installing tools (failures are collected, not fatal)"
-    bash "$APPS_SCRIPT" || warn "Some tools did not install; see the list above."
-
-    kill "$SUDO_KEEPALIVE" 2>/dev/null || true
-    trap - EXIT
 fi
 
 # ---------------------------------------------------------------------------
