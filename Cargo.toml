@@ -57,7 +57,7 @@ fs_extra = "1.3"
 
 # Archive/compression
 tar = "0.4.45"
-zstd = "0.13"
+zstd = "0.14"
 
 # Utils
 humansize = "2"
