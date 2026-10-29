@@ -27,4 +27,5 @@ pub mod secrets;
 pub mod snapshots;
 pub mod source;
 pub mod ui;
+pub mod upgrade;
 pub mod vcs;

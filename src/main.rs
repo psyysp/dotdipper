@@ -39,6 +39,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Upgrade dotdipper to the latest release, the way it was installed
+    ///
+    /// Homebrew and cargo installs are upgraded with brew or cargo. A binary
+    /// from install.sh is replaced only after its checksum is verified, and
+    /// its signed build attestation too when gh can check it.
+    Upgrade {
+        /// Report whether an upgrade is available and how it would be done
+        #[arg(long)]
+        check: bool,
+
+        /// Install this release tag instead of the latest (release binaries only)
+        #[arg(long, value_name = "TAG")]
+        version: Option<String>,
+
+        /// Fail if the build attestation cannot be verified
+        #[arg(long)]
+        require_attestation: bool,
+    },
+
     /// Initialize dotdipper, optionally from an existing dotfiles repository
     ///
     /// With a source, clones it, shows what it would write into $HOME, and
@@ -603,6 +622,15 @@ async fn main() -> Result<()> {
     });
 
     let result = match cli.command {
+        Commands::Upgrade {
+            check,
+            version,
+            require_attestation,
+        } => dotdipper::upgrade::upgrade(&dotdipper::upgrade::Options {
+            check,
+            version,
+            require_attestation,
+        }),
         Commands::Init {
             source,
             force,

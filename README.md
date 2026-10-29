@@ -178,6 +178,15 @@ sudo dnf install age
 nix profile install nixpkgs#age
 ```
 
+#### Upgrading
+
+```bash
+dotdipper upgrade            # upgrade to the latest release
+dotdipper upgrade --check    # only report whether an upgrade is available
+```
+
+`upgrade` upgrades dotdipper the way it was installed: with `brew` for Homebrew, with `cargo install` for crates.io, and in place for a binary from `install.sh`. In-place upgrades verify the SHA-256 checksum, and the signed build attestation when `gh` is installed and signed in (`--require-attestation` makes that check mandatory). `--version <tag>` installs a specific release, for in-place installs. A build from a source checkout is left alone; use `scripts/dev-install.sh` instead.
+
 ### First-Time Setup
 
 ```bash
@@ -711,6 +720,7 @@ dotdipper publish --review        # Generate the public allowlist, then read it
 dotdipper publish [--dry-run]     # Push the sanitized public mirror
 dotdipper config --show | --edit  # View/edit config
 dotdipper doctor [--fix]          # Health check
+dotdipper upgrade [--check]       # Upgrade dotdipper itself
 ```
 
 ### Secrets Commands
