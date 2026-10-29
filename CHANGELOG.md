@@ -4,6 +4,12 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`install apps` stopped on a tap the user had not trusted.** Homebrew records tap trust per user and refuses `brew info` for a formula from an untrusted tap, which the resolver read as a fatal error. Such a formula is now listed, unselected, as a third-party item, and the rest of the checklist resolves.
+- **Dependency advisories.** rustls-webpki 0.103.16 (RUSTSEC-2026-0382), webpki-roots 1.0.11 (RUSTSEC-2026-0381), tokio 1.54.1 (RUSTSEC-2026-0386) and zstd 0.14.3 with zstd-safe 8.2 (RUSTSEC-2026-0391, -0398).
+- **`init <source>` let a repository install hooks.** A repository that carried `~/.config/dotdipper/config.toml` replaced the config `init` had just written, so its `post_apply` hooks ran on the next `dotdipper apply`. `init` now lists those hooks, holds the settings back, and records a per-file exclusion so a later `pull --apply` cannot bring them in either. `--adopt-config` (also accepted by `install.sh` and `bootstrap.sh`) applies them deliberately, for a repository you control. The preview also flags dotdipper's own settings as files that can run commands.
+
 ### Added
 
 - **`scripts/dev-install.sh` — try a code change immediately.** Rebuilds incrementally from the checkout and installs the binary to `~/.cargo/bin`, unlinking Homebrew's copy when it would shadow the dev build. `--watch` rebuilds on every change under `src/`, `--check` runs the full check suite first, and `--restore` returns to the Homebrew binary.

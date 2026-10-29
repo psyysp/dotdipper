@@ -51,6 +51,9 @@ Options passed to `dotdipper init` (with a source):
   --yes                Do not ask before applying (unattended runs)
   --ref <commit>       Apply this exact, reviewed commit
   --branch <branch>    Follow this branch instead of the default
+  --install            Then install the repository's apps (macOS)
+  --adopt-config       Also apply the repository's dotdipper settings and
+                       hooks; only for a repository you control
 USAGE
 }
 
@@ -205,7 +208,7 @@ main() {
             --bin-dir)     [ $# -ge 2 ] || die "--bin-dir needs a directory"; bin_dir=$2; shift 2 ;;
             --from-source) from_source=1; shift ;;
             --require-attestation) require_attestation=1; shift ;;
-            --apply|--yes|-y)
+            --apply|--yes|-y|--install|--adopt-config)
                 init_args="$init_args $1"; shift ;;
             --ref|--branch)
                 [ $# -ge 2 ] || die "$1 needs a value"

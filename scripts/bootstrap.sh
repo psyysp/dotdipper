@@ -18,6 +18,7 @@
 set -euo pipefail
 
 SOURCE=""
+INIT_EXTRA=()
 USER_NAME=""
 REPO_NAME=""
 HTTPS=0
@@ -41,6 +42,8 @@ Usage: bootstrap.sh <source> [options]
   --no-apps          Skip installing Homebrew packages and App Store titles
                      (run 'dotdipper install apps' later to choose them)
   --no-macos         Skip applying macOS preferences
+  --adopt-config     Also apply the repository's own dotdipper settings and
+                     hooks. Use it for your own repository.
   -h, --help         Show this message
 USAGE
 }
@@ -52,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --https)    HTTPS=1; shift ;;
         --no-apps)  RUN_APPS=0; shift ;;
         --no-macos) RUN_MACOS=0; shift ;;
+        --adopt-config) INIT_EXTRA+=(--adopt-config); shift ;;
         -h|--help)  usage; exit 0 ;;
         -*)         usage >&2; die "Unknown argument: $1" ;;
         *)          [[ -z "$SOURCE" ]] || die "Only one source may be given."
@@ -125,7 +129,7 @@ if [[ -d "$STORE_GIT" ]]; then
     "$DOTDIPPER" pull --apply
 else
     log "Setting up from $SOURCE"
-    "$DOTDIPPER" init "$SOURCE" --apply
+    "$DOTDIPPER" init "$SOURCE" --apply ${INIT_EXTRA[@]+"${INIT_EXTRA[@]}"}
 fi
 
 # ---------------------------------------------------------------------------

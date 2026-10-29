@@ -263,3 +263,62 @@ fn a_later_pull_picks_up_files_the_repository_added() {
     assert_eq!(fx.home_file(".vimrc").unwrap(), "set nu\n");
     assert!(fx.home_file("README.md").is_none());
 }
+
+/// A repository that ships dotdipper's own config, with a hook that would
+/// leave a marker in $HOME if it ever ran.
+const REPO_WITH_SETTINGS: &[(&str, &str)] = &[
+    (".zshrc", "export FROM_REPO=1\n"),
+    (
+        ".config/dotdipper/config.toml",
+        "[general]\ndefault_mode = \"symlink\"\n\n[hooks]\npost_apply = ['touch \"$HOME/pwned\"']\n",
+    ),
+];
+
+#[test]
+fn a_repository_s_dotdipper_settings_and_hooks_are_held_back() {
+    let fx = Fixture::new(REPO_WITH_SETTINGS);
+
+    fx.cmd()
+        .args(["init", "someone/dotfiles", "--apply", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("touch \"$HOME/pwned\""))
+        .stdout(predicate::str::contains(
+            "Not applying this repository's dotdipper settings",
+        ));
+
+    // The ordinary dotfile arrived; the settings did not replace ours.
+    assert_eq!(fx.home_file(".zshrc").unwrap(), "export FROM_REPO=1\n");
+    let config = fx.config();
+    assert!(!config.contains("pwned"), "{config}");
+    assert!(config.contains("default_mode = \"copy\""), "{config}");
+
+    // The exclusion persists, so a later apply cannot bring the hook in
+    // and then run it.
+    for _ in 0..2 {
+        fx.cmd().args(["apply", "--force"]).assert().success();
+    }
+    assert!(!fx.config().contains("pwned"));
+    assert!(!fx.home.join("pwned").exists(), "the repository's hook ran");
+}
+
+#[test]
+fn adopt_config_applies_the_settings_of_a_repository_you_own() {
+    let fx = Fixture::new(REPO_WITH_SETTINGS);
+
+    fx.cmd()
+        .args([
+            "init",
+            "someone/dotfiles",
+            "--apply",
+            "--yes",
+            "--adopt-config",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Adopting this repository"));
+
+    assert!(fx.config().contains("pwned"), "settings were not adopted");
+    // Adopting installs the hook; it runs on the next apply, not during init.
+    assert!(!fx.home.join("pwned").exists());
+}

@@ -1279,7 +1279,24 @@ fn parse_config_value(key: &str, value: &str) -> Result<toml::Value> {
 
 /// Insert a dotted key into a TOML file, creating intermediate tables and
 /// leaving every other key — including ones this binary does not model — intact.
+/// Excludes one home path (`~/...`) from `apply` by writing
+/// `[files."<path>"] exclude = true` into the config at `config_path`.
+/// A separate entry point because paths contain dots, which the dotted keys
+/// [`set_config_value`] takes would split.
+pub fn exclude_from_apply(config_path: &Path, home_path: &str) -> Result<()> {
+    set_in_file_at(
+        config_path,
+        &["files", home_path, "exclude"],
+        toml::Value::Boolean(true),
+    )
+}
+
 fn set_in_file(path: &Path, key: &str, value: toml::Value) -> Result<()> {
+    let segments: Vec<&str> = key.split('.').collect();
+    set_in_file_at(path, &segments, value)
+}
+
+fn set_in_file_at(path: &Path, segments: &[&str], value: toml::Value) -> Result<()> {
     let mut root = if path.exists() {
         let contents = fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
@@ -1296,7 +1313,6 @@ fn set_in_file(path: &Path, key: &str, value: toml::Value) -> Result<()> {
         toml::map::Map::new()
     };
 
-    let segments: Vec<&str> = key.split('.').collect();
     let (leaf, tables) = segments.split_last().context("Empty config key")?;
     let mut cursor = &mut root;
     for segment in tables {

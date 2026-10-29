@@ -427,6 +427,20 @@ pub fn missing_name_in(stderr: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// The name in brew's refusal to read a formula or cask from a tap the user
+/// has not trusted: ``Run `brew trust --formula owner/tap/name` ...``.
+/// Trust is recorded per user, so the tap can be present on the machine and
+/// still be refused, which is exactly the state of a fresh account on a Mac
+/// whose Homebrew someone else set up.
+pub fn untrusted_name_in(stderr: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"brew trust (?:--formula |--cask )?([A-Za-z0-9@._+-]+(?:/[A-Za-z0-9@._+-]+)*)")
+            .expect("valid untrusted-name regex")
+    });
+    re.captures(stderr).map(|c| c[1].to_string())
+}
+
 /// Builds an item from a resolved formula.
 pub fn classify_formula(name: &str, info: &FormulaInfo) -> Item {
     let mut item = Item::new(Kind::Formula, name);
@@ -766,6 +780,15 @@ fn resolve_kind(
         argv.extend(queue.iter().cloned());
         let out = host.brew(&argv)?;
         if !out.success {
+            // An untrusted tap is not an unknown package: it is a third-party
+            // tap, offered unselected like one that is not tapped at all.
+            let untrusted = untrusted_name_in(&out.stderr)
+                .and_then(|u| queue.iter().position(|q| q.eq_ignore_ascii_case(&u)));
+            if let Some(index) = untrusted {
+                let name = queue.remove(index);
+                by_name.insert(name.clone(), classify_untapped(kind, &name));
+                continue;
+            }
             let missing = missing_name_in(&out.stderr)
                 .and_then(|m| queue.iter().position(|q| q.eq_ignore_ascii_case(&m)));
             let Some(index) = missing else {
@@ -1733,6 +1756,21 @@ fn pick(offered: &[Item]) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tap_the_user_has_not_trusted_is_a_third_party_item_not_a_failure() {
+        let stderr = "Error: Refusing to load asmvik/formulae/skhd from an untrusted tap.\n\
+                      Run `brew trust --formula asmvik/formulae/skhd` or `brew trust asmvik/formulae` to trust it.";
+        assert_eq!(
+            untrusted_name_in(stderr).as_deref(),
+            Some("asmvik/formulae/skhd")
+        );
+        assert_eq!(
+            untrusted_name_in("Run `brew trust --cask someone/tap/app` to trust it.").as_deref(),
+            Some("someone/tap/app")
+        );
+        assert_eq!(untrusted_name_in("Error: No available formula"), None);
+    }
 
     const FORMULAE: &str = include_str!("../../tests/fixtures/brew_info_formulae.json");
     const CASKS: &str = include_str!("../../tests/fixtures/brew_info_casks.json");

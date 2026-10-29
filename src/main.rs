@@ -73,6 +73,12 @@ enum Commands {
         /// App Store titles with `install apps` (macOS only)
         #[arg(long, requires = "apply")]
         install: bool,
+
+        /// Also apply the repository's own dotdipper settings
+        /// (~/.config/dotdipper), including any hooks they define. Use this
+        /// only for a repository you control, such as your own.
+        #[arg(long, requires = "source")]
+        adopt_config: bool,
     },
 
     /// Discover dotfiles on the system
@@ -600,6 +606,7 @@ async fn main() -> Result<()> {
             pin,
             yes,
             install,
+            adopt_config,
         } => match source {
             Some(source) => {
                 cmd_init_from(
@@ -612,6 +619,7 @@ async fn main() -> Result<()> {
                         pin,
                         yes,
                         install,
+                        adopt_config,
                     },
                 )
                 .await
@@ -770,6 +778,7 @@ struct InitFrom {
     pin: Option<String>,
     yes: bool,
     install: bool,
+    adopt_config: bool,
 }
 
 /// `dotdipper init <source>`: one command from an installed binary to a
@@ -836,7 +845,41 @@ async fn cmd_init_from(config_path: PathBuf, opts: InitFrom) -> Result<()> {
 
     let manifest = repo::load_manifest()?;
     let _ = repo::sync_tracked_files_from_manifest(&config_path, &manifest);
-    let preview = preview_apply(&compiled, &manifest)?;
+
+    // The repository's dotdipper settings would replace the config just
+    // written, and their hooks would run on the next apply: the one way a
+    // repository could make dotdipper execute its code. They are held back
+    // unless the user says the repository is theirs.
+    let settings = dotdipper_settings_in(&manifest)?;
+    let mut held_back: Vec<PathBuf> = Vec::new();
+    if !settings.is_empty() {
+        let hooks = hooks_defined_in(&compiled, &settings);
+        if opts.adopt_config {
+            ui::warn("Adopting this repository's dotdipper settings (--adopt-config).");
+            if !hooks.is_empty() {
+                ui::warn("These hooks will run on every later 'dotdipper apply':");
+                for (when, cmd) in &hooks {
+                    println!("  {when}: {cmd}");
+                }
+            }
+        } else {
+            for rel in &settings {
+                cfg::exclude_from_apply(&config_path, &format!("~/{}", rel.display()))?;
+            }
+            held_back = settings.clone();
+            ui::warn(&format!(
+                "Not applying this repository's dotdipper settings ({} file(s)); they can define hooks, which run commands.",
+                settings.len()
+            ));
+            for (when, cmd) in &hooks {
+                println!("  {when}: {cmd}");
+            }
+            ui::hint(
+                "If this repository is yours, re-run on a clean machine with --adopt-config to use its settings and hooks.",
+            );
+        }
+    }
+    let preview = preview_apply(&compiled, &manifest, &held_back)?;
 
     if !opts.apply {
         ui::success("Repository cloned; $HOME is unchanged.");
@@ -932,6 +975,50 @@ fn explain_unsupported_layout(layout: repo::layout::Layout, compiled: &Path) {
     ui::hint(&format!("The files are at {}", compiled.display()));
 }
 
+/// Manifest paths that land in dotdipper's own directory: the conventional
+/// `~/.config/dotdipper`, and `DOTDIPPER_HOME` when it lives under `$HOME`.
+fn dotdipper_settings_in(manifest: &hash::Manifest) -> Result<Vec<PathBuf>> {
+    let home = dirs::home_dir().context("Failed to find home directory")?;
+    let mut prefixes = vec![PathBuf::from(".config/dotdipper")];
+    if let Ok(base) = dotdipper::paths::base_dir() {
+        if let Ok(rel) = base.strip_prefix(&home) {
+            prefixes.push(rel.to_path_buf());
+        }
+    }
+    Ok(manifest
+        .files
+        .keys()
+        .filter(|rel| prefixes.iter().any(|p| rel.starts_with(p)))
+        .cloned()
+        .collect())
+}
+
+/// `(hook kind, command)` for every hook the repository's settings define.
+/// Unreadable or malformed files define none as far as this report goes;
+/// they are held back either way.
+fn hooks_defined_in(compiled: &Path, settings: &[PathBuf]) -> Vec<(String, String)> {
+    let mut hooks = Vec::new();
+    for rel in settings.iter().filter(|r| r.ends_with("config.toml")) {
+        let Ok(text) = std::fs::read_to_string(compiled.join(rel)) else {
+            continue;
+        };
+        let Ok(value) = text.parse::<toml::Value>() else {
+            continue;
+        };
+        let Some(table) = value.get("hooks").and_then(|h| h.as_table()) else {
+            continue;
+        };
+        for (when, cmds) in table {
+            for cmd in cmds.as_array().into_iter().flatten() {
+                if let Some(cmd) = cmd.as_str() {
+                    hooks.push((when.clone(), cmd.to_string()));
+                }
+            }
+        }
+    }
+    hooks
+}
+
 struct ApplyPreview {
     /// Files that would be created or replaced.
     changes: usize,
@@ -941,13 +1028,20 @@ struct ApplyPreview {
 
 /// Lists what applying `manifest` would do to `$HOME`, flagged paths first,
 /// without touching anything.
-fn preview_apply(compiled: &Path, manifest: &hash::Manifest) -> Result<ApplyPreview> {
+fn preview_apply(
+    compiled: &Path,
+    manifest: &hash::Manifest,
+    held_back: &[PathBuf],
+) -> Result<ApplyPreview> {
     const SHOWN: usize = 40;
     let home = dirs::home_dir().context("Failed to find home directory")?;
 
     let mut rows: Vec<(bool, Option<&'static str>, &Path)> = Vec::new();
     let mut identical = 0usize;
     for rel in manifest.files.keys() {
+        if held_back.contains(rel) {
+            continue;
+        }
         let target = home.join(rel);
         let source = compiled.join(rel);
         let same = match (std::fs::read(&target), std::fs::read(&source)) {

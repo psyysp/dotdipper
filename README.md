@@ -54,6 +54,7 @@ dotdipper init owner/repo --ref 1a2b3c4 --apply   # exactly the commit you revie
 **Safety when the repository is not yours:**
 
 - **Nothing in the repository is ever executed.** If it ships an `install.sh`, dotdipper names it and leaves it alone.
+- **The repository's own dotdipper settings are held back.** A repository can carry `~/.config/dotdipper/config.toml`, whose hooks run commands on every `apply`. `init` lists those hooks and excludes the settings permanently. For your own repository, pass `--adopt-config` to restore your settings and hooks along with your dotfiles.
 - **The preview flags risky files.** These are files that run code or grant access: shell startup files, `~/.ssh/`, login agents, git config and hooks, cloud credentials, and programs on `PATH`. When any are present, the confirmation defaults to *no*.
 - **Applying needs a confirmation.** Without a terminal to confirm on, applying requires an explicit `--yes`.
 - **Existing files are backed up** with a `.bak.<timestamp>` suffix.

@@ -207,6 +207,9 @@ pub fn risk(rel: &Path) -> Option<&'static str> {
         ".zlogout",
         ".inputrc",
     ];
+    if s.starts_with(".config/dotdipper/") {
+        return Some("dotdipper's own settings, whose hooks run commands");
+    }
     if SHELL_STARTUP.contains(&s.as_ref())
         || s.starts_with(".config/fish/")
         || s.starts_with(".oh-my-zsh/")
@@ -318,6 +321,7 @@ mod tests {
             ".config/git/config",
             ".aws/credentials",
             ".local/bin/tool",
+            ".config/dotdipper/config.toml",
         ] {
             assert!(risk(Path::new(p)).is_some(), "{p} not flagged");
         }
