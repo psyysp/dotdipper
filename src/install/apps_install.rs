@@ -562,6 +562,14 @@ pub trait Host {
     fn mas(&mut self, args: &[String], as_root: bool) -> Result<CmdOutput>;
     /// Whether `mas` is on this machine.
     fn has_mas(&mut self) -> bool;
+    /// Called before each item that needs the administrator password:
+    /// confirms the approval given at the start is still valid, and asks
+    /// again, in plain view, if it lapsed. False when there is no approval
+    /// and nobody to ask, so the item is skipped rather than left waiting
+    /// on a prompt nobody can see.
+    fn ensure_admin(&mut self) -> bool {
+        true
+    }
 }
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -1474,6 +1482,12 @@ pub fn execute(
             ));
             continue;
         }
+        if item.has(Flag::NeedsPassword) && !host.ensure_admin() {
+            report
+                .skipped
+                .push((item.clone(), SkipReason::NoTerminalForPassword));
+            continue;
+        }
         let outcome = match item.kind {
             Kind::AppStore => {
                 let has_mas = *mas_checked.get_or_insert_with(|| host.has_mas());
@@ -1505,11 +1519,16 @@ pub fn execute(
 // The real host and the interactive run (macOS)
 // ---------------------------------------------------------------------------
 
-/// Runs real commands. brew's own output is captured so the progress bar
-/// stays readable; the reason for a failure is kept for the report.
+/// Runs real commands. Lookups are captured. Once [`SystemHost::go_live`]
+/// is called, installs show brew's and mas's output as it arrives, so a
+/// long download is visibly progressing and any prompt is on screen; the
+/// output is also kept, for the reason a failure is reported with.
 #[derive(Debug, Default)]
 pub struct SystemHost {
     brew: Option<PathBuf>,
+    live: bool,
+    /// A person is at the terminal to answer `sudo -v`.
+    may_prompt: bool,
 }
 
 impl SystemHost {
@@ -1523,7 +1542,17 @@ impl SystemHost {
         let brew = brew.context(
             "Homebrew (brew) was not found. Install it from https://brew.sh and ensure it is on your PATH.",
         )?;
-        Ok(SystemHost { brew: Some(brew) })
+        Ok(SystemHost {
+            brew: Some(brew),
+            ..Default::default()
+        })
+    }
+
+    /// Switches installs to live output; `may_prompt` when a person can
+    /// answer a password prompt.
+    pub fn go_live(&mut self, may_prompt: bool) {
+        self.live = true;
+        self.may_prompt = may_prompt;
     }
 
     fn mas_path() -> Option<PathBuf> {
@@ -1534,6 +1563,40 @@ impl SystemHost {
                 .find(|p| p.is_file())
         })
     }
+}
+
+/// Runs `cmd` showing its output as it arrives, indented and dimmed under
+/// the item's heading, and keeps a copy. stdin stays the terminal, so a
+/// prompt from anything it runs can be answered.
+fn stream(mut cmd: std::process::Command) -> Result<CmdOutput> {
+    use std::io::BufRead;
+    use std::process::Stdio;
+
+    let mut child = cmd
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to run {:?}", cmd.get_program()))?;
+    let echo = |pipe: Box<dyn std::io::Read + Send>| {
+        std::thread::spawn(move || {
+            let mut kept = String::new();
+            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                eprintln!("    {}", console::style(sanitize_display(&line)).dim());
+                kept.push_str(&line);
+                kept.push('\n');
+            }
+            kept
+        })
+    };
+    let out = echo(Box::new(child.stdout.take().expect("piped stdout")));
+    let err = echo(Box::new(child.stderr.take().expect("piped stderr")));
+    let status = child.wait().context("Failed to wait for the install")?;
+    Ok(CmdOutput {
+        success: status.success(),
+        stdout: out.join().unwrap_or_default(),
+        stderr: err.join().unwrap_or_default(),
+    })
 }
 
 fn capture(mut cmd: std::process::Command) -> Result<CmdOutput> {
@@ -1555,10 +1618,15 @@ impl Host for SystemHost {
         cmd.args(list);
         // Read-only lookups need not refresh Homebrew first; an install
         // keeps brew's normal auto-update behaviour.
-        if list.first().is_some_and(|a| a != "install" && a != "tap") {
+        let installs = list.first().is_some_and(|a| a == "install" || a == "tap");
+        if !installs {
             cmd.env("HOMEBREW_NO_AUTO_UPDATE", "1");
         }
-        capture(cmd)
+        if installs && self.live {
+            stream(cmd)
+        } else {
+            capture(cmd)
+        }
     }
 
     fn mas(&mut self, list: &[String], as_root: bool) -> Result<CmdOutput> {
@@ -1572,15 +1640,48 @@ impl Host for SystemHost {
             c.args(list);
             c
         };
-        capture(cmd)
+        if self.live && list.first().is_some_and(|a| a == "install") {
+            stream(cmd)
+        } else {
+            capture(cmd)
+        }
     }
 
     fn has_mas(&mut self) -> bool {
         Self::mas_path().is_some()
     }
+
+    fn ensure_admin(&mut self) -> bool {
+        if sudo_is_cached() {
+            return true;
+        }
+        if !self.may_prompt {
+            return false;
+        }
+        crate::ui::warn("The administrator approval lapsed; asking again.");
+        std::process::Command::new("sudo")
+            .arg("-v")
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+}
+
+/// Whether sudo holds a valid approval, checked without prompting.
+fn sudo_is_cached() -> bool {
+    std::process::Command::new("sudo")
+        .args(["-n", "-v"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Holds one `sudo` authorization open for the length of the run.
+///
+/// dotdipper never sees the password: `sudo` reads it from the terminal
+/// itself, and what macOS keeps is a time-limited approval for this
+/// terminal, not the password. When this run asked for it, the approval is
+/// revoked with `sudo -k` at the end, so it does not outlive the install.
 ///
 /// Casks that ship a `.pkg` call `sudo installer` themselves, and the
 /// default timestamp lasts five minutes; a long run would otherwise stop
@@ -1589,6 +1690,8 @@ impl Host for SystemHost {
 pub struct SudoKeepalive {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
+    /// This run asked for the approval, so it also takes it back.
+    revoke: bool,
 }
 
 impl SudoKeepalive {
@@ -1601,18 +1704,14 @@ impl SudoKeepalive {
         if !status.success() {
             anyhow::bail!("sudo authorization was not granted");
         }
-        Ok(Self::spawn())
+        let mut keep = Self::spawn();
+        keep.revoke = true;
+        Ok(keep)
     }
 
     /// Uses an authorization that is already cached, without prompting.
     pub fn reuse() -> Option<Self> {
-        let ok = std::process::Command::new("sudo")
-            .args(["-n", "-v"])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        ok.then(Self::spawn)
+        sudo_is_cached().then(Self::spawn)
     }
 
     fn spawn() -> Self {
@@ -1626,16 +1725,14 @@ impl SudoKeepalive {
                 ticks += 1;
                 if ticks >= 60 {
                     ticks = 0;
-                    let _ = std::process::Command::new("sudo")
-                        .args(["-n", "-v"])
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                    sudo_is_cached();
                 }
             }
         });
         SudoKeepalive {
             stop,
             handle: Some(handle),
+            revoke: false,
         }
     }
 }
@@ -1645,6 +1742,9 @@ impl Drop for SudoKeepalive {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.join();
+        }
+        if self.revoke {
+            let _ = std::process::Command::new("sudo").arg("-k").status();
         }
     }
 }
@@ -1817,20 +1917,23 @@ pub fn run(store: &Path, opts: &Options) -> Result<()> {
         None
     };
 
-    let pb = ui::progress_bar(selected.len() as u64, "Installing");
-    let mut first = true;
+    // A heading per item, with brew's own output streamed beneath it: a
+    // spinner would redraw over a prompt and hide that a download is moving.
+    host.go_live(tty);
+    let total = selected.len();
+    let mut n = 0usize;
     let mut report = execute(&selected, &resolution.tapped, &mut host, &mut |label| {
         if let Some(tap) = label.strip_prefix("tap ") {
-            pb.set_message(format!("Tapping {tap}"));
+            println!("\n{} {}", console::style("==> Tapping").cyan().bold(), tap);
             return;
         }
-        if !first {
-            pb.inc(1);
-        }
-        first = false;
-        pb.set_message(format!("Installing {label}"));
+        n += 1;
+        println!(
+            "\n{} {}",
+            console::style(format!("[{n}/{total}]")).cyan().bold(),
+            console::style(label).bold()
+        );
     });
-    pb.finish_and_clear();
 
     report.skipped.extend(skipped);
     report.present = triage.present;
@@ -2074,9 +2177,16 @@ mod tests {
         mas_root: bool,
         /// Answer `brew info` in reverse order, to prove pairing is by name.
         reverse: bool,
+        /// The administrator approval lapsed and nobody can renew it.
+        admin_lost: bool,
     }
 
     impl Host for FakeHost {
+        fn ensure_admin(&mut self) -> bool {
+            self.calls.push("ensure admin".into());
+            !self.admin_lost
+        }
+
         fn brew(&mut self, list: &[String]) -> Result<CmdOutput> {
             self.calls.push(format!("brew {}", list.join(" ")));
             let ok = |stdout: String| {
@@ -2491,7 +2601,10 @@ mod tests {
                 "brew tap -- olets/tap",
                 "brew install --formula -- olets/tap/git-prompt-kit",
                 "brew install --formula -- jq",
+                // The approval is confirmed before each item that needs it.
+                "ensure admin",
                 "brew install --cask -- zoom",
+                "ensure admin",
                 "sudo mas install 497799835",
             ]
         );
@@ -2507,6 +2620,48 @@ mod tests {
         assert!(text.contains("Installed: 3"));
         assert!(text.contains("retry: brew install --cask -- zoom"));
         assert!(!report.ok());
+    }
+
+    #[test]
+    fn streamed_output_is_kept_for_the_report_and_the_exit_status_survives() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args([
+            "-c",
+            "echo '==> Downloading'; echo 'Error: it broke' >&2; exit 3",
+        ]);
+        let out = stream(cmd).unwrap();
+        assert!(!out.success);
+        assert_eq!(out.stdout, "==> Downloading\n");
+        assert_eq!(out.reason(), "Error: it broke");
+    }
+
+    #[test]
+    fn a_lapsed_password_skips_the_items_that_need_it_instead_of_waiting() {
+        let mut host = FakeHost {
+            admin_lost: true,
+            ..FakeHost::default()
+        };
+        let w = wanted("brew \"jq\"\ncask \"zoom\"\n");
+        let r = resolve(&w, &mut host).unwrap();
+        let mut t = triage(r.items, &Filters::default());
+        let all: Vec<usize> = (0..t.offered.len()).collect();
+        let selected = choose(&mut t, &all);
+        let report = execute(&selected, &r.tapped, &mut host, &mut |_| {});
+
+        assert!(report.installed.iter().any(|i| i.name == "jq"));
+        assert!(report
+            .skipped
+            .iter()
+            .any(|(i, why)| i.name == "zoom" && *why == SkipReason::NoTerminalForPassword));
+        assert!(!host
+            .calls
+            .iter()
+            .any(|c| c.contains("install --cask -- zoom")));
+        // Checked only for the item that needs it.
+        assert_eq!(
+            host.calls.iter().filter(|c| *c == "ensure admin").count(),
+            1
+        );
     }
 
     #[test]
