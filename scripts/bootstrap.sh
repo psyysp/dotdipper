@@ -138,19 +138,15 @@ fi
 # Tools. `dotdipper install apps` looks every entry up, shows one checklist,
 # asks for confirmation and at most one password up front, and then installs
 # unattended. It holds the sudo authorization itself, only when a selected
-# item needs it, and never runs brew under sudo. It reads the Brewfile as
-# text; nothing in the repository is evaluated.
+# item needs it, and never runs brew under sudo. It reads the Brewfile, or
+# the install-apps.sh a public mirror ships, as text; nothing in the
+# repository is evaluated or run.
 # ---------------------------------------------------------------------------
 if [[ "$RUN_APPS" -eq 1 ]]; then
     STORE="${DOTDIPPER_HOME:-$HOME/.config/dotdipper}/profiles/default/compiled"
-    if [[ -f "$STORE/Brewfile" || -f "$STORE/apps_manifest.toml" ]]; then
+    if [[ -f "$STORE/Brewfile" || -f "$STORE/apps_manifest.toml" || -f "$STORE/install-apps.sh" ]]; then
         log "Installing tools"
         "$DOTDIPPER" install apps || warn "Some tools did not install; see the report above."
-    elif [[ -f "$HOME/install-apps.sh" ]]; then
-        # A public mirror ships a generated script instead of its inventory.
-        # It came from the repository, so it is not run on your behalf.
-        warn "The repository provides $HOME/install-apps.sh but no Brewfile."
-        warn "Read it, then run it yourself: bash ~/install-apps.sh"
     else
         warn "No Brewfile or apps manifest in this repository; skipping tools."
     fi

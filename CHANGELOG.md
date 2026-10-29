@@ -6,6 +6,9 @@ All notable changes to dotdipper are documented here.
 
 ### Added
 
+- **`install apps` reads a public mirror's `install-apps.sh`.** A repository with no `Brewfile` or `apps_manifest.toml` but a generated `install-apps.sh` now gets the same checklist. Only the script's `FORMULAE`, `CASKS` and `MAS_IDS` lists are read, one quoted word per line, and each must still be a plain Homebrew name or a numeric id; the script is never run, and its taps are ignored. `--from <file>` reads a Brewfile or `install-apps.sh` from anywhere. `init --install` and `bootstrap.sh` use it, where `bootstrap.sh` previously told you to run the script yourself.
+- **Checklist colors.** The cursor row is a highlighted bar, checked rows show a green tick, unchecked rows are dimmed, group tags are colored (CLI, App, Store; new and replace), descriptions are muted, and flags are red.
+
 - **`dotdipper upgrade`** upgrades dotdipper the way it was installed: `brew update` and `brew upgrade` for Homebrew, `cargo install --locked` for crates.io, and an in-place, atomic replacement for a binary from `install.sh`. The in-place path verifies the SHA-256 checksum and, when `gh` can check it, the signed build attestation, with the same pre-attestation cutoff as `install.sh`. `--check` reports without changing anything, `--version <tag>` installs a specific release, and `--require-attestation` refuses an unverifiable one. A build from a source checkout is refused rather than overwritten.
 - **`init <source> -i` chooses the files to apply from a checklist,** instead of one yes-or-no question for all of them. Flagged files start unchecked. `install.sh` and `bootstrap.sh` accept `-i` as well.
 

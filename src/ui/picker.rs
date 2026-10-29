@@ -10,26 +10,46 @@
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::style::{
+    Attribute, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+};
 use crossterm::{cursor, execute, queue, terminal};
 use std::io::{IsTerminal, Write};
 
 /// One row of the checklist.
 #[derive(Debug, Clone)]
 pub struct PickItem {
+    /// A short, colored group label in front of the row, such as "App".
+    pub tag: Option<(String, Color)>,
     pub label: String,
-    /// Shown after the label in red: why this row deserves a second look.
+    /// Shown dimmed after the label: what the item is.
+    pub detail: Option<String>,
+    /// Shown last, in red: why this row deserves a second look.
     pub warning: Option<String>,
     pub checked: bool,
 }
 
+pub use crossterm::style::Color;
+
 impl PickItem {
     pub fn new(label: impl Into<String>, checked: bool) -> Self {
         Self {
+            tag: None,
             label: label.into(),
+            detail: None,
             warning: None,
             checked,
         }
+    }
+
+    pub fn with_tag(mut self, tag: impl Into<String>, color: Color) -> Self {
+        self.tag = Some((tag.into(), color));
+        self
+    }
+
+    pub fn with_detail(mut self, detail: Option<String>) -> Self {
+        self.detail = detail;
+        self
     }
 
     pub fn with_warning(mut self, warning: Option<String>) -> Self {
@@ -42,16 +62,83 @@ impl PickItem {
             return true;
         }
         let filter = filter.to_lowercase();
-        self.label.to_lowercase().contains(&filter)
-            || self
-                .warning
-                .as_deref()
-                .is_some_and(|w| w.to_lowercase().contains(&filter))
+        [
+            self.tag.as_ref().map(|(t, _)| t.as_str()),
+            Some(self.label.as_str()),
+            self.detail.as_deref(),
+            self.warning.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text.to_lowercase().contains(&filter))
     }
 }
 
-pub const HELP: &str =
-    "j/k ↑/↓ move · space toggle · a/n check/uncheck shown · / filter · g/G ends · enter done · q quit";
+/// Key, then what it does; the key is drawn highlighted.
+pub const HELP: &[(&str, &str)] = &[
+    ("j/k ↑/↓", "move"),
+    ("space", "toggle"),
+    ("a/n", "check/uncheck shown"),
+    ("/", "filter"),
+    ("g/G", "ends"),
+    ("enter", "done"),
+    ("q", "quit"),
+];
+
+// 256-color palette entries: in every common terminal theme, light and dark.
+const CURSOR_BG: Color = Color::AnsiValue(237);
+const MUTED: Color = Color::AnsiValue(245);
+
+/// A run of text in one style.
+struct Seg {
+    text: String,
+    fg: Option<Color>,
+    bold: bool,
+}
+
+fn seg(text: impl Into<String>, fg: Option<Color>, bold: bool) -> Seg {
+    Seg {
+        text: text.into(),
+        fg,
+        bold,
+    }
+}
+
+/// Prints `segs` on one line, cut to `width`, and with `bg` fills the rest
+/// of the line so the highlight reads as a bar.
+fn print_line(out: &mut impl Write, segs: &[Seg], width: usize, bg: Option<Color>) -> Result<()> {
+    if let Some(bg) = bg {
+        queue!(out, SetBackgroundColor(bg))?;
+    }
+    let mut room = width;
+    for s in segs {
+        if room == 0 {
+            break;
+        }
+        let text = console::truncate_str(&s.text, room, "…");
+        room = room.saturating_sub(console::measure_text_width(&text));
+        if let Some(fg) = s.fg {
+            queue!(out, SetForegroundColor(fg))?;
+        }
+        if s.bold {
+            queue!(out, SetAttribute(Attribute::Bold))?;
+        }
+        queue!(out, Print(text), SetAttribute(Attribute::NormalIntensity))?;
+        if s.fg.is_some() {
+            queue!(out, SetForegroundColor(Color::Reset))?;
+        }
+    }
+    if bg.is_some() {
+        queue!(out, Print(" ".repeat(room)))?;
+    }
+    queue!(
+        out,
+        ResetColor,
+        SetAttribute(Attribute::Reset),
+        Print("\r\n")
+    )?;
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -236,95 +323,107 @@ impl Picker {
     fn render(&mut self, out: &mut impl Write, title: &str) -> Result<()> {
         let (cols, rows) = terminal::size().unwrap_or((80, 24));
         let width = cols as usize;
-        // Title, status, blank, two scroll markers, blank, help.
-        self.set_page((rows as usize).saturating_sub(7));
+        // Title, status, blank, two scroll markers, blank, help, and the
+        // help line's newline, which must not scroll the title away.
+        self.set_page((rows as usize).saturating_sub(8));
 
         let visible = self.visible();
-        let fit = |s: &str| console::truncate_str(s, width, "…").into_owned();
-
         queue!(
             out,
             terminal::Clear(terminal::ClearType::All),
             cursor::MoveTo(0, 0)
         )?;
-        queue!(
-            out,
-            SetAttribute(Attribute::Bold),
-            Print(fit(title)),
-            SetAttribute(Attribute::Reset),
-            Print("\r\n")
-        )?;
-        let mut status = format!("{} of {} checked", self.checked().len(), self.items.len());
+        print_line(out, &[seg(title, None, true)], width, None)?;
+
+        let mut status = vec![
+            seg(self.checked().len().to_string(), Some(Color::Green), true),
+            seg(
+                format!(" of {} checked", self.items.len()),
+                Some(MUTED),
+                false,
+            ),
+        ];
         if self.filtering || !self.filter.is_empty() {
-            status.push_str(&format!(
-                "   filter: /{}{}   ({} shown)",
-                self.filter,
-                if self.filtering { "_" } else { "" },
-                visible.len()
+            status.push(seg("   filter ", Some(MUTED), false));
+            status.push(seg(
+                format!("/{}{}", self.filter, if self.filtering { "▏" } else { "" }),
+                Some(Color::Yellow),
+                true,
+            ));
+            status.push(seg(
+                format!("  {} shown", visible.len()),
+                Some(MUTED),
+                false,
             ));
         }
-        queue!(
-            out,
-            SetForegroundColor(Color::Cyan),
-            Print(fit(&status)),
-            ResetColor,
-            Print("\r\n\r\n")
-        )?;
+        print_line(out, &status, width, None)?;
+        queue!(out, Print("\r\n"))?;
 
         let above = self.offset;
         let end = (self.offset + self.page).min(visible.len());
         let below = visible.len() - end;
         let marker = |n: usize, dir: &str| {
-            if n > 0 {
+            let text = if n > 0 {
                 format!("  {dir} {n} more")
             } else {
                 String::new()
-            }
+            };
+            [seg(text, Some(MUTED), false)]
         };
-        queue!(
-            out,
-            SetAttribute(Attribute::Dim),
-            Print(marker(above, "↑")),
-            SetAttribute(Attribute::Reset),
-            Print("\r\n")
-        )?;
+        print_line(out, &marker(above, "↑"), width, None)?;
         if visible.is_empty() {
-            queue!(out, Print("  nothing matches the filter\r\n"))?;
+            print_line(
+                out,
+                &[seg(
+                    "  nothing matches the filter",
+                    Some(Color::Yellow),
+                    false,
+                )],
+                width,
+                None,
+            )?;
         }
         for (row, &i) in visible[self.offset..end].iter().enumerate() {
             let item = &self.items[i];
             let here = self.offset + row == self.cursor;
-            let box_ = if item.checked { "[x]" } else { "[ ]" };
-            let head = format!("{} {} {}", if here { ">" } else { " " }, box_, item.label);
-            let head = fit(&head);
-            if here {
-                queue!(out, SetAttribute(Attribute::Reverse))?;
+            let mut segs = vec![
+                if here {
+                    seg("❯ ", Some(Color::Cyan), true)
+                } else {
+                    seg("  ", None, false)
+                },
+                if item.checked {
+                    seg("[✓] ", Some(Color::Green), true)
+                } else {
+                    seg("[ ] ", Some(MUTED), false)
+                },
+            ];
+            if let Some((tag, color)) = &item.tag {
+                segs.push(seg(format!("{tag} "), Some(*color), true));
             }
-            queue!(out, Print(&head), SetAttribute(Attribute::NoReverse))?;
+            // An unchecked row is dimmed, so what will happen reads at a glance.
+            let label_fg = if item.checked { None } else { Some(MUTED) };
+            segs.push(seg(item.label.clone(), label_fg, item.checked || here));
+            if let Some(detail) = &item.detail {
+                segs.push(seg(format!("  {detail}"), Some(MUTED), false));
+            }
             if let Some(warning) = &item.warning {
-                let room = width.saturating_sub(console::measure_text_width(&head) + 2);
-                if room > 3 {
-                    queue!(
-                        out,
-                        SetForegroundColor(Color::Red),
-                        Print(format!(
-                            "  {}",
-                            console::truncate_str(&format!("[{warning}]"), room, "…")
-                        )),
-                        ResetColor
-                    )?;
-                }
+                segs.push(seg(format!("  [{warning}]"), Some(Color::Red), false));
             }
-            queue!(out, Print("\r\n"))?;
+            print_line(out, &segs, width, here.then_some(CURSOR_BG))?;
         }
-        queue!(
-            out,
-            SetAttribute(Attribute::Dim),
-            Print(marker(below, "↓")),
-            Print("\r\n\r\n"),
-            Print(fit(HELP)),
-            SetAttribute(Attribute::Reset)
-        )?;
+        print_line(out, &marker(below, "↓"), width, None)?;
+        queue!(out, Print("\r\n"))?;
+
+        let mut help = Vec::new();
+        for (n, (key, what)) in HELP.iter().enumerate() {
+            if n > 0 {
+                help.push(seg(" · ", Some(MUTED), false));
+            }
+            help.push(seg(*key, Some(Color::Cyan), true));
+            help.push(seg(format!(" {what}"), Some(MUTED), false));
+        }
+        print_line(out, &help, width, None)?;
         out.flush()?;
         Ok(())
     }

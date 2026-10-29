@@ -242,10 +242,12 @@ pub fn interactive_select(entries: &[DiffEntry]) -> Result<Vec<PathBuf>> {
     let items: Vec<ui::picker::PickItem> = applicable
         .iter()
         .map(|e| {
-            ui::picker::PickItem::new(
-                format!("{} ~/{}", e.status.word(), e.rel_path.display()),
-                true,
-            )
+            let color = match e.status {
+                DiffStatus::Modified => ui::picker::Color::Yellow,
+                _ => ui::picker::Color::Green,
+            };
+            ui::picker::PickItem::new(format!("~/{}", e.rel_path.display()), true)
+                .with_tag(e.status.word(), color)
         })
         .collect();
 

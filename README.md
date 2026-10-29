@@ -622,8 +622,11 @@ Add project-specific rules with `[[public.redact]]` — see `example-config.toml
 So `publish` withholds both files and ships a generated `install-apps.sh` instead:
 
 ```bash
-./install-apps.sh          # taps, formulae, casks, App Store titles — idempotent
+dotdipper install apps     # choose from its list on the checklist (reads it, never runs it)
+./install-apps.sh          # or run it: taps, formulae, casks, App Store titles — idempotent
 ```
+
+`dotdipper install apps` reads the script's package lists as data when a repository has no `Brewfile`, so a machine set up from the mirror gets the same checklist. It ignores the script's taps and everything outside its lists.
 
 Packages under your own Homebrew tap are dropped from the public copy and the omission is stated in the script, since a tap names its owner. Your **private** repo still has the real `Brewfile` and manifest, so your own new machine loses nothing. Generate the same script from the private store at any time:
 
@@ -829,6 +832,7 @@ dotdipper install apps --only jq,zoom # Exactly these (names or App Store ids)
 dotdipper install apps --skip zoom    # Leave these out for this run
 dotdipper install apps --reselect     # Offer items you deselected on an earlier run
 dotdipper install apps --yes          # No confirmation; without a terminal, the default selection
+dotdipper install apps --from ~/install-apps.sh  # Choose from a Brewfile or install-apps.sh elsewhere
 dotdipper install apps-script [-o PATH] [--shareable]  # A standalone script, for sharing
 dotdipper init owner/repo --apply --install            # Apply dotfiles, then install apps
 ```

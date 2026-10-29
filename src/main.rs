@@ -570,6 +570,11 @@ enum InstallCommands {
         /// Offer items deselected on an earlier run again
         #[arg(long)]
         reselect: bool,
+
+        /// Read the list from this Brewfile or generated install-apps.sh
+        /// instead of the store. The file is read as data, never run.
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
     },
 }
 
@@ -765,6 +770,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 yes,
                 reselect,
+                from,
             }) => cmd_install_apps(install::apps_install::Options {
                 all,
                 only,
@@ -772,6 +778,7 @@ async fn main() -> Result<()> {
                 dry_run,
                 yes,
                 reselect,
+                from,
             }),
             None => cmd_install(config_path, dry_run, target_os, unsafe_allow_outside_home).await,
         },
@@ -1007,8 +1014,13 @@ fn install_apps_after_apply(requested: bool, yes: bool, compiled: &Path) -> Resu
         ui::info("Skipping --install: installing apps is macOS-only.");
         return Ok(());
     }
-    if !compiled.join("Brewfile").exists() && !compiled.join("apps_manifest.toml").exists() {
-        ui::info("Skipping --install: the repository has no Brewfile or apps_manifest.toml.");
+    let inventories = [
+        "Brewfile",
+        "apps_manifest.toml",
+        install::apps_install::INSTALL_SCRIPT,
+    ];
+    if !inventories.iter().any(|f| compiled.join(f).exists()) {
+        ui::info("Skipping --install: the repository has no Brewfile, apps_manifest.toml or install-apps.sh.");
         return Ok(());
     }
     ui::section("Apps");
@@ -1115,12 +1127,14 @@ fn choose_files(preview: &ApplyPreview) -> Result<Option<Vec<PathBuf>>> {
         .rows
         .iter()
         .map(|row| {
-            let action = if row.exists { "replace" } else { "new    " };
-            PickItem::new(
-                format!("{action} ~/{}", row.path.display()),
-                row.risk.is_none(),
-            )
-            .with_warning(row.risk.map(str::to_string))
+            let (action, color) = if row.exists {
+                ("replace", picker::Color::Yellow)
+            } else {
+                ("new    ", picker::Color::Green)
+            };
+            PickItem::new(format!("~/{}", row.path.display()), row.risk.is_none())
+                .with_tag(action, color)
+                .with_warning(row.risk.map(str::to_string))
         })
         .collect();
     let title = format!(
