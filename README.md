@@ -47,9 +47,12 @@ dotdipper init owner/repo --apply             # GitHub, anonymous HTTPS
 dotdipper init https://gitlab.com/owner/repo  # any host
 dotdipper init git@github.com:owner/repo.git  # SSH, for a private repository
 dotdipper init owner/repo --ref 1a2b3c4 --apply   # exactly the commit you reviewed
+dotdipper init owner/repo -i                  # choose the files from a checklist
 ```
 
-`init <source>` clones the repository, shows every file it would write into `$HOME`, and asks before writing. It works with dotdipper repositories and with plain dotfiles repositories laid out like `$HOME`; it skips `README.md`, `LICENSE`, `install.sh` and CI files. It recognises GNU Stow and chezmoi layouts and does not apply them, because those layouts do not map onto `$HOME` file for file.
+`init <source>` clones the repository, shows every file it would write into `$HOME`, and asks before writing. With `-i` (`--interactive`) it opens a checklist of those files instead, with the flagged ones unchecked; the files you leave unchecked stay in the store, and `dotdipper apply -i` offers them again.
+
+**Checklist keys** (the same in `init -i`, `apply -i` and `install apps`): `j`/`k` or the arrow keys move, `Ctrl-d`/`Ctrl-u` or Page Down/Up jump, `g`/`G` go to the top or bottom, space toggles, `/` filters (Enter keeps the filter, Esc clears it), `a` and `n` check or uncheck every row shown, Enter confirms and `q` cancels. The list scrolls inside the window, so every row can be reached at any terminal size. It works with dotdipper repositories and with plain dotfiles repositories laid out like `$HOME`; it skips `README.md`, `LICENSE`, `install.sh` and CI files. It recognises GNU Stow and chezmoi layouts and does not apply them, because those layouts do not map onto `$HOME` file for file.
 
 **Safety when the repository is not yours:**
 
@@ -829,7 +832,7 @@ dotdipper init owner/repo --apply --install            # Apply dotfiles, then in
    - `not found`, `deprecated`, `disabled`: Homebrew no longer offers the item, or plans to stop offering it.
    - `unverified download`: the cask declares `sha256 :no_check`, so the download is not checked against a checksum.
    - `needs password`: the cask runs Apple's installer (a `pkg` or `installer` artifact), or `mas` needs root to install.
-2. **Decide.** A single checklist is grouped as CLI tools, Apps and App Store. Type to filter, press space to toggle, press the right arrow to check every row the filter shows (this replaces the current selection), and press the left arrow to clear all checks. Everything starts checked except third-party, not found, deprecated and disabled items. Unchecked items are saved in `~/.config/dotdipper/apps-skip.toml` and are not offered again on this machine; `--reselect` offers them again. A review then shows how many items will install, how many need a password, the App Store sign-in status, and the flagged items. You confirm once.
+2. **Decide.** A single checklist is grouped as CLI tools, Apps and App Store. It uses the checklist keys described under `init`: for example, `/store` then `a` checks every App Store title. Everything starts checked except third-party, not found, deprecated and disabled items. Unchecked items are saved in `~/.config/dotdipper/apps-skip.toml` and are not offered again on this machine; `--reselect` offers them again. A review then shows how many items will install, how many need a password, the App Store sign-in status, and the flagged items. You confirm once.
 3. **Install.** If any selected item needs a password, `sudo -v` runs once and the authorization is kept alive until the run ends. `brew` itself never runs under `sudo`. Taps are added only for the selected items that need them. Failures are collected rather than fatal, and the final report lists what was installed, skipped, already present and failed, with the command that retries each failure.
 
 Without a terminal, the command refuses to guess: pass `--all`, `--only` or `--yes`. `mas` 7 no longer reports App Store sign-in, so with that version the review asks you to sign in before you continue instead of checking.

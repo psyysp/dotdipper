@@ -73,7 +73,7 @@ impl Kind {
         }
     }
 
-    /// A fixed-width tag that prefixes each picker row. inquire has no
+    /// A fixed-width tag that prefixes each picker row. The picker has no
     /// group headings, so the group is part of the row, which also makes it
     /// something the filter can match ("store" narrows to App Store titles).
     fn tag(self) -> &'static str {
@@ -1728,29 +1728,21 @@ pub fn run(store: &Path, opts: &Options) -> Result<()> {
     }
 }
 
-/// The checklist. Filter by typing; right arrow checks every row the filter
-/// shows and left arrow clears every check.
+/// The checklist; see [`ui::picker`] for the keys.
 fn pick(offered: &[Item]) -> Result<Vec<usize>> {
-    let labels: Vec<String> = offered.iter().map(option_label).collect();
-    let defaults = default_selection(offered);
-    let answer = inquire::MultiSelect::new(
-        "Choose what to install (unchecked items are remembered and not offered again):",
-        labels,
-    )
-    .with_default(&defaults)
-    .with_page_size(15)
-    .with_help_message(
-        "type to filter, space to toggle, → check all shown (replaces the selection), ← clear all, enter to continue",
-    )
-    .raw_prompt();
-    match answer {
-        Ok(chosen) => Ok(chosen.into_iter().map(|o| o.index).collect()),
-        Err(inquire::InquireError::OperationCanceled)
-        | Err(inquire::InquireError::OperationInterrupted) => {
-            anyhow::bail!("Cancelled; nothing was installed")
-        }
-        Err(e) => Err(e).context("The app picker failed"),
-    }
+    use crate::ui;
+
+    let defaults: BTreeSet<usize> = default_selection(offered).into_iter().collect();
+    let rows = offered
+        .iter()
+        .enumerate()
+        .map(|(n, item)| ui::picker::PickItem::new(option_label(item), defaults.contains(&n)))
+        .collect();
+    ui::picker::pick(
+        "Choose what to install (unchecked items are remembered and not offered again)",
+        rows,
+    )?
+    .context("Cancelled; nothing was installed")
 }
 
 #[cfg(test)]

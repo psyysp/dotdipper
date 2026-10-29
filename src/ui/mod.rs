@@ -1,3 +1,5 @@
+pub mod picker;
+
 use colored::*;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};

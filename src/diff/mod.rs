@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, MultiSelect};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,6 +31,16 @@ impl DiffStatus {
             DiffStatus::New => "A".green(),
             DiffStatus::Missing => "D".red(),
             DiffStatus::Identical => "=".dimmed(),
+        }
+    }
+
+    /// What applying does to the file, for rows that cannot carry color.
+    pub fn word(&self) -> &'static str {
+        match self {
+            DiffStatus::Modified => "replace",
+            DiffStatus::New => "new    ",
+            DiffStatus::Missing => "new    ",
+            DiffStatus::Identical => "same   ",
         }
     }
 }
@@ -230,16 +239,20 @@ pub fn interactive_select(entries: &[DiffEntry]) -> Result<Vec<PathBuf>> {
         return Ok(vec![]);
     }
 
-    let items: Vec<String> = applicable
+    let items: Vec<ui::picker::PickItem> = applicable
         .iter()
-        .map(|e| format!("{} ~/{}", e.status.symbol(), e.rel_path.display()))
+        .map(|e| {
+            ui::picker::PickItem::new(
+                format!("{} ~/{}", e.status.word(), e.rel_path.display()),
+                true,
+            )
+        })
         .collect();
 
-    ui::section("Select files to apply");
-
-    let selections = MultiSelect::with_theme(&ColorfulTheme::default())
-        .items(&items)
-        .interact()?;
+    let Some(selections) = ui::picker::pick("Select files to apply", items)? else {
+        ui::info("Cancelled; nothing applied");
+        return Ok(vec![]);
+    };
 
     let selected_paths: Vec<PathBuf> = selections
         .into_iter()

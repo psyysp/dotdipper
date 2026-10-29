@@ -48,6 +48,7 @@ Installer options:
 
 Options passed to `dotdipper init` (with a source):
   --apply              Apply the dotfiles after the preview
+  -i, --interactive    Choose the files to apply from a checklist
   --yes                Do not ask before applying (unattended runs)
   --ref <commit>       Apply this exact, reviewed commit
   --branch <branch>    Follow this branch instead of the default
@@ -208,7 +209,7 @@ main() {
             --bin-dir)     [ $# -ge 2 ] || die "--bin-dir needs a directory"; bin_dir=$2; shift 2 ;;
             --from-source) from_source=1; shift ;;
             --require-attestation) require_attestation=1; shift ;;
-            --apply|--yes|-y|--install|--adopt-config)
+            --apply|--yes|-y|--install|--adopt-config|--interactive|-i)
                 init_args="$init_args $1"; shift ;;
             --ref|--branch)
                 [ $# -ge 2 ] || die "$1 needs a value"

@@ -512,7 +512,13 @@ fn print_summary(actions: &[AppliedAction]) {
 
         table_rows.push(vec![
             mode_str.clone(),
-            format!("{} {} {}", target, arrow, source),
+            // A link is shown pointing at its source; a copy, in the
+            // direction the bytes moved.
+            if action.mode == AppliedMode::Copied {
+                format!("{} {} {}", source, arrow, target)
+            } else {
+                format!("{} {} {}", target, arrow, source)
+            },
             status,
         ]);
 

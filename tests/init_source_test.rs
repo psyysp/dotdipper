@@ -196,6 +196,25 @@ fn applying_without_a_terminal_requires_an_explicit_yes() {
 }
 
 #[test]
+fn the_checklist_without_a_terminal_writes_nothing_and_cannot_be_skipped() {
+    let fx = Fixture::new(PLAIN_REPO);
+
+    fx.cmd()
+        .args(["init", "someone/dotfiles", "-i"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("needs a terminal"));
+    assert!(fx.home_file(".zshrc").is_none());
+
+    // A checklist nobody can see is not a choice; --yes does not stand in.
+    fx.cmd()
+        .args(["init", "someone/dotfiles", "-i", "--yes"])
+        .assert()
+        .failure();
+    assert!(fx.home_file(".zshrc").is_none());
+}
+
+#[test]
 fn a_stow_repository_is_reported_not_applied_by_position() {
     let fx = Fixture::new(&[
         ("zsh/.zshrc", "x\n"),

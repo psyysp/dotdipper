@@ -4,7 +4,14 @@ All notable changes to dotdipper are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`init <source> -i` chooses the files to apply from a checklist,** instead of one yes-or-no question for all of them. Flagged files start unchecked. `install.sh` and `bootstrap.sh` accept `-i` as well.
+
 ### Fixed
+
+- **The checklists could not be navigated.** `apply -i` used a dialoguer list that did not page, so a list taller than the window could not be seen or navigated reliably; `install apps` used inquire, where letters went to the filter, so vim keys did nothing. Both now use one full-screen checklist that scrolls inside the window, takes `j`/`k`, `g`/`G` and the arrows, and filters only after `/`. inquire is no longer a dependency.
+- **The apply summary showed copies backwards,** as `home → store`; a copy now reads `store → home`.
 
 - **`install apps` stopped on a tap the user had not trusted.** Homebrew records tap trust per user and refuses `brew info` for a formula from an untrusted tap, which the resolver read as a fatal error. Such a formula is now listed, unselected, as a third-party item, and the rest of the checklist resolves.
 - **Dependency advisories.** rustls-webpki 0.103.16 (RUSTSEC-2026-0382), webpki-roots 1.0.11 (RUSTSEC-2026-0381), tokio 1.54.1 (RUSTSEC-2026-0386) and zstd 0.14.3 with zstd-safe 8.2 (RUSTSEC-2026-0391, -0398).

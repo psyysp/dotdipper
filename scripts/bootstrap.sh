@@ -42,6 +42,7 @@ Usage: bootstrap.sh <source> [options]
   --no-apps          Skip installing Homebrew packages and App Store titles
                      (run 'dotdipper install apps' later to choose them)
   --no-macos         Skip applying macOS preferences
+  -i, --interactive  Choose the files to apply from a checklist
   --adopt-config     Also apply the repository's own dotdipper settings and
                      hooks. Use it for your own repository.
   -h, --help         Show this message
@@ -56,6 +57,7 @@ while [[ $# -gt 0 ]]; do
         --no-apps)  RUN_APPS=0; shift ;;
         --no-macos) RUN_MACOS=0; shift ;;
         --adopt-config) INIT_EXTRA+=(--adopt-config); shift ;;
+        -i|--interactive) INIT_EXTRA+=(--interactive); shift ;;
         -h|--help)  usage; exit 0 ;;
         -*)         usage >&2; die "Unknown argument: $1" ;;
         *)          [[ -z "$SOURCE" ]] || die "Only one source may be given."

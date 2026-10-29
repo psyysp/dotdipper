@@ -69,6 +69,11 @@ enum Commands {
         #[arg(short = 'y', long, requires = "apply")]
         yes: bool,
 
+        /// Choose which files to apply from a checklist, instead of one
+        /// yes-or-no question for all of them. Implies --apply.
+        #[arg(short = 'i', long, requires = "source", conflicts_with = "yes")]
+        interactive: bool,
+
         /// After applying, install the repository's Homebrew packages and
         /// App Store titles with `install apps` (macOS only)
         #[arg(long, requires = "apply")]
@@ -605,6 +610,7 @@ async fn main() -> Result<()> {
             branch,
             pin,
             yes,
+            interactive,
             install,
             adopt_config,
         } => match source {
@@ -614,10 +620,11 @@ async fn main() -> Result<()> {
                     InitFrom {
                         source,
                         force,
-                        apply,
+                        apply: apply || interactive,
                         branch,
                         pin,
                         yes,
+                        interactive,
                         install,
                         adopt_config,
                     },
@@ -777,6 +784,7 @@ struct InitFrom {
     branch: Option<String>,
     pin: Option<String>,
     yes: bool,
+    interactive: bool,
     install: bool,
     adopt_config: bool,
 }
@@ -879,7 +887,8 @@ async fn cmd_init_from(config_path: PathBuf, opts: InitFrom) -> Result<()> {
             );
         }
     }
-    let preview = preview_apply(&compiled, &manifest, &held_back)?;
+    // The checklist shows every file, so the printed list would only repeat it.
+    let preview = preview_apply(&compiled, &manifest, &held_back, !opts.interactive)?;
 
     if !opts.apply {
         ui::success("Repository cloned; $HOME is unchanged.");
@@ -893,7 +902,36 @@ async fn cmd_init_from(config_path: PathBuf, opts: InitFrom) -> Result<()> {
         return install_apps_after_apply(install_apps, yes, &compiled);
     }
 
-    if !opts.yes {
+    let manifest = if opts.interactive {
+        let Some(chosen) = choose_files(&preview)? else {
+            ui::info(
+                "Nothing applied. The repository stays in the store; run 'dotdipper apply -i' later.",
+            );
+            return Ok(());
+        };
+        if chosen.is_empty() {
+            ui::info("No files checked; nothing applied.");
+            return install_apps_after_apply(install_apps, yes, &compiled);
+        }
+        let left = preview.changes - chosen.len();
+        if left > 0 {
+            ui::info(&format!(
+                "Applying {} file(s); {left} unchecked stay in the store only ('dotdipper apply -i' to revisit).",
+                chosen.len()
+            ));
+        }
+        let mut subset = hash::Manifest::new();
+        for (path, file) in &manifest.files {
+            if chosen.contains(path) {
+                subset.add_file(file.clone());
+            }
+        }
+        subset
+    } else {
+        manifest
+    };
+
+    if !opts.yes && !opts.interactive {
         if !console::Term::stderr().is_term() {
             anyhow::bail!(
                 "No terminal to confirm on. Review the list above, then re-run with --yes to apply."
@@ -1024,6 +1062,49 @@ struct ApplyPreview {
     changes: usize,
     /// Of those, files that run code or grant access.
     flagged: usize,
+    /// Every file that would change, flagged first.
+    rows: Vec<PreviewRow>,
+}
+
+struct PreviewRow {
+    path: PathBuf,
+    /// The file already exists and would be replaced (after a backup).
+    exists: bool,
+    risk: Option<&'static str>,
+}
+
+/// `init --interactive`: the files to apply, chosen on a checklist. Flagged
+/// files start unchecked, so taking one is a decision rather than a default.
+/// `None` when the person cancels.
+fn choose_files(preview: &ApplyPreview) -> Result<Option<Vec<PathBuf>>> {
+    use dotdipper::ui::picker::{self, PickItem};
+    if !picker::available() {
+        anyhow::bail!(
+            "--interactive needs a terminal. Review the list above and re-run with --apply instead."
+        );
+    }
+    let items = preview
+        .rows
+        .iter()
+        .map(|row| {
+            let action = if row.exists { "replace" } else { "new    " };
+            PickItem::new(
+                format!("{action} ~/{}", row.path.display()),
+                row.risk.is_none(),
+            )
+            .with_warning(row.risk.map(str::to_string))
+        })
+        .collect();
+    let title = format!(
+        "Choose the files to write into $HOME ({} flagged start unchecked)",
+        preview.flagged
+    );
+    Ok(picker::pick(&title, items)?.map(|chosen| {
+        chosen
+            .into_iter()
+            .map(|i| preview.rows[i].path.clone())
+            .collect()
+    }))
 }
 
 /// Lists what applying `manifest` would do to `$HOME`, flagged paths first,
@@ -1032,6 +1113,7 @@ fn preview_apply(
     compiled: &Path,
     manifest: &hash::Manifest,
     held_back: &[PathBuf],
+    list: bool,
 ) -> Result<ApplyPreview> {
     const SHOWN: usize = 40;
     let home = dirs::home_dir().context("Failed to find home directory")?;
@@ -1066,7 +1148,7 @@ fn preview_apply(
         replaced,
         identical
     );
-    for (exists, risk, path) in rows.iter().take(SHOWN) {
+    for (exists, risk, path) in rows.iter().take(if list { SHOWN } else { 0 }) {
         let mark = if *exists { "~".yellow() } else { "+".green() };
         match risk {
             Some(why) => println!(
@@ -1078,7 +1160,7 @@ fn preview_apply(
             None => println!("  {} ~/{}", mark, path.display()),
         }
     }
-    if rows.len() > SHOWN {
+    if list && rows.len() > SHOWN {
         println!("  ... and {} more", rows.len() - SHOWN);
     }
     if flagged > 0 {
@@ -1089,6 +1171,14 @@ fn preview_apply(
     Ok(ApplyPreview {
         changes: rows.len(),
         flagged,
+        rows: rows
+            .into_iter()
+            .map(|(exists, risk, path)| PreviewRow {
+                path: path.to_path_buf(),
+                exists,
+                risk,
+            })
+            .collect(),
     })
 }
 
