@@ -1569,45 +1569,147 @@ impl SystemHost {
 /// the item's heading, and keeps a copy. stdin stays the terminal, so a
 /// prompt from anything it runs can be answered.
 fn stream(mut cmd: std::process::Command) -> Result<CmdOutput> {
-    use std::io::BufRead;
+    cmd.stdin(std::process::Stdio::inherit());
+    run_piped(cmd, true)
+}
+
+fn capture(mut cmd: std::process::Command) -> Result<CmdOutput> {
+    cmd.stdin(std::process::Stdio::null());
+    run_piped(cmd, false)
+}
+
+/// After the command exits, how long to keep collecting output that is
+/// still in flight.
+const DRAIN: std::time::Duration = std::time::Duration::from_secs(2);
+/// Silence after which a live run says it is still working.
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Progress lines ending in a carriage return (mas's download meter) are
+/// shown at most this often.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs `cmd` with its output piped, and returns when the command itself
+/// exits, not when its output closes.
+///
+/// An install can leave a helper running that inherited brew's stdout:
+/// Homebrew's own background tasks, an App Store daemon, an app launched by
+/// its installer. That helper holds the pipe open, so waiting for the end of
+/// the output waits for the helper, possibly forever, although the install
+/// is done. Output still in flight is collected for [`DRAIN`] after exit.
+fn run_piped(mut cmd: std::process::Command, live: bool) -> Result<CmdOutput> {
+    use std::io::Read;
     use std::process::Stdio;
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::{Duration, Instant};
 
     let mut child = cmd
-        .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to run {:?}", cmd.get_program()))?;
-    let echo = |pipe: Box<dyn std::io::Read + Send>| {
+
+    // (from stderr, ended by a carriage return, text)
+    let (tx, rx) = mpsc::channel::<(bool, bool, String)>();
+    let pipes: [(bool, Box<dyn Read + Send>); 2] = [
+        (false, Box::new(child.stdout.take().expect("piped stdout"))),
+        (true, Box::new(child.stderr.take().expect("piped stderr"))),
+    ];
+    for (is_err, mut pipe) in pipes {
+        let tx = tx.clone();
+        // Left running if a helper keeps the pipe open; it ends with it.
         std::thread::spawn(move || {
-            let mut kept = String::new();
-            for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
-                eprintln!("    {}", console::style(sanitize_display(&line)).dim());
-                kept.push_str(&line);
-                kept.push('\n');
+            let mut buf = [0u8; 8192];
+            let mut pending: Vec<u8> = Vec::new();
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                for &b in &buf[..n] {
+                    if b == b'\n' || b == b'\r' {
+                        let text = String::from_utf8_lossy(&pending).into_owned();
+                        pending.clear();
+                        if tx.send((is_err, b == b'\r', text)).is_err() {
+                            return;
+                        }
+                    } else {
+                        pending.push(b);
+                    }
+                }
             }
-            kept
-        })
-    };
-    let out = echo(Box::new(child.stdout.take().expect("piped stdout")));
-    let err = echo(Box::new(child.stderr.take().expect("piped stderr")));
-    let status = child.wait().context("Failed to wait for the install")?;
+            if !pending.is_empty() {
+                let _ = tx.send((
+                    is_err,
+                    false,
+                    String::from_utf8_lossy(&pending).into_owned(),
+                ));
+            }
+        });
+    }
+    drop(tx);
+
+    let started = Instant::now();
+    let mut heard = Instant::now();
+    let mut last_progress: Option<Instant> = None;
+    let (mut stdout, mut stderr) = (String::new(), String::new());
+    let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok((is_err, progress, text)) => {
+                heard = Instant::now();
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let show = !progress || last_progress.is_none_or(|t| t.elapsed() >= PROGRESS_EVERY);
+                if progress && show {
+                    last_progress = Some(Instant::now());
+                }
+                if live && show {
+                    eprintln!("    {}", console::style(sanitize_display(&text)).dim());
+                }
+                if !progress {
+                    let kept = if is_err { &mut stderr } else { &mut stdout };
+                    kept.push_str(&text);
+                    kept.push('\n');
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            // Both pipes closed: the normal end.
+            Err(RecvTimeoutError::Disconnected) => {
+                let status = match exited {
+                    Some((status, _)) => status,
+                    None => child.wait().context("Failed to wait for the command")?,
+                };
+                exited = Some((status, Instant::now()));
+                break;
+            }
+        }
+        if exited.is_none() {
+            if let Some(status) = child.try_wait().context("Failed to wait for the command")? {
+                exited = Some((status, Instant::now()));
+            }
+        }
+        if let Some((_, at)) = exited {
+            if at.elapsed() >= DRAIN {
+                break;
+            }
+        } else if live && heard.elapsed() >= HEARTBEAT {
+            let secs = started.elapsed().as_secs();
+            eprintln!(
+                "    {}",
+                console::style(format!(
+                    "… still working ({}m {:02}s)",
+                    secs / 60,
+                    secs % 60
+                ))
+                .dim()
+            );
+            heard = Instant::now();
+        }
+    }
+    let (status, _) = exited.expect("set before the loop ends");
     Ok(CmdOutput {
         success: status.success(),
-        stdout: out.join().unwrap_or_default(),
-        stderr: err.join().unwrap_or_default(),
-    })
-}
-
-fn capture(mut cmd: std::process::Command) -> Result<CmdOutput> {
-    let out = cmd
-        .stdin(std::process::Stdio::null())
-        .output()
-        .with_context(|| format!("Failed to run {:?}", cmd.get_program()))?;
-    Ok(CmdOutput {
-        success: out.status.success(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        stdout,
+        stderr,
     })
 }
 
@@ -2620,6 +2722,33 @@ mod tests {
         assert!(text.contains("Installed: 3"));
         assert!(text.contains("retry: brew install --cask -- zoom"));
         assert!(!report.ok());
+    }
+
+    #[test]
+    fn a_progress_meter_is_not_kept_but_the_lines_after_it_are() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "printf '10%%\\r50%%\\r100%%\\rInstalled Xcode\\n'"]);
+        let out = capture(cmd).unwrap();
+        assert_eq!(out.stdout, "Installed Xcode\n");
+    }
+
+    #[test]
+    fn a_background_process_holding_the_output_open_does_not_hang_the_run() {
+        // An install that leaves a helper running, which inherits brew's
+        // stdout: the command is done, but the pipe stays open.
+        for live in [true, false] {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.args(["-c", "sleep 20 & echo installed; exit 0"]);
+            let started = std::time::Instant::now();
+            let out = if live { stream(cmd) } else { capture(cmd) }.unwrap();
+            assert!(out.success);
+            assert_eq!(out.stdout, "installed\n");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(8),
+                "waited {:?} for a pipe a background process held open",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]
