@@ -187,8 +187,19 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
             !owned
         };
 
+        // Tokens of the casks the Brewfile names through a tap, taken before
+        // any are omitted, so an omitted personal-tap cask is not brought
+        // back by its short token either.
+        let mut tapped_casks: Vec<String> = Vec::new();
+
         if let Some(brewfile) = inventory.brewfile {
             let parsed = parse_brewfile(brewfile);
+            tapped_casks = parsed
+                .casks
+                .iter()
+                .filter_map(|c| c.rsplit_once('/'))
+                .map(|(_, token)| token.to_ascii_lowercase())
+                .collect();
             plan.taps
                 .extend(parsed.taps.into_iter().filter(|t| keep(t)));
             plan.formulae
@@ -199,10 +210,14 @@ pub fn plan(inventory: &Inventory<'_>, omit_namespaces: &[String]) -> Plan {
         }
 
         if let Some(apps) = inventory.apps {
+            // The manifest records casks as `brew list --cask` prints them,
+            // without the tap. A token the Brewfile names through a tap is
+            // that cask, not a second one from homebrew/cask.
             plan.casks.extend(
                 apps.casks
                     .iter()
                     .map(|c| c.name.clone())
+                    .filter(|c| !tapped_casks.contains(&c.to_ascii_lowercase()))
                     .filter(|c| keep(c)),
             );
             plan.mas.extend(apps.mas.iter().map(|m| m.id));
@@ -614,6 +629,38 @@ name = "kitty"
         shuffled.reverse();
         shuffled.sort();
         assert_eq!(p.casks, shuffled, "output must not depend on input order");
+    }
+
+    #[test]
+    fn a_tapped_cask_is_not_listed_again_under_its_short_token() {
+        // `brew list --cask` prints `aerospace` for `nikitabobko/tap/aerospace`,
+        // and the manifest records that. Listing both offers the app twice,
+        // and the bare name resolves to nothing on a machine without the tap.
+        let brewfile = concat!(
+            "tap \"nikitabobko/tap\"\n",
+            "cask \"nikitabobko/tap/aerospace\"\n",
+            "cask \"someuser/tools/thing\"\n",
+        );
+        let m = AppsInventory::parse(concat!(
+            "[[casks]]\nname = \"aerospace\"\n\n",
+            "[[casks]]\nname = \"thing\"\n\n",
+            "[[casks]]\nname = \"kitty\"\n",
+        ))
+        .unwrap();
+        let p = plan(
+            &Inventory {
+                brewfile: Some(brewfile),
+                apps: Some(&m),
+            },
+            &["someuser".to_string()],
+        );
+
+        // `thing` is the personal-tap cask: omitted, and not revived bare.
+        assert_eq!(
+            p.casks,
+            vec!["kitty".to_string(), "nikitabobko/tap/aerospace".to_string()]
+        );
+        assert_eq!(p.omitted, 1);
     }
 
     #[test]

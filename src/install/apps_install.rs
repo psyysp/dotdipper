@@ -441,6 +441,21 @@ pub fn untrusted_name_in(stderr: &str) -> Option<String> {
     re.captures(stderr).map(|c| c[1].to_string())
 }
 
+/// Where a name brew refused sits in the queue. brew names the package it
+/// resolved, not the one it was asked for, so a bare token (`aerospace`)
+/// that resolves into an untrusted tap is refused as `owner/tap/aerospace`.
+fn queued_position(queue: &[String], refused: &str) -> Option<usize> {
+    queue
+        .iter()
+        .position(|q| q.eq_ignore_ascii_case(refused))
+        .or_else(|| {
+            let (_, token) = refused.rsplit_once('/')?;
+            queue
+                .iter()
+                .position(|q| !q.contains('/') && q.eq_ignore_ascii_case(token))
+        })
+}
+
 /// Builds an item from a resolved formula.
 pub fn classify_formula(name: &str, info: &FormulaInfo) -> Item {
     let mut item = Item::new(Kind::Formula, name);
@@ -873,8 +888,8 @@ fn resolve_kind(
         if !out.success {
             // An untrusted tap is not an unknown package: it is a third-party
             // tap, offered unselected like one that is not tapped at all.
-            let untrusted = untrusted_name_in(&out.stderr)
-                .and_then(|u| queue.iter().position(|q| q.eq_ignore_ascii_case(&u)));
+            let untrusted =
+                untrusted_name_in(&out.stderr).and_then(|u| queued_position(&queue, &u));
             if let Some(index) = untrusted {
                 let name = queue.remove(index);
                 by_name.insert(name.clone(), classify_untapped(kind, &name));
@@ -2272,6 +2287,9 @@ mod tests {
     struct FakeHost {
         calls: Vec<String>,
         missing: Vec<String>,
+        /// `(asked for, refused as)`: `brew info` refuses the name because
+        /// its tap is untrusted, reporting the name brew resolved it to.
+        untrusted: Vec<(String, String)>,
         installed_formulae: Vec<String>,
         fail_install: Vec<String>,
         mas: bool,
@@ -2304,6 +2322,20 @@ mod tests {
                 "list" => ok(String::new()),
                 "info" => {
                     let names = &list[4..];
+                    if let Some((_, refused)) = self
+                        .untrusted
+                        .iter()
+                        .find(|(asked, _)| names.contains(asked))
+                    {
+                        return Ok(CmdOutput {
+                            success: false,
+                            stdout: String::new(),
+                            stderr: format!(
+                                "Error: Refusing to load {refused} from an untrusted tap.\n\
+                                 Run `brew trust --cask {refused}` to trust it.\n"
+                            ),
+                        });
+                    }
                     if let Some(m) = names.iter().find(|n| self.missing.contains(n)) {
                         return Ok(CmdOutput {
                             success: false,
@@ -2387,6 +2419,21 @@ mod tests {
         assert_eq!(infos, 2, "{:?}", host.calls);
         assert_eq!(r.items.len(), 3);
         assert!(r.items.iter().all(|i| i.desc.is_some()));
+    }
+
+    #[test]
+    fn a_bare_name_refused_under_its_tapped_name_is_a_third_party_item() {
+        // brew resolves `aerospace` into the tapped `nikitabobko/tap/aerospace`
+        // and refuses it by that name, which is not the name in the queue.
+        let mut host = FakeHost {
+            untrusted: vec![("aerospace".into(), "nikitabobko/tap/aerospace".into())],
+            ..FakeHost::default()
+        };
+        let r = resolve(&wanted("cask \"aerospace\"\ncask \"firefox\"\n"), &mut host).unwrap();
+        let refused = r.items.iter().find(|i| i.name == "aerospace").unwrap();
+        assert!(refused.has(Flag::ThirdPartyTap));
+        let firefox = r.items.iter().find(|i| i.name == "firefox").unwrap();
+        assert!(firefox.desc.is_some(), "the rest must still resolve");
     }
 
     #[test]
