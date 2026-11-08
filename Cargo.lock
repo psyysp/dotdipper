@@ -750,7 +750,7 @@ dependencies = [
  "chrono",
  "clap",
  "colored",
- "console 0.15.11",
+ "console 0.16.2",
  "crossterm",
  "dialoguer",
  "dirs 5.0.1",
