@@ -71,7 +71,7 @@ shell-escape = "0.1"
 tokio = { version = "1.37", features = ["full"] }
 
 # File watching for daemon
-notify = "6.1"
+notify = "8.2"
 
 # Templating (for future milestone)
 tera = "1.20.1"
