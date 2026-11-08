@@ -97,7 +97,7 @@ daemon = []
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.10"
-serial_test = "3.1"
+serial_test = "4.0"
 
 [[bin]]
 name = "dotdipper"
